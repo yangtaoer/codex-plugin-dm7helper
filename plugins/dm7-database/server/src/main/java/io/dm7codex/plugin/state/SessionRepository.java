@@ -27,20 +27,22 @@ public final class SessionRepository {
             ActiveSqlCreator activeSqlCreator)
             throws SQLException, IOException {
         var normalizedActiveSql = activeSql.toAbsolutePath().normalize();
-        var createdFile = false;
+        var creationAttempted = false;
         try (var connection = database.openConnection()) {
             StateDatabase.execute(connection, "BEGIN IMMEDIATE");
             try {
-                var existing = findByExternalIdHash(connection, externalIdHash);
+                var existing = findByExternalIdHash(
+                        connection, externalIdHash, normalizedActiveSql);
                 if (existing != null) {
                     StateDatabase.execute(connection, "COMMIT");
                     return existing;
                 }
 
+                recoverUnreferencedOrphan(connection, normalizedActiveSql);
                 var sessionId = UUID.randomUUID().toString();
                 var createdAt = Instant.now();
+                creationAttempted = true;
                 activeSqlCreator.create(normalizedActiveSql);
-                createdFile = true;
 
                 insertSession(connection, sessionId, externalIdHash, identity, createdAt);
                 insertReleaseVersion(connection, sessionId, normalizedActiveSql, createdAt);
@@ -54,19 +56,16 @@ public final class SessionRepository {
                         createdAt);
             } catch (SQLException | IOException | RuntimeException failure) {
                 StateDatabase.rollback(connection, failure);
-                if (createdFile) {
-                    try {
-                        Files.deleteIfExists(normalizedActiveSql);
-                    } catch (IOException cleanupFailure) {
-                        failure.addSuppressed(cleanupFailure);
-                    }
+                if (creationAttempted) {
+                    cleanupUncommittedFile(connection, normalizedActiveSql, failure);
                 }
                 throw failure;
             }
         }
     }
 
-    private static SessionState findByExternalIdHash(Connection connection, String externalIdHash)
+    private static SessionState findByExternalIdHash(
+            Connection connection, String externalIdHash, Path expectedActiveSql)
             throws SQLException {
         try (var statement = connection.prepareStatement("""
                 SELECT s.session_id, s.external_id_hash, r.version,
@@ -80,14 +79,63 @@ public final class SessionRepository {
                 if (!result.next()) {
                     return null;
                 }
+                var storedActiveSql = Path.of(result.getString("active_sql"))
+                        .toAbsolutePath()
+                        .normalize();
+                if (!storedActiveSql.equals(expectedActiveSql)) {
+                    throw new SQLException("Stored active SQL path does not match the session path");
+                }
                 return new SessionState(
                         result.getString("session_id"),
                         result.getString("external_id_hash"),
                         result.getInt("version"),
                         result.getString("database_fingerprint"),
-                        Path.of(result.getString("active_sql")).toAbsolutePath().normalize(),
+                        storedActiveSql,
                         Instant.parse(result.getString("created_at")));
             }
+        }
+    }
+
+    private static void recoverUnreferencedOrphan(Connection connection, Path activeSql)
+            throws SQLException, IOException {
+        if (!Files.exists(activeSql)) {
+            return;
+        }
+        if (isActiveSqlReferenced(connection, activeSql)) {
+            throw new SQLException("Active SQL path is owned by another release version");
+        }
+        Files.delete(activeSql);
+    }
+
+    private static void cleanupUncommittedFile(
+            Connection connection, Path activeSql, Throwable failure) {
+        try {
+            if (!isActiveSqlReferenced(connection, activeSql)) {
+                Files.deleteIfExists(activeSql);
+            }
+        } catch (SQLException | IOException cleanupFailure) {
+            failure.addSuppressed(cleanupFailure);
+        }
+    }
+
+    private static boolean isActiveSqlReferenced(Connection connection, Path activeSql)
+            throws SQLException {
+        try (var statement = connection.prepareStatement(
+                        "SELECT active_sql FROM release_version");
+                var result = statement.executeQuery()) {
+            while (result.next()) {
+                try {
+                    var referenced = Path.of(result.getString("active_sql"))
+                            .toAbsolutePath()
+                            .normalize();
+                    if (referenced.equals(activeSql)) {
+                        return true;
+                    }
+                } catch (java.nio.file.InvalidPathException invalidPath) {
+                    throw new SQLException("Stored active SQL path is invalid", invalidPath);
+                }
+            }
+            return false;
         }
     }
 
