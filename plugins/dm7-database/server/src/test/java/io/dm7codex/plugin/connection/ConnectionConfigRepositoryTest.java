@@ -11,6 +11,8 @@ import java.util.UUID;
 import java.util.ArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -57,6 +59,14 @@ class ConnectionConfigRepositoryTest {
         assertThrows(IllegalArgumentException.class, () -> copy(valid, 10, 30, 60, 1000, 50L * 1024 * 1024 + 1));
     }
 
+    @Test void driverPathIsPersistedAsStableAbsoluteNormalizedPath() throws Exception {
+        CredentialVault vault = CredentialVault.open(tempDir.resolve("path-secrets"));
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(tempDir.resolve("path-config"), vault);
+        ConnectionProfile saved = repository.save(profile(UUID.randomUUID(), "stable-path", false), Optional.empty());
+        assertTrue(saved.driverJar().isAbsolute());
+        assertEquals(saved.driverJar().normalize(), repository.find(saved.id()).orElseThrow().driverJar());
+    }
+
     @Test void concurrentRepositoryInstancesKeepEveryProfileAndOneDefault() throws Exception {
         CredentialVault vault = CredentialVault.open(tempDir.resolve("concurrent-secrets"));
         Path config = tempDir.resolve("concurrent-config");
@@ -82,6 +92,78 @@ class ConnectionConfigRepositoryTest {
         }
     }
 
+    @Test void initializationHoldsSharedLockSoConcurrentOpenAndSaveCannotBeOverwritten() throws Exception {
+        Path config = tempDir.resolve("open-race-config");
+        SecretStore secrets = new RecordingSecretStore();
+        CountDownLatch initializerPaused = new CountDownLatch(1);
+        CountDownLatch releaseInitializer = new CountDownLatch(1);
+        CountDownLatch saveCompleted = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var first = executor.submit(() -> ConnectionConfigRepository.open(config, secrets, () -> {
+                initializerPaused.countDown();
+                try {
+                    if (!releaseInitializer.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("timed out");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
+                }
+            }));
+            assertTrue(initializerPaused.await(10, TimeUnit.SECONDS));
+            var second = executor.submit(() -> {
+                ConnectionConfigRepository repository = ConnectionConfigRepository.open(config, secrets, () -> {});
+                repository.save(profile(UUID.randomUUID(), "saved-during-open", false), Optional.empty());
+                saveCompleted.countDown();
+                return repository;
+            });
+            assertFalse(saveCompleted.await(250, TimeUnit.MILLISECONDS));
+            releaseInitializer.countDown();
+            first.get();
+            assertEquals(1, second.get().list().size());
+        } finally {
+            releaseInitializer.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void deletingMissingProfileStillAttemptsIdempotentSecretCleanup() throws Exception {
+        RecordingSecretStore secrets = new RecordingSecretStore();
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(tempDir.resolve("missing-delete"), secrets);
+        UUID id = UUID.randomUUID();
+        repository.delete(id);
+        assertEquals(1, secrets.deleteCalls.get());
+    }
+
+    @Test void secretDeleteFailureRollsBackOriginalConfiguration() throws Exception {
+        RecordingSecretStore secrets = new RecordingSecretStore();
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(tempDir.resolve("delete-rollback"), secrets);
+        ConnectionProfile saved = repository.save(profile(UUID.randomUUID(), "must-survive", false), Optional.empty());
+        secrets.deleteFailure = new IllegalStateException("injected secret failure");
+        IllegalStateException failure = assertThrows(IllegalStateException.class, () -> repository.delete(saved.id()));
+        assertEquals("injected secret failure", failure.getMessage());
+        assertTrue(repository.find(saved.id()).isPresent());
+    }
+
+    @Test void rollbackFailureIsSuppressedOnSecretDeleteFailure() throws Exception {
+        RecordingSecretStore secrets = new RecordingSecretStore();
+        Path config = tempDir.resolve("delete-suppressed");
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(config, secrets);
+        ConnectionProfile saved = repository.save(profile(UUID.randomUUID(), "rollback-failure", false), Optional.empty());
+        secrets.beforeDelete = () -> {
+            try {
+                Path file = config.resolve("connections.json");
+                Files.delete(file);
+                Files.createDirectory(file);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        };
+        secrets.deleteFailure = new IllegalStateException("injected secret failure");
+        IllegalStateException failure = assertThrows(IllegalStateException.class, () -> repository.delete(saved.id()));
+        assertEquals(1, failure.getSuppressed().length);
+    }
+
     static ConnectionProfile profile(UUID id, String name, boolean isDefault) {
         return new ConnectionProfile(id, name, Path.of("driver.jar"), "0".repeat(64), FakeDriverJar.DRIVER_CLASS,
                 "jdbc:dm7://db.example.invalid:5236?dbname=TEST", "tester", "业务模式",
@@ -91,5 +173,19 @@ class ConnectionConfigRepositoryTest {
     private static ConnectionProfile copy(ConnectionProfile p, int connect, int socket, int query, int rows, long bytes) {
         return new ConnectionProfile(p.id(), p.name(), p.driverJar(), p.driverSha256(), p.driverClass(), p.jdbcUrl(),
                 p.username(), p.schema(), connect, socket, query, rows, bytes, p.isDefault());
+    }
+
+    private static final class RecordingSecretStore implements SecretStore {
+        private final AtomicInteger deleteCalls = new AtomicInteger();
+        private RuntimeException deleteFailure;
+        private Runnable beforeDelete = () -> {};
+
+        @Override public void put(UUID connectionId, char[] secret) {}
+        @Override public Optional<char[]> read(UUID connectionId) { return Optional.empty(); }
+        @Override public void delete(UUID connectionId) {
+            deleteCalls.incrementAndGet();
+            beforeDelete.run();
+            if (deleteFailure != null) throw deleteFailure;
+        }
     }
 }

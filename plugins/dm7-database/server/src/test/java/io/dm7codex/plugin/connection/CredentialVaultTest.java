@@ -8,6 +8,9 @@ import java.nio.file.Files;
 import java.nio.file.FileSystems;
 import java.nio.file.Path;
 import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.PosixFilePermission;
 import java.net.URI;
 import java.util.Map;
@@ -62,6 +65,19 @@ class CredentialVaultTest {
         try (var fileSystem = FileSystems.newFileSystem(URI.create("jar:" + zip.toUri()), Map.of("create", "true"))) {
             assertThrows(Exception.class, () -> CredentialVault.open(fileSystem.getPath("/secrets")));
         }
+    }
+
+    @Test void windowsAclPolicyUsesExplicitCurrentUserRatherThanFileOwnerAndMinimalPermissions() {
+        UserPrincipal currentUser = () -> "CURRENT-TEST-USER";
+        UserPrincipal differentOwner = () -> "DIFFERENT-FILE-OWNER";
+        var entry = CredentialVault.windowsAclEntry(currentUser, false);
+        assertEquals(currentUser, entry.principal());
+        assertNotEquals(differentOwner, entry.principal());
+        assertEquals(AclEntryType.ALLOW, entry.type());
+        assertFalse(entry.permissions().contains(AclEntryPermission.EXECUTE));
+        assertFalse(entry.permissions().contains(AclEntryPermission.WRITE_ACL));
+        assertFalse(entry.permissions().contains(AclEntryPermission.WRITE_OWNER));
+        assertFalse(entry.permissions().containsAll(java.util.EnumSet.allOf(AclEntryPermission.class)));
     }
 
     @Test void concurrentVaultInstancesDoNotLoseUpdatesOrLeaveTemporaryFiles() throws Exception {

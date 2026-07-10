@@ -20,6 +20,7 @@ import java.nio.file.attribute.AclEntryPermission;
 import java.nio.file.attribute.AclEntryType;
 import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -36,7 +37,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public final class CredentialVault {
+public final class CredentialVault implements SecretStore {
     private static final int KEY_BYTES = 32;
     private static final int IV_BYTES = 12;
     private static final int TAG_BITS = 128;
@@ -225,8 +226,8 @@ public final class CredentialVault {
     private static void atomicCreate(Path target, byte[] bytes) throws IOException {
         Path temp = Files.createTempFile(target.getParent(), ".master-", ".tmp");
         try {
-            Files.write(temp, bytes);
             secure(temp, false);
+            Files.write(temp, bytes);
             try {
                 Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
             } catch (java.nio.file.FileAlreadyExistsException ignored) {
@@ -240,16 +241,24 @@ public final class CredentialVault {
     }
 
     static void atomicReplace(Path target, byte[] bytes, boolean restricted) throws IOException {
+        boolean existed = Files.exists(target);
         Path temp = Files.createTempFile(target.getParent(), ".atomic-", ".tmp");
         try {
-            Files.write(temp, bytes);
             if (restricted) secure(temp, false);
+            Files.write(temp, bytes);
             try {
                 Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             } catch (AtomicMoveNotSupportedException e) {
                 throw new IOException("Atomic credential persistence is not supported", e);
             }
-            if (restricted) secure(target, false);
+            if (restricted) {
+                try {
+                    secure(target, false);
+                } catch (IOException e) {
+                    if (!existed) Files.deleteIfExists(target);
+                    throw e;
+                }
+            }
         } finally {
             Files.deleteIfExists(temp);
         }
@@ -262,14 +271,51 @@ public final class CredentialVault {
         }
         AclFileAttributeView acl = Files.getFileAttributeView(path, AclFileAttributeView.class);
         if (acl == null) throw new IOException("Owner-only file permissions are unavailable");
+        String userName = currentProcessUserName();
+        if (userName == null || userName.isBlank()) throw new IOException("Current user identity is unavailable");
+        UserPrincipal currentUser = path.getFileSystem().getUserPrincipalLookupService()
+                .lookupPrincipalByName(userName);
+        AclEntry expected = windowsAclEntry(currentUser, directory);
+        acl.setAcl(List.of(expected));
+        List<AclEntry> actual = acl.getAcl();
+        if (actual.size() != 1 || !actual.get(0).equals(expected)) {
+            throw new IOException("Owner-only ACL verification failed");
+        }
+    }
+
+    private static String currentProcessUserName() {
+        String account = System.getenv("USERNAME");
+        String domain = System.getenv("USERDOMAIN");
+        if (account != null && !account.isBlank() && domain != null && !domain.isBlank()) {
+            return domain + "\\" + account;
+        }
+        return System.getProperty("user.name");
+    }
+
+    static AclEntry windowsAclEntry(UserPrincipal currentUser, boolean directory) {
+        EnumSet<AclEntryPermission> permissions = EnumSet.of(
+                AclEntryPermission.READ_DATA,
+                AclEntryPermission.WRITE_DATA,
+                AclEntryPermission.APPEND_DATA,
+                AclEntryPermission.READ_NAMED_ATTRS,
+                AclEntryPermission.WRITE_NAMED_ATTRS,
+                AclEntryPermission.READ_ATTRIBUTES,
+                AclEntryPermission.WRITE_ATTRIBUTES,
+                AclEntryPermission.READ_ACL,
+                AclEntryPermission.DELETE,
+                AclEntryPermission.SYNCHRONIZE);
+        if (directory) {
+            permissions.add(AclEntryPermission.EXECUTE);
+            permissions.add(AclEntryPermission.DELETE_CHILD);
+        }
         AclEntry.Builder builder = AclEntry.newBuilder()
                 .setType(AclEntryType.ALLOW)
-                .setPrincipal(Files.getOwner(path))
-                .setPermissions(EnumSet.allOf(AclEntryPermission.class));
+                .setPrincipal(Objects.requireNonNull(currentUser, "currentUser"))
+                .setPermissions(permissions);
         if (directory) {
             builder.setFlags(AclEntryFlag.DIRECTORY_INHERIT, AclEntryFlag.FILE_INHERIT);
         }
-        acl.setAcl(List.of(builder.build()));
+        return builder.build();
     }
 
     private record VaultEntry(String connectionId, String ivBase64, String ciphertextBase64) {}

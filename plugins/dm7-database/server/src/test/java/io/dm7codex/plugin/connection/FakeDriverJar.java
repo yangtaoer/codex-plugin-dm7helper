@@ -24,16 +24,23 @@ final class FakeDriverJar {
                 import java.util.logging.Logger;
 
                 public final class FakeDmDriver implements Driver {
+                    static {
+                        try { DriverManager.registerDriver(new FakeDmDriver()); }
+                        catch (SQLException e) { throw new ExceptionInInitializerError(e); }
+                    }
                     public Connection connect(String url, Properties info) throws SQLException {
                         System.setProperty("dm7.fixture.user", String.valueOf(info.getProperty("user")));
                         System.setProperty("dm7.fixture.password", String.valueOf(info.getProperty("password")));
                         System.setProperty("dm7.fixture.connectTimeout", String.valueOf(info.getProperty("connectTimeout")));
                         System.setProperty("dm7.fixture.socketTimeout", String.valueOf(info.getProperty("socketTimeout")));
+                        if ("true".equals(info.getProperty("registerOnConnect"))) DriverManager.registerDriver(new FakeDmDriver());
                         if (url.contains("forceFailure")) throw new SQLException("connection rejected: " + url + " " + info);
                         return proxy(Connection.class, (proxy, method, args) -> {
                             return switch (method.getName()) {
                                 case "getMetaData" -> metadata();
                                 case "createStatement" -> statement();
+                                case "getClientInfo" -> args != null && args.length == 1 && "propertiesEmpty".equals(args[0])
+                                        ? Boolean.toString(info.isEmpty()) : null;
                                 case "close" -> null;
                                 case "isClosed" -> false;
                                 case "unwrap" -> null;
@@ -101,6 +108,37 @@ final class FakeDriverJar {
 
     static Fixture createNonDriver(Path directory) throws Exception {
         return compile(directory, "fixture.NotADriver", "package fixture; public final class NotADriver {}\n");
+    }
+
+    static Fixture createRegisterThenFail(Path directory) throws Exception {
+        return compile(directory, "fixture.RegisterThenFailDriver", """
+                package fixture;
+                import java.lang.ref.WeakReference;
+                import java.sql.*;
+                import java.util.Properties;
+                import java.util.logging.Logger;
+                public final class RegisterThenFailDriver implements Driver {
+                    private static boolean registrationComplete;
+                    static {
+                        try {
+                            System.getProperties().put("dm7.fixture.failedLoader",
+                                    new WeakReference<>(RegisterThenFailDriver.class.getClassLoader()));
+                            DriverManager.registerDriver(new RegisterThenFailDriver());
+                        } catch (SQLException e) { throw new ExceptionInInitializerError(e); }
+                    }
+                    public RegisterThenFailDriver() {
+                        if (registrationComplete) throw new IllegalStateException("fixture construction failure");
+                        registrationComplete = true;
+                    }
+                    public Connection connect(String u, Properties p) { return null; }
+                    public boolean acceptsURL(String u) { return true; }
+                    public DriverPropertyInfo[] getPropertyInfo(String u, Properties p) { return new DriverPropertyInfo[0]; }
+                    public int getMajorVersion() { return 7; }
+                    public int getMinorVersion() { return 0; }
+                    public boolean jdbcCompliant() { return false; }
+                    public Logger getParentLogger() { return Logger.getGlobal(); }
+                }
+                """);
     }
 
     private static Fixture compile(Path directory, String className, String source) throws Exception {

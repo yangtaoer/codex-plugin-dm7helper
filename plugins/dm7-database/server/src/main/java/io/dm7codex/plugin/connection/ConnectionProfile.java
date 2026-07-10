@@ -32,7 +32,7 @@ public record ConnectionProfile(
     public ConnectionProfile {
         id = Objects.requireNonNull(id, "id");
         name = requireText(name, "name", 128);
-        driverJar = Objects.requireNonNull(driverJar, "driverJar").normalize();
+        driverJar = Objects.requireNonNull(driverJar, "driverJar").toAbsolutePath().normalize();
         if (!SHA_256.matcher(Objects.requireNonNull(driverSha256, "driverSha256")).matches()) {
             throw new IllegalArgumentException("driverSha256 must be a SHA-256 hex digest");
         }

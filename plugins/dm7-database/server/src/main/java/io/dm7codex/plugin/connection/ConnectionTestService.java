@@ -19,7 +19,7 @@ public final class ConnectionTestService {
 
     public ConnectionTestResult test(UUID profileId) {
         ConnectionProfile profile = profiles.find(Objects.requireNonNull(profileId, "profileId")).orElse(null);
-        if (profile == null) return failure();
+        if (profile == null) return failure(List.of());
         List<String> warnings = JdbcUrlDiagnostics.inspect(profile.jdbcUrl()).warnings();
         long started = System.nanoTime();
         try (DmConnectionFactory.ManagedConnection managed = connectionFactory.open(profileId)) {
@@ -33,7 +33,7 @@ public final class ConnectionTestService {
             return new ConnectionTestResult(true, latencyMs, driverVersion, serverVersion, actualUser,
                     actualSchema, chineseRoundTrip, warnings);
         } catch (Exception ignored) {
-            return failure();
+            return failure(warnings);
         }
     }
 
@@ -48,9 +48,11 @@ public final class ConnectionTestService {
         }
     }
 
-    private static ConnectionTestResult failure() {
+    private static ConnectionTestResult failure(List<String> diagnostics) {
+        var warnings = new java.util.ArrayList<>(diagnostics);
+        warnings.add("Connection test failed; verify the saved settings and JDBC driver.");
         return new ConnectionTestResult(false, 0, "", "", "", "", false,
-                List.of("Connection test failed; verify the saved settings and JDBC driver."));
+                warnings);
     }
 
     private static String join(String left, String right) {

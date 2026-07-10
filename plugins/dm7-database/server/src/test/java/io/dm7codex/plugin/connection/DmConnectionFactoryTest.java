@@ -25,18 +25,23 @@ class DmConnectionFactoryTest {
                 "jdbc:dm7://fixture.invalid:5236?dbname=TEST", "fixture-user", "业务模式", 7, 19, 31, 1000, 1024, true);
         char[] secret = "fixture-secret".toCharArray();
         repository.save(profile, Optional.of(secret));
-        DmConnectionFactory factory = new DmConnectionFactory(repository, vault, new DmDriverLoader());
+        DmConnectionFactory factory = new DmConnectionFactory(repository, vault, loader("main"));
         String fingerprint;
         try (DmConnectionFactory.ManagedConnection managed = factory.open(id)) {
             fingerprint = managed.databaseFingerprint();
             assertEquals("fixture-user", System.getProperty("dm7.fixture.user"));
             assertEquals("fixture-secret", System.getProperty("dm7.fixture.password"));
-            assertEquals("7", System.getProperty("dm7.fixture.connectTimeout"));
-            assertEquals("19", System.getProperty("dm7.fixture.socketTimeout"));
+            assertEquals("7000", System.getProperty("dm7.fixture.connectTimeout"));
+            assertEquals("19000", System.getProperty("dm7.fixture.socketTimeout"));
+            assertEquals("true", managed.connection().getClientInfo("propertiesEmpty"));
             assertEquals("SET SCHEMA 业务模式", System.getProperty("dm7.fixture.schemaSql"));
         }
         assertFalse(fingerprint.contains("fixture-secret"));
         assertFalse(fingerprint.contains(profile.jdbcUrl()));
+    }
+
+    @Test void timeoutConversionRejectsIntegerOverflow() {
+        assertThrows(ArithmeticException.class, () -> DmConnectionFactory.timeoutMilliseconds(Integer.MAX_VALUE));
     }
 
     @Test void rejectsUnsafeSchemaBeforeConnecting() throws Exception {
@@ -54,7 +59,7 @@ class DmConnectionFactoryTest {
         UUID secondId = UUID.randomUUID();
         repository.save(profile(firstId, "one", fixture, "first-url-secret"), Optional.empty());
         repository.save(profile(secondId, "two", fixture, "second-url-secret"), Optional.empty());
-        DmConnectionFactory factory = new DmConnectionFactory(repository, vault, new DmDriverLoader());
+        DmConnectionFactory factory = new DmConnectionFactory(repository, vault, loader("fingerprint"));
         String first;
         String second;
         try (DmConnectionFactory.ManagedConnection managed = factory.open(firstId)) { first = managed.databaseFingerprint(); }
@@ -77,5 +82,9 @@ class DmConnectionFactoryTest {
         return new ConnectionProfile(id, name, fixture.jar(), fixture.sha256(), fixture.driverClass(),
                 "jdbc:dm7://fixture.invalid:5236?dbname=TEST&dbPassword=" + urlPassword, "fixture-user", null,
                 7, 19, 31, 1000, 1024, false);
+    }
+
+    private DmDriverLoader loader(String name) {
+        return new DmDriverLoader(tempDir.resolve("driver-cache-" + name));
     }
 }

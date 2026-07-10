@@ -35,12 +35,15 @@ class ConnectionTestServiceTest {
         ConnectionConfigRepository repository = ConnectionConfigRepository.open(tempDir.resolve("config-fail"), vault);
         UUID id = UUID.randomUUID();
         repository.save(new ConnectionProfile(id, "failure", fixture.jar(), fixture.sha256(), fixture.driverClass(),
-                "jdbc:dm7://forceFailure.invalid:5236?token=" + urlMarker, usernameMarker, null,
+                "jdbc:dm7://forceFailure.invalid:5236/SYSTEM?token=" + urlMarker, usernameMarker, null,
                 10, 30, 60, 1000, 1024, true), Optional.of(passwordMarker.toCharArray()));
-        ConnectionTestService service = new ConnectionTestService(new DmConnectionFactory(repository, vault, new DmDriverLoader()), repository);
+        ConnectionTestService service = new ConnectionTestService(new DmConnectionFactory(repository, vault,
+                new DmDriverLoader(tempDir.resolve("driver-cache-fail"))), repository);
         ConnectionTestService.ConnectionTestResult result = service.test(id);
         assertFalse(result.success());
         String rendered = result.toString();
+        assertTrue(result.warnings().stream().anyMatch(value -> value.contains("dbname=SYSTEM")));
+        assertTrue(result.warnings().stream().anyMatch(value -> value.contains("Connection test failed")));
         assertFalse(rendered.contains(urlMarker));
         assertFalse(rendered.contains(usernameMarker));
         assertFalse(rendered.contains(passwordMarker));
@@ -53,7 +56,8 @@ class ConnectionTestServiceTest {
         UUID id = UUID.randomUUID();
         repository.save(new ConnectionProfile(id, "success", fixture.jar(), fixture.sha256(), fixture.driverClass(), url,
                 "fixture-user", "业务模式", 10, 30, 60, 1000, 1024, true), Optional.of("fixture-password".toCharArray()));
-        return new Setup(id, new ConnectionTestService(new DmConnectionFactory(repository, vault, new DmDriverLoader()), repository));
+        return new Setup(id, new ConnectionTestService(new DmConnectionFactory(repository, vault,
+                new DmDriverLoader(tempDir.resolve("driver-cache-ok"))), repository));
     }
 
     private record Setup(UUID id, ConnectionTestService service) {}

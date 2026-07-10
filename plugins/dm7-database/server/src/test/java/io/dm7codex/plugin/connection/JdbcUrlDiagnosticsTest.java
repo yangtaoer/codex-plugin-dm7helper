@@ -22,5 +22,8 @@ class JdbcUrlDiagnosticsTest {
         assertFalse(JdbcUrlDiagnostics.redact(url).contains(token));
         assertFalse(JdbcUrlDiagnostics.redact("jdbc:dm7://host:5236?dbPassword=" + token).contains(token));
         assertFalse(JdbcUrlDiagnostics.redact("jdbc:dm7://host:5236?access_token=" + token).contains(token));
+        assertFalse(JdbcUrlDiagnostics.redact("jdbc:dm7://host:5236?sslKeystorePass=" + token).contains(token));
+        assertFalse(JdbcUrlDiagnostics.redact("jdbc:dm7://host:5236?uKeyPin=" + token).contains(token));
+        assertFalse(JdbcUrlDiagnostics.redact("jdbc:dm7://host:5236?userNewPwd=" + token).contains(token));
     }
 }

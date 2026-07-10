@@ -14,10 +14,10 @@ import java.util.UUID;
 
 public final class DmConnectionFactory {
     private final ConnectionConfigRepository profiles;
-    private final CredentialVault vault;
+    private final SecretStore vault;
     private final DmDriverLoader driverLoader;
 
-    public DmConnectionFactory(ConnectionConfigRepository profiles, CredentialVault vault, DmDriverLoader driverLoader) {
+    public DmConnectionFactory(ConnectionConfigRepository profiles, SecretStore vault, DmDriverLoader driverLoader) {
         this.profiles = Objects.requireNonNull(profiles, "profiles");
         this.vault = Objects.requireNonNull(vault, "vault");
         this.driverLoader = Objects.requireNonNull(driverLoader, "driverLoader");
@@ -40,12 +40,13 @@ public final class DmConnectionFactory {
             throw new SQLException("Saved credential could not be read");
         }
         Connection connection = null;
+        Properties properties = new Properties();
         try {
-            Properties properties = new Properties();
             properties.setProperty("user", profile.username());
+            // java.sql.Driver requires a String here; clear the container and wipe the source char[] below.
             properties.setProperty("password", new String(password));
-            properties.setProperty("connectTimeout", Integer.toString(profile.connectTimeoutSeconds()));
-            properties.setProperty("socketTimeout", Integer.toString(profile.socketTimeoutSeconds()));
+            properties.setProperty("connectTimeout", Integer.toString(timeoutMilliseconds(profile.connectTimeoutSeconds())));
+            properties.setProperty("socketTimeout", Integer.toString(timeoutMilliseconds(profile.socketTimeoutSeconds())));
             connection = handle.connect(profile.jdbcUrl(), properties);
             if (profile.schema() != null) {
                 try (Statement statement = connection.createStatement()) {
@@ -62,8 +63,13 @@ public final class DmConnectionFactory {
             }
             throw new SQLException("Database connection failed");
         } finally {
+            properties.clear();
             Arrays.fill(password, '\0');
         }
+    }
+
+    static int timeoutMilliseconds(int seconds) {
+        return Math.multiplyExact(seconds, 1_000);
     }
 
     private static String fingerprint(ConnectionProfile profile) {

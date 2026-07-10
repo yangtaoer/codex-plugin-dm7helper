@@ -10,7 +10,8 @@ import java.util.regex.Pattern;
 public final class JdbcUrlDiagnostics {
     private static final Pattern LEGACY_PATH = Pattern.compile("(?i)^jdbc:dm7://[^/?#]+/([^/?#]+)(?:[?#].*)?$");
     private static final Pattern USER_INFO = Pattern.compile("(?i)(jdbc:dm7://[^:/?#]+:)[^@/?#]+@");
-    private static final Pattern SECRET_KEY = Pattern.compile(".*(?:password|passwd|pwd|token|secret|credential).*");
+    private static final Pattern SECRET_KEY = Pattern.compile(
+            ".*(?:password|passwd|pwd|token|secret|credential|sslkeystorepass|ukeypin|usernewpwd).*");
 
     private JdbcUrlDiagnostics() {}
 

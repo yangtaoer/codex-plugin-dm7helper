@@ -25,23 +25,33 @@ public final class ConnectionConfigRepository {
     private static final Map<Path, Object> LOCKS = new ConcurrentHashMap<>();
 
     private final Path configFile;
-    private final CredentialVault vault;
+    private final SecretStore vault;
     private final Object lock;
 
-    private ConnectionConfigRepository(Path configFile, CredentialVault vault) {
+    private ConnectionConfigRepository(Path configFile, SecretStore vault, Object lock) {
         this.configFile = configFile;
         this.vault = vault;
-        this.lock = LOCKS.computeIfAbsent(configFile, ignored -> new Object());
+        this.lock = lock;
     }
 
-    public static ConnectionConfigRepository open(Path configDirectory, CredentialVault vault) throws IOException {
+    public static ConnectionConfigRepository open(Path configDirectory, SecretStore vault) throws IOException {
+        return open(configDirectory, vault, () -> {});
+    }
+
+    static ConnectionConfigRepository open(Path configDirectory, SecretStore vault, Runnable beforeInitialize)
+            throws IOException {
         Path directory = Objects.requireNonNull(configDirectory, "configDirectory").toAbsolutePath().normalize();
-        Files.createDirectories(directory);
         Path file = directory.resolve("connections.json");
-        if (!Files.exists(file)) {
-            CredentialVault.atomicReplace(file, JSON.writeValueAsBytes(JSON.createObjectNode().set("connections", JSON.createArrayNode())), false);
+        Object lock = LOCKS.computeIfAbsent(file, ignored -> new Object());
+        synchronized (lock) {
+            Files.createDirectories(directory);
+            if (!Files.exists(file)) {
+                Objects.requireNonNull(beforeInitialize, "beforeInitialize").run();
+                CredentialVault.atomicReplace(file,
+                        JSON.writeValueAsBytes(JSON.createObjectNode().set("connections", JSON.createArrayNode())), false);
+            }
+            return new ConnectionConfigRepository(file, Objects.requireNonNull(vault, "vault"), lock);
         }
-        return new ConnectionConfigRepository(file, Objects.requireNonNull(vault, "vault"));
     }
 
     public List<ConnectionProfile> list() {
@@ -89,14 +99,27 @@ public final class ConnectionConfigRepository {
         Objects.requireNonNull(id, "id");
         synchronized (lock) {
             Map<UUID, ConnectionProfile> profiles = readProfiles();
+            Map<UUID, ConnectionProfile> original = new LinkedHashMap<>(profiles);
             ConnectionProfile removed = profiles.remove(id);
-            if (removed == null) return;
-            if (!profiles.isEmpty() && profiles.values().stream().noneMatch(ConnectionProfile::isDefault)) {
-                UUID replacement = profiles.keySet().stream().sorted().findFirst().orElseThrow();
-                profiles.put(replacement, withDefault(profiles.get(replacement), true));
+            if (removed != null) {
+                if (!profiles.isEmpty() && profiles.values().stream().noneMatch(ConnectionProfile::isDefault)) {
+                    UUID replacement = profiles.keySet().stream().sorted().findFirst().orElseThrow();
+                    profiles.put(replacement, withDefault(profiles.get(replacement), true));
+                }
+                writeProfiles(profiles);
             }
-            writeProfiles(profiles);
-            vault.delete(id);
+            try {
+                vault.delete(id);
+            } catch (RuntimeException failure) {
+                if (removed != null) {
+                    try {
+                        writeProfiles(original);
+                    } catch (RuntimeException rollbackFailure) {
+                        failure.addSuppressed(rollbackFailure);
+                    }
+                }
+                throw failure;
+            }
         }
     }
 
