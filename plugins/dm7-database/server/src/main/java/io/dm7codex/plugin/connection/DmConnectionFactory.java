@@ -38,8 +38,8 @@ public final class DmConnectionFactory {
         try {
             password = vault.read(profile.id()).orElseGet(() -> new char[0]);
         } catch (RuntimeException e) {
-            closeQuietly(handle);
-            throw new SQLException("Saved credential could not be read");
+            Exception handleCleanup = close(handle);
+            throw credentialFailure(e, handleCleanup);
         }
         Connection connection = null;
         Properties properties = new Properties();
@@ -58,13 +58,9 @@ public final class DmConnectionFactory {
             }
             return new ManagedConnection(connection, handle, fingerprint(profile));
         } catch (SQLException | RuntimeException e) {
-            if (connection != null) closeQuietly(connection);
-            closeQuietly(handle);
-            if (e instanceof DmDriverLoader.DriverIsolationException isolation) throw isolation;
-            if (e instanceof SQLException sql) {
-                throw new SQLException("Database connection failed", sql.getSQLState(), sql.getErrorCode());
-            }
-            throw new SQLException("Database connection failed");
+            Exception connectionCleanup = connection == null ? null : close(connection);
+            Exception handleCleanup = close(handle);
+            throw connectionFailure(e, connectionCleanup, handleCleanup);
         } finally {
             properties.clear();
             Arrays.fill(password, '\0');
@@ -93,12 +89,67 @@ public final class DmConnectionFactory {
         digest.update((byte) 0);
     }
 
-    private static void closeQuietly(AutoCloseable closeable) {
+    private static Exception close(AutoCloseable closeable) {
         try {
             closeable.close();
-        } catch (Exception ignored) {
-            // Safe cleanup path: do not surface driver messages that may contain connection data.
+            return null;
+        } catch (Exception failure) {
+            return failure;
         }
+    }
+
+    private static SQLException credentialFailure(RuntimeException original, Exception handleCleanup) {
+        DmDriverLoader.DriverIsolationException isolation = isolation(original, null, handleCleanup);
+        if (isolation != null) {
+            suppress(isolation, original);
+            suppressCleanup(isolation, handleCleanup, "JDBC driver cleanup failed");
+            throw isolation;
+        }
+        SQLException safe = new SQLException("Saved credential could not be read");
+        suppressSafeCleanupMarker(safe, handleCleanup, "JDBC driver cleanup failed");
+        return safe;
+    }
+
+    private static SQLException connectionFailure(
+            Exception original, Exception connectionCleanup, Exception handleCleanup) {
+        DmDriverLoader.DriverIsolationException isolation = isolation(original, connectionCleanup, handleCleanup);
+        if (isolation != null) {
+            suppress(isolation, original);
+            suppressCleanup(isolation, connectionCleanup, "Database connection cleanup failed");
+            suppressCleanup(isolation, handleCleanup, "JDBC driver cleanup failed");
+            throw isolation;
+        }
+        SQLException safe = original instanceof SQLException sql
+                ? new SQLException("Database connection failed", sql.getSQLState(), sql.getErrorCode())
+                : new SQLException("Database connection failed");
+        suppressSafeCleanupMarker(safe, connectionCleanup, "Database connection cleanup failed");
+        suppressSafeCleanupMarker(safe, handleCleanup, "JDBC driver cleanup failed");
+        return safe;
+    }
+
+    private static DmDriverLoader.DriverIsolationException isolation(
+            Exception original, Exception connectionCleanup, Exception handleCleanup) {
+        if (handleCleanup instanceof DmDriverLoader.DriverIsolationException failure) return failure;
+        if (connectionCleanup instanceof DmDriverLoader.DriverIsolationException failure) return failure;
+        if (original instanceof DmDriverLoader.DriverIsolationException failure) return failure;
+        return null;
+    }
+
+    private static void suppress(Throwable primary, Throwable secondary) {
+        if (secondary != null && secondary != primary) primary.addSuppressed(secondary);
+    }
+
+    private static void suppressCleanup(Throwable primary, Exception cleanup, String safeMessage) {
+        if (cleanup == null || cleanup == primary) return;
+        if (cleanup instanceof DmDriverLoader.DriverIsolationException) {
+            primary.addSuppressed(cleanup);
+        } else {
+            primary.addSuppressed(new SQLException(safeMessage));
+        }
+    }
+
+    private static void suppressSafeCleanupMarker(SQLException primary, Exception cleanup, String safeMessage) {
+        if (cleanup != null) primary.addSuppressed(new SQLException(safeMessage));
     }
 
     public record ManagedConnection(Connection connection, AutoCloseable driverHandle, String databaseFingerprint)

@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.Proxy;
+import java.net.URLClassLoader;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -79,6 +81,48 @@ class DmConnectionFactoryTest {
         assertEquals(1, thrown.getSuppressed().length);
     }
 
+    @Test void sanitizesOrdinaryDriverCleanupFailureAfterConnectFailure() throws Exception {
+        FakeDriverJar.Fixture fixture = FakeDriverJar.create(tempDir.resolve("ordinary-connect-cleanup"));
+        CredentialVault vault = CredentialVault.open(tempDir.resolve("ordinary-connect-secrets"));
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(
+                tempDir.resolve("ordinary-connect-config"), vault);
+        UUID id = UUID.randomUUID();
+        repository.save(new ConnectionProfile(id, "ordinary-connect", fixture.jar(), fixture.sha256(),
+                fixture.driverClass(), "jdbc:dm7://fixture.invalid:5236?forceFailure=true", "fixture-user", null,
+                7, 19, 31, 1000, 1024, false), Optional.empty());
+
+        SQLException failure = assertThrows(SQLException.class,
+                () -> new DmConnectionFactory(repository, vault, cleanupFailingLoader("ordinary-connect"))
+                        .open(id));
+
+        assertEquals("Database connection failed", failure.getMessage());
+        assertNull(failure.getCause());
+        assertEquals(1, failure.getSuppressed().length);
+        assertEquals("JDBC driver cleanup failed", failure.getSuppressed()[0].getMessage());
+    }
+
+    @Test void sanitizesOrdinaryDriverCleanupFailureAfterCredentialFailure() throws Exception {
+        FakeDriverJar.Fixture fixture = FakeDriverJar.create(tempDir.resolve("ordinary-credential-cleanup"));
+        SecretStore secrets = new SecretStore() {
+            @Override public void put(UUID id, char[] value) {}
+            @Override public Optional<char[]> read(UUID id) { throw new IllegalStateException("credential-secret"); }
+            @Override public void delete(UUID id) {}
+        };
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(
+                tempDir.resolve("ordinary-credential-config"), secrets);
+        UUID id = UUID.randomUUID();
+        repository.save(profile(id, "ordinary-credential", fixture, "url-secret"), Optional.empty());
+
+        SQLException failure = assertThrows(SQLException.class,
+                () -> new DmConnectionFactory(repository, secrets, cleanupFailingLoader("ordinary-credential"))
+                        .open(id));
+
+        assertEquals("Saved credential could not be read", failure.getMessage());
+        assertNull(failure.getCause());
+        assertEquals(1, failure.getSuppressed().length);
+        assertEquals("JDBC driver cleanup failed", failure.getSuppressed()[0].getMessage());
+    }
+
     private static ConnectionProfile profile(UUID id, String name, FakeDriverJar.Fixture fixture, String urlPassword) {
         return new ConnectionProfile(id, name, fixture.jar(), fixture.sha256(), fixture.driverClass(),
                 "jdbc:dm7://fixture.invalid:5236?dbname=TEST&dbPassword=" + urlPassword, "fixture-user", null,
@@ -87,5 +131,19 @@ class DmConnectionFactoryTest {
 
     private DmDriverLoader loader(String name) {
         return new DmDriverLoader(RuntimePaths.forTest(tempDir.resolve("plugin-data-" + name)));
+    }
+
+    private DmDriverLoader cleanupFailingLoader(String name) {
+        DmDriverLoader.LoaderFileOps fileOps = new DmDriverLoader.LoaderFileOps() {
+            @Override public void close(URLClassLoader loader) throws Exception {
+                loader.close();
+                throw new Exception("driver-close-secret");
+            }
+            @Override public void delete(Path stagedJar) throws Exception {
+                Files.deleteIfExists(stagedJar);
+                throw new Exception("driver-delete-secret");
+            }
+        };
+        return new DmDriverLoader(RuntimePaths.forTest(tempDir.resolve("plugin-data-" + name)), fileOps);
     }
 }

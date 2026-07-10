@@ -14,6 +14,14 @@ public final class DmDriverLoaderProcessProbe {
             runCloseProbe(args);
             return;
         }
+        if ("factory-connect-cleanup".equals(args[2])) {
+            runFactoryCleanupProbe(args, false);
+            return;
+        }
+        if ("factory-credential-cleanup".equals(args[2])) {
+            runFactoryCleanupProbe(args, true);
+            return;
+        }
         FakeDriverJar.Fixture fixture = FakeDriverJar.createThrowingDriverAction(Path.of(args[1]));
         FakeDriverJar.Fixture normal = FakeDriverJar.create(Path.of(args[1]).resolveSibling("normal-fixture"));
         RuntimePaths paths = RuntimePaths.forTest(Path.of(args[0]));
@@ -59,6 +67,44 @@ public final class DmDriverLoaderProcessProbe {
             System.exit(12);
         } catch (DmDriverLoader.DriverIsolationException expected) {
             if (!expected.restartRequired()) System.exit(13);
+        }
+        System.exit(0);
+    }
+
+    private static void runFactoryCleanupProbe(String[] args, boolean credentialFailure) throws Exception {
+        FakeDriverJar.Fixture failing = credentialFailure
+                ? FakeDriverJar.createDelayedCredentialRegistration(Path.of(args[1]))
+                : FakeDriverJar.createConnectRegisterThenFail(Path.of(args[1]));
+        FakeDriverJar.Fixture normal = FakeDriverJar.create(Path.of(args[1]).resolveSibling("normal-after-cleanup"));
+        RuntimePaths paths = RuntimePaths.forTest(Path.of(args[0]));
+        CredentialVault realVault = CredentialVault.open(paths.secretsDirectory());
+        SecretStore secrets = credentialFailure ? new SecretStore() {
+            @Override public void put(UUID id, char[] value) {}
+            @Override public Optional<char[]> read(UUID id) {
+                System.setProperty("dm7.fixture.armCredentialRegistration", "true");
+                long deadline = System.nanoTime() + 10_000_000_000L;
+                while (!"true".equals(System.getProperty("dm7.fixture.credentialRegistered"))
+                        && System.nanoTime() < deadline) Thread.onSpinWait();
+                throw new IllegalStateException("fixture credential failure");
+            }
+            @Override public void delete(UUID id) {}
+        } : realVault;
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(paths.configDirectory(), secrets);
+        UUID failingId = UUID.randomUUID();
+        UUID normalId = UUID.randomUUID();
+        repository.save(profile(failingId, "cleanup-failure", failing), Optional.empty());
+        repository.save(profile(normalId, "normal-after", normal), Optional.empty());
+        DmDriverLoader loader = new DmDriverLoader(paths);
+        DmConnectionFactory factory = new DmConnectionFactory(repository, secrets, loader);
+        ConnectionTestService service = new ConnectionTestService(factory, repository);
+        ConnectionTestService.ConnectionTestResult result = service.test(failingId);
+        if (result.success() || !result.restartRequired()) System.exit(20);
+        if (!result.warnings().equals(java.util.List.of("JDBC_DRIVER_ISOLATION_RESTART_REQUIRED"))) System.exit(21);
+        try {
+            factory.open(normalId);
+            System.exit(22);
+        } catch (DmDriverLoader.DriverIsolationException expected) {
+            if (!expected.restartRequired()) System.exit(23);
         }
         System.exit(0);
     }

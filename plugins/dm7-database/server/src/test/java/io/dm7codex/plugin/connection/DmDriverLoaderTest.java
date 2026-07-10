@@ -152,6 +152,14 @@ class DmDriverLoaderTest {
         assertEquals(0, runProbe("close"));
     }
 
+    @Test void factorySurfacesIsolationFromCleanupAfterConnectFailureInIndependentJvm() throws Exception {
+        assertEquals(0, runProbe("factory-connect-cleanup"));
+    }
+
+    @Test void factorySurfacesIsolationFromCleanupAfterCredentialFailureInIndependentJvm() throws Exception {
+        assertEquals(0, runProbe("factory-credential-cleanup"));
+    }
+
     private int runProbe(String mode) throws Exception {
         String executable = System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java";
         Path java = Path.of(System.getProperty("java.home"), "bin", executable);

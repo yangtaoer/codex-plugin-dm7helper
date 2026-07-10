@@ -171,6 +171,62 @@ final class FakeDriverJar {
                 """);
     }
 
+    static Fixture createConnectRegisterThenFail(Path directory) throws Exception {
+        return compile(directory, "fixture.ConnectRegisterThenFailDriver", """
+                package fixture;
+                import java.sql.*;
+                import java.util.Properties;
+                import java.util.logging.Logger;
+                public final class ConnectRegisterThenFailDriver implements Driver {
+                    public Connection connect(String u, Properties p) throws SQLException {
+                        DriverManager.registerDriver(new ConnectRegisterThenFailDriver(),
+                                () -> { throw new IllegalStateException("connect cleanup failure"); });
+                        throw new SQLException("fixture connect failure");
+                    }
+                    public boolean acceptsURL(String u) { return true; }
+                    public DriverPropertyInfo[] getPropertyInfo(String u, Properties p) { return new DriverPropertyInfo[0]; }
+                    public int getMajorVersion() { return 7; }
+                    public int getMinorVersion() { return 0; }
+                    public boolean jdbcCompliant() { return false; }
+                    public Logger getParentLogger() { return Logger.getGlobal(); }
+                }
+                """);
+    }
+
+    static Fixture createDelayedCredentialRegistration(Path directory) throws Exception {
+        return compile(directory, "fixture.DelayedCredentialDriver", """
+                package fixture;
+                import java.sql.*;
+                import java.util.Properties;
+                import java.util.logging.Logger;
+                public final class DelayedCredentialDriver implements Driver {
+                    static {
+                        Thread worker = new Thread(() -> {
+                            try {
+                                long deadline = System.nanoTime() + 10_000_000_000L;
+                                while (!"true".equals(System.getProperty("dm7.fixture.armCredentialRegistration"))
+                                        && System.nanoTime() < deadline) Thread.sleep(5);
+                                if ("true".equals(System.getProperty("dm7.fixture.armCredentialRegistration"))) {
+                                    DriverManager.registerDriver(new DelayedCredentialDriver(),
+                                            () -> { throw new IllegalStateException("credential cleanup failure"); });
+                                    System.setProperty("dm7.fixture.credentialRegistered", "true");
+                                }
+                            } catch (Exception e) { throw new IllegalStateException(e); }
+                        }, "credential-registration-fixture");
+                        worker.setDaemon(true);
+                        worker.start();
+                    }
+                    public Connection connect(String u, Properties p) { return null; }
+                    public boolean acceptsURL(String u) { return true; }
+                    public DriverPropertyInfo[] getPropertyInfo(String u, Properties p) { return new DriverPropertyInfo[0]; }
+                    public int getMajorVersion() { return 7; }
+                    public int getMinorVersion() { return 0; }
+                    public boolean jdbcCompliant() { return false; }
+                    public Logger getParentLogger() { return Logger.getGlobal(); }
+                }
+                """);
+    }
+
     private static Fixture compile(Path directory, String className, String source) throws Exception {
         Files.createDirectories(directory);
         Path sourceRoot = directory.resolve("src");
