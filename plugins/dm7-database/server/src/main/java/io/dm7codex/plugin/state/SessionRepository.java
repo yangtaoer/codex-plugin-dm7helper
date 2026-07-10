@@ -91,6 +91,173 @@ public final class SessionRepository {
         }
     }
 
+    public SessionState requireCurrentAtLeast(SessionState supplied) throws SQLException {
+        Objects.requireNonNull(supplied, "supplied");
+        requireTrustedSuppliedPath(supplied);
+        try (var connection = database.openConnection()) {
+            var current = findActive(connection, supplied.sessionId());
+            if (current == null || !sameImmutableSession(supplied, current)
+                    || current.version() < supplied.version()) {
+                throw new SQLException("Session state is not a trusted release generation");
+            }
+            return current;
+        }
+    }
+
+    public PendingReleaseOperation beginPending(
+            SessionState supplied,
+            String operationId,
+            String fingerprint,
+            ParsedStatement statement,
+            String replayableSql,
+            long fileOffset,
+            String blockSha256,
+            boolean bindingComment)
+            throws SQLException {
+        requireOperationId(operationId);
+        requireFingerprint(fingerprint);
+        Objects.requireNonNull(statement, "statement");
+        Objects.requireNonNull(replayableSql, "replayableSql");
+        try (var connection = database.openConnection()) {
+            StateDatabase.execute(connection, "BEGIN IMMEDIATE");
+            try {
+                var current = findActive(connection, supplied.sessionId());
+                if (current == null || !sameSessionGeneration(supplied, current)) {
+                    throw new SQLException("Session state is not the active release version");
+                }
+                var existing = findOperation(connection, operationId);
+                if (existing != null) {
+                    if (!existing.sessionId().equals(supplied.sessionId())) {
+                        throw new SQLException("Release operation identifier is already in use");
+                    }
+                    StateDatabase.execute(connection, "COMMIT");
+                    return existing;
+                }
+                var sequence = nextSequence(connection, supplied.sessionId());
+                try (var insert = connection.prepareStatement("""
+                        INSERT INTO statement_event(
+                            session_id, release_version, statement_index, sequence_number,
+                            statement_kind, status, phase, recorded, raw_sql, replayable_sql,
+                            operation_id, pending_fingerprint, file_offset, block_sha256,
+                            binding_comment, created_at
+                        ) VALUES (?, ?, ?, ?, ?, 'PENDING', 'COMMITTED', 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """)) {
+                    insert.setString(1, supplied.sessionId());
+                    insert.setInt(2, supplied.version());
+                    insert.setInt(3, statement.index());
+                    insert.setLong(4, sequence);
+                    insert.setString(5, statement.kind().name());
+                    insert.setString(6, statement.originalSql());
+                    insert.setString(7, replayableSql);
+                    insert.setString(8, operationId);
+                    insert.setString(9, fingerprint);
+                    insert.setLong(10, fileOffset);
+                    insert.setString(11, blockSha256);
+                    insert.setInt(12, bindingComment ? 1 : 0);
+                    insert.setString(13, Instant.now().toString());
+                    insert.executeUpdate();
+                }
+                var pending = findOperation(connection, operationId);
+                StateDatabase.execute(connection, "COMMIT");
+                return pending;
+            } catch (SQLException | RuntimeException failure) {
+                StateDatabase.rollback(connection, failure);
+                throw failure;
+            }
+        }
+    }
+
+    public Optional<PendingReleaseOperation> findOperation(String operationId)
+            throws SQLException {
+        requireOperationId(operationId);
+        try (var connection = database.openConnection()) {
+            return Optional.ofNullable(findOperation(connection, operationId));
+        }
+    }
+
+    public java.util.List<PendingReleaseOperation> findPending(String sessionId, int version)
+            throws SQLException {
+        try (var connection = database.openConnection();
+                var statement = connection.prepareStatement("""
+                        SELECT * FROM statement_event
+                        WHERE session_id = ? AND release_version = ?
+                          AND operation_id IS NOT NULL AND recorded = 0
+                        ORDER BY sequence_number
+                        """)) {
+            statement.setString(1, sessionId);
+            statement.setInt(2, version);
+            try (var rows = statement.executeQuery()) {
+                var pending = new java.util.ArrayList<PendingReleaseOperation>();
+                while (rows.next()) pending.add(readPending(rows));
+                return java.util.List.copyOf(pending);
+            }
+        }
+    }
+
+    public void finalizePending(PendingReleaseOperation pending) throws SQLException {
+        Objects.requireNonNull(pending, "pending");
+        try (var connection = database.openConnection()) {
+            StateDatabase.execute(connection, "BEGIN IMMEDIATE");
+            try {
+                var stored = findOperation(connection, pending.operationId());
+                if (stored == null) throw new SQLException("Pending release operation is missing");
+                if (stored.recorded()) {
+                    StateDatabase.execute(connection, "COMMIT");
+                    return;
+                }
+                var current = findActive(connection, pending.sessionId());
+                if (current == null || current.version() != pending.version()) {
+                    throw new SQLException("Pending release operation is not on the active version");
+                }
+                if (!UNBOUND.equals(current.databaseFingerprint())
+                        && !current.databaseFingerprint().equals(pending.fingerprint())) {
+                    throw new FingerprintMismatchException();
+                }
+                if (UNBOUND.equals(current.databaseFingerprint())) {
+                    try (var bind = connection.prepareStatement("""
+                            UPDATE release_version SET database_fingerprint = ?
+                            WHERE session_id = ? AND version = ? AND status = 'active'
+                              AND database_fingerprint = 'unbound'
+                            """)) {
+                        bind.setString(1, pending.fingerprint());
+                        bind.setString(2, pending.sessionId());
+                        bind.setInt(3, pending.version());
+                        if (bind.executeUpdate() != 1) {
+                            throw new SQLException("Unable to finalize release binding");
+                        }
+                    }
+                }
+                try (var updateEvent = connection.prepareStatement("""
+                        UPDATE statement_event SET recorded = 1, status = 'SUCCEEDED'
+                        WHERE operation_id = ? AND recorded = 0
+                        """)) {
+                    updateEvent.setString(1, pending.operationId());
+                    if (updateEvent.executeUpdate() != 1) {
+                        throw new SQLException("Unable to finalize release operation");
+                    }
+                }
+                try (var updateRelease = connection.prepareStatement("""
+                        UPDATE release_version
+                        SET statement_count = statement_count + 1,
+                            first_sequence = COALESCE(first_sequence, ?), last_sequence = ?
+                        WHERE session_id = ? AND version = ? AND status = 'active'
+                        """)) {
+                    updateRelease.setLong(1, pending.sequence());
+                    updateRelease.setLong(2, pending.sequence());
+                    updateRelease.setString(3, pending.sessionId());
+                    updateRelease.setInt(4, pending.version());
+                    if (updateRelease.executeUpdate() != 1) {
+                        throw new SQLException("Unable to finalize release metadata");
+                    }
+                }
+                StateDatabase.execute(connection, "COMMIT");
+            } catch (SQLException | RuntimeException failure) {
+                StateDatabase.rollback(connection, failure);
+                throw failure;
+            }
+        }
+    }
+
     public boolean bindOrAssertFingerprint(SessionState supplied, String fingerprint)
             throws SQLException {
         requireFingerprint(fingerprint);
@@ -274,6 +441,13 @@ public final class SessionRepository {
                 && supplied.createdAt().equals(current.createdAt());
     }
 
+    private static boolean sameImmutableSession(SessionState supplied, SessionState current) {
+        return supplied.sessionId().equals(current.sessionId())
+                && supplied.externalIdHash().equals(current.externalIdHash())
+                && supplied.activeSql().toAbsolutePath().normalize().equals(current.activeSql())
+                && supplied.createdAt().equals(current.createdAt());
+    }
+
     private static SessionState findActive(Connection connection, String sessionId)
             throws SQLException {
         try (var statement = connection.prepareStatement("""
@@ -306,6 +480,28 @@ public final class SessionRepository {
         }
     }
 
+    private static PendingReleaseOperation findOperation(Connection connection, String operationId)
+            throws SQLException {
+        try (var statement = connection.prepareStatement(
+                "SELECT * FROM statement_event WHERE operation_id = ?")) {
+            statement.setString(1, operationId);
+            try (var rows = statement.executeQuery()) {
+                return rows.next() ? readPending(rows) : null;
+            }
+        }
+    }
+
+    private static PendingReleaseOperation readPending(ResultSet rows) throws SQLException {
+        return new PendingReleaseOperation(
+                rows.getString("operation_id"), rows.getString("session_id"),
+                rows.getInt("release_version"), rows.getLong("sequence_number"),
+                rows.getInt("statement_index"), rows.getString("statement_kind"),
+                rows.getString("raw_sql"), rows.getString("replayable_sql"),
+                rows.getString("pending_fingerprint"), rows.getLong("file_offset"),
+                rows.getString("block_sha256"), rows.getInt("binding_comment") != 0,
+                rows.getInt("recorded") != 0);
+    }
+
     private static ReleaseVersion readReleaseVersion(ResultSet rows) throws SQLException {
         var first = rows.getLong("first_sequence");
         Long firstSequence = rows.wasNull() ? null : first;
@@ -324,6 +520,13 @@ public final class SessionRepository {
         if (fingerprint.isBlank() || UNBOUND.equals(fingerprint)
                 || !fingerprint.matches("[A-Za-z0-9._:-]{1,128}")) {
             throw new IllegalArgumentException("A bound database fingerprint is required");
+        }
+    }
+
+    private static void requireOperationId(String operationId) {
+        Objects.requireNonNull(operationId, "operationId");
+        if (operationId.isBlank() || operationId.length() > 512) {
+            throw new IllegalArgumentException("A stable release operation identifier is required");
         }
     }
 
@@ -449,6 +652,21 @@ public final class SessionRepository {
             String sessionId, int version, String databaseFingerprint, Path activeSql,
             String status, int statementCount, Long firstSequence, Long lastSequence,
             Instant createdAt) {}
+
+    public record PendingReleaseOperation(
+            String operationId,
+            String sessionId,
+            int version,
+            long sequence,
+            int statementIndex,
+            String statementKind,
+            String originalSql,
+            String replayableSql,
+            String fingerprint,
+            long fileOffset,
+            String blockSha256,
+            boolean bindingComment,
+            boolean recorded) {}
 
     public static final class FingerprintMismatchException extends SQLException {
         public FingerprintMismatchException() {

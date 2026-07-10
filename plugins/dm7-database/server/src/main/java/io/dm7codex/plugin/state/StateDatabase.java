@@ -188,6 +188,13 @@ public final class StateDatabase implements AutoCloseable {
                     exclusion_reason TEXT,
                     raw_sql TEXT NOT NULL,
                     replayable_sql TEXT,
+                    operation_id TEXT,
+                    pending_fingerprint TEXT,
+                    file_offset INTEGER CHECK (file_offset IS NULL OR file_offset >= 0),
+                    block_sha256 TEXT,
+                    binding_comment INTEGER CHECK (
+                        binding_comment IS NULL OR binding_comment IN (0, 1)
+                    ),
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (execution_id, session_id)
                         REFERENCES execution(execution_id, session_id),
@@ -260,6 +267,10 @@ public final class StateDatabase implements AutoCloseable {
                 CREATE UNIQUE INDEX statement_event_execution_index
                 ON statement_event(execution_id, statement_index)
                 WHERE execution_id IS NOT NULL
+                """);
+        execute(connection, """
+                CREATE UNIQUE INDEX statement_event_operation_id
+                ON statement_event(operation_id) WHERE operation_id IS NOT NULL
                 """);
         execute(connection, """
                 CREATE INDEX statement_event_by_release_sequence

@@ -15,6 +15,7 @@ import java.nio.file.attribute.AclEntryPermission;
 import java.nio.file.attribute.AclEntryType;
 import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.time.Duration;
 import java.util.EnumSet;
 import java.util.Objects;
@@ -52,8 +53,14 @@ public final class SessionFileLock implements AutoCloseable {
         if (Files.isSymbolicLink(lockPath)) {
             throw new IllegalStateException("Session release lock path is not trusted");
         }
-        var channel = FileChannel.open(lockPath,
-                StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+        final FileChannel channel;
+        try {
+            channel = FileChannel.open(lockPath,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                    LinkOption.NOFOLLOW_LINKS);
+        } catch (IOException failure) {
+            throw new IOException("Session release lock could not be opened");
+        }
         try {
             secureFile(lockPath);
             var deadline = System.nanoTime() + timeout.toNanos();
@@ -98,6 +105,19 @@ public final class SessionFileLock implements AutoCloseable {
                 || Files.isSymbolicLink(expectedActive)) {
             throw new IllegalStateException("Session release path is not trusted");
         }
+        if (Files.exists(expectedDirectory)) {
+            try {
+                var realPluginData = paths.pluginData().toRealPath();
+                var realSessionsRoot = sessionsRoot.toRealPath();
+                var realSessionDirectory = expectedDirectory.toRealPath();
+                if (!realSessionsRoot.startsWith(realPluginData)
+                        || !realSessionDirectory.startsWith(realSessionsRoot)) {
+                    throw new IllegalStateException("Session release path is not trusted");
+                }
+            } catch (IOException invalidRealPath) {
+                throw new IllegalStateException("Session release path is not trusted");
+            }
+        }
         return expectedDirectory;
     }
 
@@ -117,18 +137,58 @@ public final class SessionFileLock implements AutoCloseable {
         if (posix != null) {
             Files.setPosixFilePermissions(path,
                     directory ? OWNER_DIRECTORY_PERMISSIONS : OWNER_FILE_PERMISSIONS);
+            if (!Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS)
+                    .equals(directory ? OWNER_DIRECTORY_PERMISSIONS : OWNER_FILE_PERMISSIONS)) {
+                throw new IOException("Owner-only path permissions could not be verified");
+            }
             return;
         }
         var acl = Files.getFileAttributeView(path, AclFileAttributeView.class,
                 LinkOption.NOFOLLOW_LINKS);
         if (acl != null) {
-            var owner = acl.getOwner();
-            var permissions = EnumSet.allOf(AclEntryPermission.class);
-            acl.setAcl(java.util.List.of(AclEntry.newBuilder()
+            UserPrincipal processPrincipal;
+            try {
+                processPrincipal = path.getFileSystem().getUserPrincipalLookupService()
+                        .lookupPrincipalByName(System.getProperty("user.name"));
+            } catch (java.nio.file.attribute.UserPrincipalNotFoundException missing) {
+                throw new IOException("Current process principal could not be resolved");
+            }
+            var permissions = directory
+                    ? EnumSet.of(
+                            AclEntryPermission.LIST_DIRECTORY,
+                            AclEntryPermission.ADD_FILE,
+                            AclEntryPermission.ADD_SUBDIRECTORY,
+                            AclEntryPermission.READ_NAMED_ATTRS,
+                            AclEntryPermission.WRITE_NAMED_ATTRS,
+                            AclEntryPermission.DELETE_CHILD,
+                            AclEntryPermission.EXECUTE,
+                            AclEntryPermission.READ_ATTRIBUTES,
+                            AclEntryPermission.WRITE_ATTRIBUTES,
+                            AclEntryPermission.READ_ACL,
+                            AclEntryPermission.WRITE_ACL,
+                            AclEntryPermission.DELETE,
+                            AclEntryPermission.SYNCHRONIZE)
+                    : EnumSet.of(
+                            AclEntryPermission.READ_DATA,
+                            AclEntryPermission.WRITE_DATA,
+                            AclEntryPermission.APPEND_DATA,
+                            AclEntryPermission.READ_NAMED_ATTRS,
+                            AclEntryPermission.WRITE_NAMED_ATTRS,
+                            AclEntryPermission.DELETE,
+                            AclEntryPermission.READ_ATTRIBUTES,
+                            AclEntryPermission.WRITE_ATTRIBUTES,
+                            AclEntryPermission.READ_ACL,
+                            AclEntryPermission.WRITE_ACL,
+                            AclEntryPermission.SYNCHRONIZE);
+            var expected = AclEntry.newBuilder()
                     .setType(AclEntryType.ALLOW)
-                    .setPrincipal(owner)
+                    .setPrincipal(processPrincipal)
                     .setPermissions(permissions)
-                    .build()));
+                    .build();
+            acl.setAcl(java.util.List.of(expected));
+            if (!acl.getAcl().equals(java.util.List.of(expected))) {
+                throw new IOException("Owner-only ACL could not be verified");
+            }
         }
     }
 

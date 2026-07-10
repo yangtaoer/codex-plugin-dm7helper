@@ -17,6 +17,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.LinkOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.SQLException;
@@ -32,6 +34,8 @@ import java.util.Optional;
 public final class ReleaseExportService {
     private static final DateTimeFormatter FILE_TIME =
             DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC);
+    private static volatile DirectoryForceCapability directoryForceCapability =
+            DirectoryForceCapability.UNKNOWN;
 
     private final RuntimePaths paths;
     private final SessionRepository sessions;
@@ -80,11 +84,16 @@ public final class ReleaseExportService {
     private ExportArtifact exportLocked(SessionState session) throws IOException, SQLException {
         var release = sessions.findVersion(session.sessionId(), session.version());
         validateVersionPath(session, release);
+        if ("active".equals(release.status())) {
+            var current = sessions.requireCurrentAtLeast(session);
+            ReleaseLogService.reconcilePending(paths, sessions, current);
+            release = sessions.findVersion(session.sessionId(), session.version());
+        }
         var sessionDirectory = SessionFileLock.trustedSessionDirectory(paths, session);
         var sealedDirectory = sessionDirectory.resolve("sealed");
         var exportDirectory = trustedExportDirectory(session);
-        SessionFileLock.secureDirectory(sealedDirectory);
-        SessionFileLock.secureDirectory(exportDirectory);
+        secureContainedDirectory(sealedDirectory);
+        secureContainedDirectory(exportDirectory);
         var sealedPath = sealedDirectory.resolve(
                 ReleaseLogService.versionText(release.version()) + ".sql");
 
@@ -152,6 +161,7 @@ public final class ReleaseExportService {
         if (!Files.exists(sealed.sealedSourcePath())) {
             throw new IOException("Sealed release source is unavailable");
         }
+        requireRegularNonLink(sealed.sealedSourcePath());
         if (!sha256(sealed.sealedSourcePath()).equals(sealed.sealedSourceSha256())) {
             throw new IOException("Sealed release source failed integrity verification");
         }
@@ -159,14 +169,17 @@ public final class ReleaseExportService {
         var expectedBytes = artifactBytes(session, release, sealed);
         if (!Files.exists(finalPath)) {
             var temporary = finalPath.resolveSibling("." + finalPath.getFileName() + ".tmp");
-            writeAndForce(temporary, expectedBytes);
+            writeNewOrVerify(temporary, expectedBytes);
             faultInjector.after(ExportStage.AFTER_EXPORT_TEMP_FORCED);
             atomicMove(temporary, finalPath);
             forceDirectory(finalPath.getParent());
             SessionFileLock.secureFile(finalPath);
             faultInjector.after(ExportStage.AFTER_ARTIFACT_MOVE);
-        } else if (!java.util.Arrays.equals(expectedBytes, Files.readAllBytes(finalPath))) {
+        } else {
+            requireRegularNonLink(finalPath);
+            if (!java.util.Arrays.equals(expectedBytes, Files.readAllBytes(finalPath))) {
             throw new IOException("Existing release artifact failed integrity verification");
+            }
         }
 
         var artifactSha = sha256(finalPath);
@@ -198,26 +211,18 @@ public final class ReleaseExportService {
     private void ensureNextActive(SessionState session, int nextVersion)
             throws IOException, SQLException {
         var existingActive = sessions.findActive(session.sessionId());
+        var header = activeHeader(nextVersion);
         if (existingActive.isPresent()) {
             if (existingActive.get().version() != nextVersion
                     || !existingActive.get().activeSql().equals(session.activeSql())) {
                 throw new SQLException("Unexpected active release version during recovery");
             }
+            ensureActiveFile(session.activeSql(), nextVersion, header);
             return;
         }
 
-        var header = activeHeader(nextVersion);
-        if (!Files.exists(session.activeSql())) {
-            var temporary = session.activeSql().resolveSibling(
-                    ".active-" + ReleaseLogService.versionText(nextVersion) + ".tmp");
-            writeAndForce(temporary, header.getBytes(UTF_8));
-            atomicMove(temporary, session.activeSql());
-            forceDirectory(session.activeSql().getParent());
-            SessionFileLock.secureFile(session.activeSql());
-            faultInjector.after(ExportStage.AFTER_NEXT_ACTIVE_CREATED);
-        } else if (!Files.readString(session.activeSql(), UTF_8).equals(header)) {
-            throw new IOException("Recovered active release header is invalid");
-        }
+        ensureActiveFile(session.activeSql(), nextVersion, header);
+        faultInjector.after(ExportStage.AFTER_NEXT_ACTIVE_CREATED);
         sessions.createNextActiveVersion(
                 session.sessionId(), session.externalIdHash(), nextVersion,
                 session.activeSql(), clock.instant());
@@ -231,12 +236,32 @@ public final class ReleaseExportService {
                 || !directory.getParent().equals(root) || Files.isSymbolicLink(directory)) {
             throw new IllegalStateException("Release export path is not trusted");
         }
-        try {
-            SessionFileLock.secureDirectory(root);
-        } catch (IOException failure) {
-            throw new IllegalStateException("Release export directory cannot be secured", failure);
-        }
         return directory;
+    }
+
+    private void secureContainedDirectory(Path directory) throws IOException {
+        var pluginData = paths.pluginData().toAbsolutePath().normalize();
+        var normalized = directory.toAbsolutePath().normalize();
+        if (!normalized.startsWith(pluginData)) {
+            throw new IOException("Release directory escaped plugin data");
+        }
+        var relative = pluginData.relativize(normalized);
+        var cursor = pluginData;
+        if (!Files.exists(cursor)) Files.createDirectories(cursor);
+        for (var part : relative) {
+            cursor = cursor.resolve(part);
+            if (Files.isSymbolicLink(cursor)) {
+                throw new IOException("Release directory contains a symbolic link");
+            }
+            if (!Files.exists(cursor)) Files.createDirectory(cursor);
+            if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("Release path is not a directory");
+            }
+            SessionFileLock.secureDirectory(cursor);
+        }
+        if (!normalized.toRealPath().startsWith(pluginData.toRealPath())) {
+            throw new IOException("Release directory escaped plugin data");
+        }
     }
 
     private static void validateVersionPath(SessionState session, ReleaseVersion release) {
@@ -309,14 +334,22 @@ public final class ReleaseExportService {
     }
 
     private static void forceAndClose(Path path) throws IOException {
+        requireRegularNonLink(path);
         try (var channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
             channel.force(true);
         }
     }
 
-    private static void writeAndForce(Path path, byte[] bytes) throws IOException {
-        try (var channel = FileChannel.open(path, StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+    private static void writeNewOrVerify(Path path, byte[] bytes) throws IOException {
+        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            requireRegularNonLink(path);
+            if (!java.util.Arrays.equals(bytes, Files.readAllBytes(path))) {
+                throw new IOException("Existing release temporary file failed integrity verification");
+            }
+            return;
+        }
+        try (var channel = FileChannel.open(path, StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
             var buffer = ByteBuffer.wrap(bytes);
             while (buffer.hasRemaining()) channel.write(buffer);
             channel.force(true);
@@ -325,15 +358,68 @@ public final class ReleaseExportService {
     }
 
     private static void atomicMove(Path source, Path target) throws IOException {
+        requireRegularNonLink(source);
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Atomic release target already exists");
+        }
+        if (!Files.getFileStore(source).equals(Files.getFileStore(target.getParent()))) {
+            throw new IOException("Atomic release move crossed file systems");
+        }
+        var before = Files.readAttributes(source, BasicFileAttributes.class,
+                LinkOption.NOFOLLOW_LINKS).fileKey();
         Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
+        requireRegularNonLink(target);
+        var after = Files.readAttributes(target, BasicFileAttributes.class,
+                LinkOption.NOFOLLOW_LINKS).fileKey();
+        if (before != null && after != null && !before.equals(after)) {
+            throw new IOException("Atomic release move changed file identity");
+        }
     }
 
-    private static void forceDirectory(Path directory) {
+    private void ensureActiveFile(Path active, int version, String header) throws IOException {
+        if (!Files.exists(active, LinkOption.NOFOLLOW_LINKS)) {
+            var temporary = active.resolveSibling(
+                    ".active-" + ReleaseLogService.versionText(version) + ".tmp");
+            writeNewOrVerify(temporary, header.getBytes(UTF_8));
+            atomicMove(temporary, active);
+            forceDirectory(active.getParent());
+            SessionFileLock.secureFile(active);
+        } else {
+            requireRegularNonLink(active);
+            if (!Files.readString(active, UTF_8).equals(header)) {
+                throw new IOException("Recovered active release header is invalid");
+            }
+        }
+    }
+
+    private static void requireRegularNonLink(Path path) throws IOException {
+        if (Files.isSymbolicLink(path)
+                || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Release path is not a regular file");
+        }
+    }
+
+    private static void forceDirectory(Path directory) throws IOException {
+        if (directoryForceCapability == DirectoryForceCapability.UNSUPPORTED) return;
         try (var channel = FileChannel.open(directory, StandardOpenOption.READ)) {
             channel.force(true);
-        } catch (IOException | UnsupportedOperationException bestEffortOnly) {
-            // Some Windows and network file systems cannot open directories as channels.
+            directoryForceCapability = DirectoryForceCapability.SUPPORTED;
+        } catch (UnsupportedOperationException unsupported) {
+            directoryForceCapability = DirectoryForceCapability.UNSUPPORTED;
+        } catch (java.nio.file.AccessDeniedException windowsUnsupported) {
+            if (System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT)
+                    .contains("windows")) {
+                directoryForceCapability = DirectoryForceCapability.UNSUPPORTED;
+            } else {
+                throw windowsUnsupported;
+            }
         }
+    }
+
+    private enum DirectoryForceCapability {
+        UNKNOWN,
+        SUPPORTED,
+        UNSUPPORTED
     }
 
     private static String sha256(Path path) throws IOException {

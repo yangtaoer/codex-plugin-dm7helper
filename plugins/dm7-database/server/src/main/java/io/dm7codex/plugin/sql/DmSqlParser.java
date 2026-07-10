@@ -30,6 +30,103 @@ public final class DmSqlParser {
         return List.copyOf(parsed);
     }
 
+    public static String ensureSingleTopLevelTerminator(String sql) {
+        Objects.requireNonNull(sql, "sql");
+        var normalized = sql.replace("\r\n", "\n").replace('\r', '\n');
+        int significant = lastSignificantOutsideComment(normalized);
+        if (significant < 0) return ";\n";
+        int trailingEnd = normalized.length();
+        while (trailingEnd > significant + 1
+                && Character.isWhitespace(normalized.charAt(trailingEnd - 1))) trailingEnd--;
+        boolean hasDelimiter = normalized.charAt(significant) == ';'
+                && isTopLevelDelimiter(normalized, significant);
+        var core = normalized.substring(0, hasDelimiter ? significant : significant + 1);
+        var trailing = normalized.substring(significant + 1, trailingEnd);
+        return core + ";" + trailing + "\n";
+    }
+
+    private static int lastSignificantOutsideComment(String sql) {
+        LexState state = LexState.NORMAL;
+        int blockDepth = 0;
+        int last = -1;
+        for (int i = 0; i < sql.length(); i++) {
+            char value = sql.charAt(i);
+            char next = i + 1 < sql.length() ? sql.charAt(i + 1) : '\0';
+            switch (state) {
+                case NORMAL, PROCEDURAL_BLOCK -> {
+                    if (value == '-' && next == '-') { state = LexState.LINE_COMMENT; i++; }
+                    else if (value == '/' && next == '*') {
+                        state = LexState.BLOCK_COMMENT; blockDepth = 1; i++;
+                    } else {
+                        if (!Character.isWhitespace(value)) last = i;
+                        if (value == '\'') state = LexState.SINGLE_QUOTE;
+                        else if (value == '"') state = LexState.DOUBLE_QUOTE;
+                    }
+                }
+                case SINGLE_QUOTE -> {
+                    if (!Character.isWhitespace(value)) last = i;
+                    if (value == '\'' && next == '\'') last = ++i;
+                    else if (value == '\'') state = LexState.NORMAL;
+                }
+                case DOUBLE_QUOTE -> {
+                    if (!Character.isWhitespace(value)) last = i;
+                    if (value == '"' && next == '"') last = ++i;
+                    else if (value == '"') state = LexState.NORMAL;
+                }
+                case LINE_COMMENT -> {
+                    if (value == '\n') state = LexState.NORMAL;
+                }
+                case BLOCK_COMMENT -> {
+                    if (value == '/' && next == '*') { blockDepth++; i++; }
+                    else if (value == '*' && next == '/') {
+                        blockDepth--; i++;
+                        if (blockDepth == 0) state = LexState.NORMAL;
+                    }
+                }
+            }
+        }
+        return last;
+    }
+
+    private static boolean isTopLevelDelimiter(String sql, int delimiter) {
+        LexState state = LexState.NORMAL;
+        int blockDepth = 0;
+        int parentheses = 0;
+        for (int i = 0; i <= delimiter; i++) {
+            char value = sql.charAt(i);
+            char next = i + 1 < sql.length() ? sql.charAt(i + 1) : '\0';
+            switch (state) {
+                case NORMAL, PROCEDURAL_BLOCK -> {
+                    if (value == '\'') state = LexState.SINGLE_QUOTE;
+                    else if (value == '"') state = LexState.DOUBLE_QUOTE;
+                    else if (value == '-' && next == '-') { state = LexState.LINE_COMMENT; i++; }
+                    else if (value == '/' && next == '*') {
+                        state = LexState.BLOCK_COMMENT; blockDepth = 1; i++;
+                    } else if (value == '(') parentheses++;
+                    else if (value == ')' && parentheses > 0) parentheses--;
+                    else if (i == delimiter) return value == ';' && parentheses == 0;
+                }
+                case SINGLE_QUOTE -> {
+                    if (value == '\'' && next == '\'') i++;
+                    else if (value == '\'') state = LexState.NORMAL;
+                }
+                case DOUBLE_QUOTE -> {
+                    if (value == '"' && next == '"') i++;
+                    else if (value == '"') state = LexState.NORMAL;
+                }
+                case LINE_COMMENT -> { if (value == '\n') state = LexState.NORMAL; }
+                case BLOCK_COMMENT -> {
+                    if (value == '/' && next == '*') { blockDepth++; i++; }
+                    else if (value == '*' && next == '/') {
+                        blockDepth--; i++;
+                        if (blockDepth == 0) state = LexState.NORMAL;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     static List<String> lexicalTokens(String sql, boolean includeStringMarkers) {
         List<String> tokens = new ArrayList<>();
         LexState state = LexState.NORMAL;

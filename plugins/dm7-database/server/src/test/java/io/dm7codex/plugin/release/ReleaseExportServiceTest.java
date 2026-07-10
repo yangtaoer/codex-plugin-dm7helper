@@ -131,6 +131,72 @@ public class ReleaseExportServiceTest {
     }
 
     @Test
+    void oldSessionStateRebasesToV002AfterExportCompletedBeforeReservation() throws Exception {
+        try (var fixture = fixture("old-state-rebase")) {
+            fixture.exports.export(fixture.session);
+
+            try (var reservation = fixture.logs.reserveWritable(
+                    fixture.session, "db-a", SqlPurpose.MIGRATION)) {
+                fixture.logs.recordCommitted(reservation, "old-state-operation",
+                        parsed("CREATE TABLE V2_TABLE(ID INT)"),
+                        "CREATE TABLE V2_TABLE(ID INT)");
+            }
+
+            var active = fixture.sessions.findActive(fixture.session.sessionId()).orElseThrow();
+            assertEquals(2, active.version());
+            assertTrue(Files.readString(active.activeSql(), UTF_8)
+                    .contains("CREATE TABLE V2_TABLE(ID INT);"));
+        }
+    }
+
+    @Test
+    void heldWriteReservationBlocksExportUntilDatabaseOutcomeAndLoggingFinish() throws Exception {
+        try (var fixture = fixture("reservation-blocks-export")) {
+            var reservation = fixture.logs.reserveWritable(
+                    fixture.session, "db-a", SqlPurpose.MIGRATION);
+            var pool = Executors.newSingleThreadExecutor();
+            try {
+                var exporting = pool.submit(() -> fixture.exports.export(fixture.session));
+                Thread.sleep(100);
+                assertFalse(exporting.isDone());
+                fixture.logs.recordCommitted(reservation, "held-operation",
+                        parsed("CREATE TABLE A(ID INT)"), "CREATE TABLE A(ID INT)");
+                reservation.close();
+                var artifact = exporting.get(2, java.util.concurrent.TimeUnit.SECONDS);
+                assertTrue(Files.readString(artifact.path(), UTF_8)
+                        .contains("CREATE TABLE A(ID INT);"));
+            } finally {
+                reservation.close();
+                pool.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    void exportReconcilesPartialCommittedJournalBeforeSealing() throws Exception {
+        try (var fixture = fixture("export-reconcile-pending")) {
+            var failing = new ReleaseLogService(
+                    fixture.paths, fixture.sessions, Duration.ofSeconds(2),
+                    new io.dm7codex.plugin.sql.SqlSecurityPolicy(), stage -> {
+                        if (stage == ReleaseLogService.RecordStage.AFTER_PARTIAL_APPEND) {
+                            throw new java.io.IOException("injected");
+                        }
+                    });
+            org.junit.jupiter.api.Assertions.assertThrows(java.io.IOException.class,
+                    () -> failing.recordCommitted(
+                            fixture.session, "db-a", SqlPurpose.MIGRATION,
+                            "export-pending-operation", parsed("CREATE TABLE A(ID INT)"),
+                            "CREATE TABLE A(ID INT)"));
+
+            var artifact = fixture.exports.export(fixture.session);
+
+            assertEquals(1, artifact.statementCount());
+            assertTrue(Files.readString(artifact.path(), UTF_8)
+                    .contains("CREATE TABLE A(ID INT);"));
+        }
+    }
+
+    @Test
     void sealedButUnexportedAndEveryInjectedStageRecoverIdempotently() throws Exception {
         for (var stage : ExportStage.values()) {
             try (var fixture = fixture("recover-" + stage.name())) {
@@ -246,6 +312,97 @@ public class ReleaseExportServiceTest {
     }
 
     @Test
+    void sealedDirectorySymlinkCannotRedirectRotationOutsidePluginData() throws Exception {
+        try (var fixture = fixture("sealed-symlink")) {
+            var outside = tempDir.resolve("sealed-outside");
+            Files.createDirectories(outside);
+            var sentinel = outside.resolve("sentinel.txt");
+            Files.writeString(sentinel, "must survive", UTF_8);
+            var sealed = fixture.session.activeSql().getParent().resolve("sealed");
+            assumeSymlink(sealed, outside);
+
+            org.junit.jupiter.api.Assertions.assertThrows(Exception.class,
+                    () -> fixture.exports.export(fixture.session));
+            assertEquals("must survive", Files.readString(sentinel, UTF_8));
+            assertEquals(1, Files.list(outside).count());
+        }
+    }
+
+    @Test
+    void exportDirectoryJunctionCannotRedirectArtifactOutsidePluginData() throws Exception {
+        try (var fixture = fixture("export-junction")) {
+            var outside = tempDir.resolve("export-outside");
+            Files.createDirectories(outside);
+            var sentinel = outside.resolve("sentinel.txt");
+            Files.writeString(sentinel, "must survive", UTF_8);
+            Files.createDirectories(fixture.paths.exportsDirectory());
+            var exportDirectory = fixture.paths.exportsDirectory()
+                    .resolve(fixture.session.externalIdHash());
+            assumeSymlink(exportDirectory, outside);
+
+            org.junit.jupiter.api.Assertions.assertThrows(Exception.class,
+                    () -> fixture.exports.export(fixture.session));
+            assertEquals("must survive", Files.readString(sentinel, UTF_8));
+            try (var files = Files.list(outside)) {
+                assertEquals(1, files.count());
+            }
+        }
+    }
+
+    @Test
+    void unknownExportTempSymlinkFailsClosedWithoutTouchingTarget() throws Exception {
+        try (var fixture = fixture("temp-symlink")) {
+            var exportDir = fixture.paths.exportsDirectory()
+                    .resolve(fixture.session.externalIdHash());
+            Files.createDirectories(exportDir);
+            var safeShort = fixture.session.sessionId().replaceAll("[^A-Za-z0-9]", "");
+            safeShort = safeShort.substring(0, Math.min(12, safeShort.length()));
+            var temporary = exportDir.resolve(".dm7-" + safeShort
+                    + "-v001-20260711-010203.sql.tmp");
+            var outside = tempDir.resolve("temp-target.sql");
+            Files.writeString(outside, "must survive", UTF_8);
+            assumeSymlink(temporary, outside);
+
+            org.junit.jupiter.api.Assertions.assertThrows(Exception.class,
+                    () -> fixture.exports.export(fixture.session));
+            assertEquals("must survive", Files.readString(outside, UTF_8));
+        }
+    }
+
+    @Test
+    void existingNextActiveDatabaseStateRepairsMissingFileAndRejectsTamperedFile()
+            throws Exception {
+        try (var fixture = fixture("next-active-repair")) {
+            var first = fixture.exports.export(fixture.session);
+            Files.delete(fixture.session.activeSql());
+
+            var recovered = fixture.exports.export(fixture.session);
+            assertEquals(first.path(), recovered.path());
+            assertTrue(Files.readString(fixture.session.activeSql(), UTF_8)
+                    .contains("version: v002"));
+
+            Files.writeString(fixture.session.activeSql(), "tampered\n", UTF_8);
+            org.junit.jupiter.api.Assertions.assertThrows(Exception.class,
+                    () -> fixture.exports.export(fixture.session));
+        }
+    }
+
+    @Test
+    void existingNextActiveLinkFailsClosedWithoutTouchingExternalTarget() throws Exception {
+        try (var fixture = fixture("next-active-link")) {
+            fixture.exports.export(fixture.session);
+            Files.delete(fixture.session.activeSql());
+            var outside = tempDir.resolve("external-active.sql");
+            Files.writeString(outside, "must survive", UTF_8);
+            assumeSymlink(fixture.session.activeSql(), outside);
+
+            org.junit.jupiter.api.Assertions.assertThrows(Exception.class,
+                    () -> fixture.exports.export(fixture.session));
+            assertEquals("must survive", Files.readString(outside, UTF_8));
+        }
+    }
+
+    @Test
     void independentJvmAbnormalExitAfterSealMoveIsRecovered() throws Exception {
         var pluginData = tempDir.resolve("jvm-recovery").toAbsolutePath();
         var externalId = "thread-jvm-recovery";
@@ -318,6 +475,33 @@ public class ReleaseExportServiceTest {
                         stage.name())
                 .redirectErrorStream(true)
                 .start();
+    }
+
+    private static void assumeSymlink(Path link, Path target) throws Exception {
+        try {
+            Files.createSymbolicLink(link, target);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException denied) {
+            if (System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT)
+                    .contains("windows") && Files.isDirectory(target)) {
+                var junction = new ProcessBuilder(
+                        "cmd.exe", "/c", "mklink", "/J",
+                        link.toString(), target.toString())
+                        .redirectErrorStream(true)
+                        .start();
+                if (junction.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                        && junction.exitValue() == 0 && Files.exists(link)) return;
+            }
+            if (Files.isRegularFile(target)) {
+                try {
+                    Files.createLink(link, target);
+                    return;
+                } catch (UnsupportedOperationException | java.nio.file.FileSystemException ignored) {
+                    // Fall through to an explicit skip on filesystems without either capability.
+                }
+            }
+            org.junit.jupiter.api.Assumptions.abort(
+                    "symbolic links and junctions unavailable: " + denied.getClass());
+        }
     }
 
     private static String processOutput(Process process) throws Exception {
