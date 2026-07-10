@@ -11,9 +11,9 @@ if ([string]::IsNullOrWhiteSpace($sessionId)) {
 
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
 try {
-  $sessionHash = [Convert]::ToHexString($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($sessionId))).ToLowerInvariant()
+  $sessionHash = -join ($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($sessionId)) | ForEach-Object { $_.ToString('x2') })
   $threadValue = if ($env:CODEX_THREAD_ID) { $env:CODEX_THREAD_ID } else { 'unavailable' }
-  $threadHash = [Convert]::ToHexString($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($threadValue))).ToLowerInvariant()
+  $threadHash = -join ($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($threadValue)) | ForEach-Object { $_.ToString('x2') })
 } finally {
   $sha256.Dispose()
 }
@@ -26,4 +26,4 @@ $context = [ordered]@{
   processThreadHash = $threadHash
 }
 $contextPath = Join-Path $contextDirectory "$sessionHash.json"
-[IO.File]::WriteAllText($contextPath, ($context | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText($contextPath, ($context | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
