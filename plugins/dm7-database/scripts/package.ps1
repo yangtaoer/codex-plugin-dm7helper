@@ -57,12 +57,17 @@ try {
   if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
   New-Item -ItemType Directory -Force -Path $stagePlugin | Out-Null
 
+  $runtimeJar = Join-Path $pluginRoot 'lib\dm7-codex-plugin.jar'
+  $extraLibJars = Get-ChildItem -LiteralPath (Join-Path $pluginRoot 'lib') -Recurse -File -Filter '*.jar' |
+    Where-Object { $_.FullName -ne $runtimeJar }
+  if ($extraLibJars) { throw 'Package contains forbidden files' }
+
   $runtimeWhitelist = @(
     '.codex-plugin',
     '.mcp.json',
     'assets',
     'hooks',
-    'lib',
+    'lib\dm7-codex-plugin.jar',
     'skills',
     'README.md',
     'LICENSE',
@@ -71,7 +76,9 @@ try {
   foreach ($relative in $runtimeWhitelist) {
     $source = Join-Path $pluginRoot $relative
     if (Test-Path -LiteralPath $source) {
-      Copy-Item -LiteralPath $source -Destination (Join-Path $stagePlugin $relative) -Recurse -Force
+      $destination = Join-Path $stagePlugin $relative
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+      Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
     }
   }
 
@@ -83,7 +90,8 @@ try {
 
   $forbiddenFiles = Get-ChildItem -LiteralPath $stagePlugin -Recurse -File | Where-Object {
     $_.Name -like 'Dm*Jdbc*.jar' -or
-    $_.Name -like '.env*' -or
+    ($_.Name -like '*.jar' -and $_.FullName -ne (Join-Path $stagePlugin 'lib\dm7-codex-plugin.jar')) -or
+    $_.Name -like '*.env*' -or
     $_.Name -in @('vault.json', 'master.key')
   }
   if ($forbiddenFiles) { throw 'Package contains forbidden files' }

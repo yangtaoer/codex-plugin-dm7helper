@@ -212,6 +212,34 @@ class PluginScriptsTest(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("Package contains forbidden files", result.stderr)
 
+    def test_package_rejects_an_additional_renamed_jar(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_path = Path(temporary)
+            _, plugin = self.make_package_fixture(temporary_path)
+            (plugin / "lib" / "driver.jar").write_bytes(b"renamed driver")
+
+            result = self.run_powershell(
+                plugin / "scripts" / "package.ps1",
+                cwd=temporary_path,
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("Package contains forbidden files", result.stderr)
+
+    def test_package_rejects_env_files_outside_dot_prefix(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_path = Path(temporary)
+            _, plugin = self.make_package_fixture(temporary_path)
+            (plugin / "assets" / "prod.env").write_text("fixture", encoding="utf-8")
+
+            result = self.run_powershell(
+                plugin / "scripts" / "package.ps1",
+                cwd=temporary_path,
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("Package contains forbidden files", result.stderr)
+
     def test_package_rejects_environment_values_without_echoing_them(self):
         with tempfile.TemporaryDirectory() as temporary:
             temporary_path = Path(temporary)
