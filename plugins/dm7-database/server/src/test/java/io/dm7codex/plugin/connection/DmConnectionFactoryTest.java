@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import io.dm7codex.plugin.runtime.RuntimePaths;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -85,6 +86,6 @@ class DmConnectionFactoryTest {
     }
 
     private DmDriverLoader loader(String name) {
-        return new DmDriverLoader(tempDir.resolve("driver-cache-" + name));
+        return new DmDriverLoader(RuntimePaths.forTest(tempDir.resolve("plugin-data-" + name)));
     }
 }

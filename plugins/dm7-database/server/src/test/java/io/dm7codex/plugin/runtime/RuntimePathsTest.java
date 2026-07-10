@@ -36,6 +36,7 @@ class RuntimePathsTest {
         assertEquals(pluginData.resolve("state/plugin.db"), paths.stateDatabase());
         for (var writablePath : List.of(
                 paths.configDirectory(),
+                paths.driverCacheDirectory(),
                 paths.secretsDirectory(),
                 paths.stateDirectory(),
                 paths.sessionContextDirectory(),
@@ -53,5 +54,6 @@ class RuntimePathsTest {
         assertEquals(tempDir.toAbsolutePath().normalize(), paths.pluginData());
         assertTrue(paths.stateDatabase().startsWith(paths.pluginData()));
         assertTrue(paths.sessionsDirectory().startsWith(paths.pluginData()));
+        assertEquals(paths.pluginData().resolve("cache/jdbc-drivers"), paths.driverCacheDirectory());
     }
 }

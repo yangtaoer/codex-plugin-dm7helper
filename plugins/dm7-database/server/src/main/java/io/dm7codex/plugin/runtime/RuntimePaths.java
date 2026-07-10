@@ -43,6 +43,10 @@ public final class RuntimePaths {
         return pluginData.resolve("secrets");
     }
 
+    public Path driverCacheDirectory() {
+        return pluginData.resolve("cache").resolve("jdbc-drivers");
+    }
+
     public Path stateDirectory() {
         return pluginData.resolve("state");
     }

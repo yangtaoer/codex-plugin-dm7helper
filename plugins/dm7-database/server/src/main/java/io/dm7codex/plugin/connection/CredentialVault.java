@@ -283,6 +283,45 @@ public final class CredentialVault implements SecretStore {
         }
     }
 
+    static void verifySecureDirectory(Path path) throws IOException {
+        verifySecure(path, true);
+    }
+
+    static void verifySecureFile(Path path) throws IOException {
+        verifySecure(path, false);
+    }
+
+    private static void verifySecure(Path path, boolean directory) throws IOException {
+        if (Files.getFileStore(path).supportsFileAttributeView("posix")) {
+            Set<PosixFilePermission> expectedPermissions = directory ? OWNER_DIRECTORY : OWNER_FILE;
+            if (!Files.getPosixFilePermissions(path).equals(expectedPermissions)) {
+                throw new IOException("Protected path permissions are not owner-only");
+            }
+            UserPrincipal currentUser = currentProcessPrincipal(path);
+            if (!Files.getOwner(path).equals(currentUser)) {
+                throw new IOException("Driver cache owner is not the current user");
+            }
+            return;
+        }
+        AclFileAttributeView acl = Files.getFileAttributeView(path, AclFileAttributeView.class);
+        if (acl == null) throw new IOException("Owner-only directory permissions are unavailable");
+        UserPrincipal currentUser = currentProcessPrincipal(path);
+        if (!Files.getOwner(path).equals(currentUser)) {
+            throw new IOException("Driver cache owner is not the current user");
+        }
+        AclEntry expected = windowsAclEntry(currentUser, directory);
+        List<AclEntry> actual = acl.getAcl();
+        if (actual.size() != 1 || !actual.get(0).equals(expected)) {
+            throw new IOException("Driver cache ACL is not current-user-only");
+        }
+    }
+
+    private static UserPrincipal currentProcessPrincipal(Path path) throws IOException {
+        String userName = currentProcessUserName();
+        if (userName == null || userName.isBlank()) throw new IOException("Current user identity is unavailable");
+        return path.getFileSystem().getUserPrincipalLookupService().lookupPrincipalByName(userName);
+    }
+
     private static String currentProcessUserName() {
         String account = System.getenv("USERNAME");
         String domain = System.getenv("USERDOMAIN");

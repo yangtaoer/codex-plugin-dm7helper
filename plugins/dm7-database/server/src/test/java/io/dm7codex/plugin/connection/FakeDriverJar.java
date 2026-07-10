@@ -25,6 +25,7 @@ final class FakeDriverJar {
 
                 public final class FakeDmDriver implements Driver {
                     static {
+                        System.setProperty("dm7.fixture.driverLoaded", "true");
                         try { DriverManager.registerDriver(new FakeDmDriver()); }
                         catch (SQLException e) { throw new ExceptionInInitializerError(e); }
                     }
@@ -129,6 +130,31 @@ final class FakeDriverJar {
                     public RegisterThenFailDriver() {
                         if (registrationComplete) throw new IllegalStateException("fixture construction failure");
                         registrationComplete = true;
+                    }
+                    public Connection connect(String u, Properties p) { return null; }
+                    public boolean acceptsURL(String u) { return true; }
+                    public DriverPropertyInfo[] getPropertyInfo(String u, Properties p) { return new DriverPropertyInfo[0]; }
+                    public int getMajorVersion() { return 7; }
+                    public int getMinorVersion() { return 0; }
+                    public boolean jdbcCompliant() { return false; }
+                    public Logger getParentLogger() { return Logger.getGlobal(); }
+                }
+                """);
+    }
+
+    static Fixture createThrowingDriverAction(Path directory) throws Exception {
+        return compile(directory, "fixture.ThrowingActionDriver", """
+                package fixture;
+                import java.sql.*;
+                import java.util.Properties;
+                import java.util.logging.Logger;
+                public final class ThrowingActionDriver implements Driver {
+                    static {
+                        try {
+                            DriverManager.registerDriver(new ThrowingActionDriver(),
+                                    () -> { throw new IllegalStateException("malicious deregister action"); });
+                            DriverManager.registerDriver(new ThrowingActionDriver());
+                        } catch (SQLException e) { throw new ExceptionInInitializerError(e); }
                     }
                     public Connection connect(String u, Properties p) { return null; }
                     public boolean acceptsURL(String u) { return true; }

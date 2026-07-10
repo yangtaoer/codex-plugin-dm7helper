@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.Optional;
 import java.util.UUID;
+import io.dm7codex.plugin.runtime.RuntimePaths;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -38,7 +39,7 @@ class ConnectionTestServiceTest {
                 "jdbc:dm7://forceFailure.invalid:5236/SYSTEM?token=" + urlMarker, usernameMarker, null,
                 10, 30, 60, 1000, 1024, true), Optional.of(passwordMarker.toCharArray()));
         ConnectionTestService service = new ConnectionTestService(new DmConnectionFactory(repository, vault,
-                new DmDriverLoader(tempDir.resolve("driver-cache-fail"))), repository);
+                new DmDriverLoader(RuntimePaths.forTest(tempDir.resolve("plugin-data-fail")))), repository);
         ConnectionTestService.ConnectionTestResult result = service.test(id);
         assertFalse(result.success());
         String rendered = result.toString();
@@ -57,7 +58,7 @@ class ConnectionTestServiceTest {
         repository.save(new ConnectionProfile(id, "success", fixture.jar(), fixture.sha256(), fixture.driverClass(), url,
                 "fixture-user", "业务模式", 10, 30, 60, 1000, 1024, true), Optional.of("fixture-password".toCharArray()));
         return new Setup(id, new ConnectionTestService(new DmConnectionFactory(repository, vault,
-                new DmDriverLoader(tempDir.resolve("driver-cache-ok"))), repository));
+                new DmDriverLoader(RuntimePaths.forTest(tempDir.resolve("plugin-data-ok")))), repository));
     }
 
     private record Setup(UUID id, ConnectionTestService service) {}
