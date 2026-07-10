@@ -314,7 +314,11 @@ public final class DmSqlParser {
             switch (word) {
                 case "BEGIN" -> openProceduralBlock(ProceduralBlock.BEGIN);
                 case "CASE" -> openProceduralBlock(ProceduralBlock.CASE);
-                case "IF" -> openProceduralBlock(ProceduralBlock.IF);
+                case "IF" -> {
+                    if (isThenDelimitedIf(script, wordEnd)) {
+                        openProceduralBlock(ProceduralBlock.IF_THEN);
+                    }
+                }
                 case "LOOP" -> openProceduralBlock(ProceduralBlock.LOOP);
                 case "END" -> closeProceduralBlock(nextSignificantWord(script, wordEnd));
                 default -> { }
@@ -323,7 +327,9 @@ public final class DmSqlParser {
 
         private void openProceduralBlock(ProceduralBlock block) {
             proceduralBlocks.push(block);
-            if (block == ProceduralBlock.BEGIN) proceduralRootSeen = true;
+            if (block == ProceduralBlock.BEGIN || block == ProceduralBlock.IF_THEN) {
+                proceduralRootSeen = true;
+            }
             proceduralComplete = false;
         }
 
@@ -373,23 +379,111 @@ public final class DmSqlParser {
     }
 
     private enum ProceduralBlock {
-        BEGIN,
-        CASE,
-        IF,
-        LOOP;
+        BEGIN("BEGIN"),
+        CASE("CASE"),
+        IF_THEN("IF"),
+        LOOP("LOOP");
+
+        private final String keyword;
+
+        ProceduralBlock(String keyword) {
+            this.keyword = keyword;
+        }
 
         private String keyword() {
-            return name();
+            return keyword;
         }
 
         private static ProceduralBlock forClosingSuffix(String suffix) {
             return switch (suffix) {
                 case "CASE" -> CASE;
-                case "IF" -> IF;
+                case "IF" -> IF_THEN;
                 case "LOOP" -> LOOP;
                 default -> null;
             };
         }
+    }
+
+    private static boolean isThenDelimitedIf(String text, int start) {
+        LexState state = LexState.NORMAL;
+        int parenthesesDepth = 0;
+        int caseDepth = 0;
+        int commentDepth = 0;
+        boolean closingCaseKeywordToConsume = false;
+        for (int i = start; i < text.length(); i++) {
+            char value = text.charAt(i);
+            switch (state) {
+                case NORMAL, PROCEDURAL_BLOCK -> {
+                    if (value == '\'') {
+                        state = LexState.SINGLE_QUOTE;
+                    } else if (value == '"') {
+                        state = LexState.DOUBLE_QUOTE;
+                    } else if (value == '-' && hasNext(text, i, '-')) {
+                        state = LexState.LINE_COMMENT;
+                        i++;
+                    } else if (value == '/' && hasNext(text, i, '*')) {
+                        state = LexState.BLOCK_COMMENT;
+                        commentDepth = 1;
+                        i++;
+                    } else if (value == '(') {
+                        parenthesesDepth++;
+                    } else if (value == ')') {
+                        if (parenthesesDepth > 0) parenthesesDepth--;
+                    } else if (value == ';' && parenthesesDepth == 0 && caseDepth == 0) {
+                        return false;
+                    } else if (isWordStart(value)) {
+                        int end = i + 1;
+                        while (end < text.length() && isWordPart(text.charAt(end))) end++;
+                        String word = text.substring(i, end).toUpperCase(Locale.ROOT);
+                        i = end - 1;
+                        if (parenthesesDepth != 0) continue;
+                        if (closingCaseKeywordToConsume) {
+                            closingCaseKeywordToConsume = false;
+                            if ("CASE".equals(word)) continue;
+                        }
+                        if ("CASE".equals(word)) {
+                            caseDepth++;
+                        } else if ("END".equals(word) && caseDepth > 0) {
+                            caseDepth--;
+                            closingCaseKeywordToConsume = true;
+                        } else if (caseDepth == 0) {
+                            if ("THEN".equals(word)) return true;
+                            if ("BEGIN".equals(word) || "ELSEIF".equals(word) || "ELSE".equals(word)) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                case SINGLE_QUOTE -> {
+                    if (value == '\'' && hasNext(text, i, '\'')) {
+                        i++;
+                    } else if (value == '\'') {
+                        state = LexState.NORMAL;
+                    }
+                }
+                case DOUBLE_QUOTE -> {
+                    if (value == '"' && hasNext(text, i, '"')) {
+                        i++;
+                    } else if (value == '"') {
+                        state = LexState.NORMAL;
+                    }
+                }
+                case LINE_COMMENT -> {
+                    if (value == '\n' || value == '\r') state = LexState.NORMAL;
+                }
+                case BLOCK_COMMENT -> {
+                    if (value == '/' && hasNext(text, i, '*')) {
+                        commentDepth++;
+                        i++;
+                    } else if (value == '*' && hasNext(text, i, '/')) {
+                        commentDepth--;
+                        i++;
+                        if (commentDepth == 0) state = LexState.NORMAL;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     private static String nextSignificantWord(String text, int start) {

@@ -171,6 +171,33 @@ class DmSqlParserTest {
                 () -> new SqlSecurityPolicy().assertNoEmbeddedCredentials(statements.get(1)));
     }
 
+    @Test
+    void dmBeginDelimitedIfCannotHideFollowingCredentialDdl() {
+        String script = """
+                CREATE OR REPLACE PROCEDURE REVIEW_IF_STYLE AS
+                IF 1 = 1
+                BEGIN
+                  INSERT INTO T(V) VALUES (1);
+                END
+                ELSEIF 2 = 2
+                BEGIN
+                  INSERT INTO T(V) VALUES (2);
+                END
+                ELSE
+                BEGIN
+                  INSERT INTO T(V) VALUES (3);
+                END;
+                CREATE USER REVIEW_IF_USER IDENTIFIED BY fixture_if_review_value;
+                """;
+
+        List<ParsedStatement> statements = parser.parse(script);
+
+        assertEquals(2, statements.size());
+        assertEquals(SqlKind.DDL, statements.get(1).kind());
+        assertThrows(SecretBearingSqlException.class,
+                () -> new SqlSecurityPolicy().assertNoEmbeddedCredentials(statements.get(1)));
+    }
+
     @ParameterizedTest
     @MethodSource("proceduralStackCases")
     void tracksNestedProceduralBlocksUntilTheRoutineTerminator(String routine, String bodyMarker) {
@@ -215,7 +242,31 @@ class DmSqlParserTest {
                             THEN CASE WHEN 2 = 2 THEN 2 ELSE 3 END
                             ELSE 4 END FROM DUAL;
                         END;
-                        """, "THEN CASE WHEN 2 = 2"));
+                        """, "THEN CASE WHEN 2 = 2"),
+                Arguments.of("""
+                        CREATE OR REPLACE PROCEDURE BEGIN_STYLE_NESTED AS
+                        IF CASE WHEN 1 = 1 THEN 1 ELSE 0 END = 1
+                        BEGIN
+                          LOOP
+                            CASE WHEN 2 = 2 THEN NULL; ELSE NULL; END CASE;
+                          END LOOP;
+                        END
+                        ELSE
+                        BEGIN
+                          NULL;
+                        END;
+                        """, "END LOOP"),
+                Arguments.of("""
+                        CREATE OR REPLACE PROCEDURE BEGIN_STYLE_LOOKAHEAD AS
+                        IF CHECK_TEXT('THEN', (SELECT 'BEGIN')) = 1 /* THEN is not syntax */
+                        BEGIN
+                          NULL;
+                        END
+                        ELSE
+                        BEGIN
+                          NULL;
+                        END;
+                        """, "THEN is not syntax"));
     }
 
     private static String fixture(String name) throws IOException {
