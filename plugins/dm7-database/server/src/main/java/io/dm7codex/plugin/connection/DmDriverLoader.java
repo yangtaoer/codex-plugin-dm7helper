@@ -29,41 +29,47 @@ import java.util.Arrays;
 import java.security.SecureRandom;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class DmDriverLoader {
     private static final String CLEANER_CLASS = "io.dm7codex.plugin.connection.ChildDriverRegistryCleaner";
     private static final String IDENTITY_FILE = ".driver-cache-identity";
     private static final Map<Path, Object> IDENTITY_LOCKS = new ConcurrentHashMap<>();
+    private static final AtomicReference<DriverIsolationException> FATAL_ISOLATION = new AtomicReference<>();
 
-    private final Path pluginDataReal;
     private final Path stagingDirectory;
-    private final Object stagingFileKey;
-    private final byte[] fallbackIdentity;
+    private final List<DirectoryIdentity> trustChain;
     private final LoaderFileOps fileOps;
+    private final LoadObserver loadObserver;
 
     public DmDriverLoader(RuntimePaths paths) {
-        this(paths, LoaderFileOps.DEFAULT);
+        this(paths, LoaderFileOps.DEFAULT, LoadObserver.NONE);
     }
 
     DmDriverLoader(RuntimePaths paths, LoaderFileOps fileOps) {
+        this(paths, fileOps, LoadObserver.NONE);
+    }
+
+    DmDriverLoader(RuntimePaths paths, LoaderFileOps fileOps, LoadObserver loadObserver) {
         Objects.requireNonNull(paths, "paths");
         this.fileOps = Objects.requireNonNull(fileOps, "fileOps");
+        this.loadObserver = Objects.requireNonNull(loadObserver, "loadObserver");
         try {
-            Files.createDirectories(paths.pluginData());
-            this.pluginDataReal = paths.pluginData().toRealPath();
+            Path pluginData = paths.pluginData().toAbsolutePath().normalize();
+            Path cacheParent = pluginData.resolve("cache");
             Path configuredCache = paths.driverCacheDirectory().toAbsolutePath().normalize();
-            if (!configuredCache.startsWith(paths.pluginData())) {
+            if (!configuredCache.equals(cacheParent.resolve("jdbc-drivers"))) {
                 throw new DriverIsolationException("JDBC driver cache escaped PLUGIN_DATA", true);
             }
-            Files.createDirectories(configuredCache);
-            this.stagingDirectory = configuredCache.toRealPath();
-            if (!stagingDirectory.startsWith(pluginDataReal)) {
+            DirectoryIdentity pluginDataIdentity = createAndCaptureDirectory(pluginData);
+            DirectoryIdentity cacheParentIdentity = createAndCaptureDirectory(cacheParent);
+            DirectoryIdentity stagingIdentity = createAndCaptureDirectory(configuredCache);
+            if (!cacheParentIdentity.realPath().getParent().equals(pluginDataIdentity.realPath())
+                    || !stagingIdentity.realPath().getParent().equals(cacheParentIdentity.realPath())) {
                 throw new DriverIsolationException("JDBC driver cache escaped PLUGIN_DATA", true);
             }
-            CredentialVault.secure(stagingDirectory, true);
-            CredentialVault.verifySecureDirectory(stagingDirectory);
-            this.stagingFileKey = optionalFileKey(stagingDirectory);
-            this.fallbackIdentity = stagingFileKey == null ? loadOrCreateFallbackIdentity(stagingDirectory) : null;
+            this.stagingDirectory = stagingIdentity.realPath();
+            this.trustChain = List.of(pluginDataIdentity, cacheParentIdentity, stagingIdentity);
         } catch (DriverIsolationException e) {
             throw e;
         } catch (IOException e) {
@@ -73,7 +79,8 @@ public final class DmDriverLoader {
 
     public DriverHandle load(ConnectionProfile profile) {
         Objects.requireNonNull(profile, "profile");
-        verifyCacheIdentity();
+        throwIfFatalIsolation();
+        verifyTrustChain();
         Path source = profile.driverJar();
         if (!Files.isRegularFile(source)) {
             throw new IllegalArgumentException("Configured JDBC driver is missing or is not a regular file");
@@ -84,15 +91,23 @@ public final class DmDriverLoader {
         Method cleanup = null;
         Method count = null;
         try {
+            verifyTrustChain();
             staged = Files.createTempFile(stagingDirectory, "dm-driver-", ".jar");
             CredentialVault.secure(staged, false);
+            verifyTrustChain();
             Files.copy(source, staged, StandardCopyOption.REPLACE_EXISTING);
             CredentialVault.secure(staged, false);
             verifySha256(staged, profile.driverSha256());
+            StagedIdentity stagedIdentity = captureStagedIdentity(staged, profile.driverSha256());
+            loadObserver.afterStagedHash(staged);
+            verifyTrustChain();
+            verifyStagedIdentity(stagedIdentity);
 
             URL codeSource = DmDriverLoader.class.getProtectionDomain().getCodeSource().getLocation();
             classLoader = new URLClassLoader(new URL[]{codeSource, staged.toUri().toURL()},
                     ClassLoader.getPlatformClassLoader());
+            verifyTrustChain();
+            verifyStagedIdentity(stagedIdentity);
             Class<?> cleanerClass = Class.forName(CLEANER_CLASS, true, classLoader);
             cleanup = cleanerClass.getDeclaredMethod("deregisterChildDrivers");
             count = cleanerClass.getDeclaredMethod("registeredChildDriverCount");
@@ -117,33 +132,93 @@ public final class DmDriverLoader {
         }
     }
 
-    private void verifyCacheIdentity() {
+    private void verifyTrustChain() {
         try {
-            Path currentReal = stagingDirectory.toRealPath();
-            if (!currentReal.equals(stagingDirectory) || !currentReal.startsWith(pluginDataReal)) {
-                throw new DriverIsolationException("JDBC driver cache identity changed", true);
+            for (DirectoryIdentity identity : trustChain) {
+                verifyDirectoryIdentity(identity);
             }
-            Object currentKey = optionalFileKey(currentReal);
-            if (stagingFileKey != null) {
-                if (!stagingFileKey.equals(currentKey)) {
-                    throw new DriverIsolationException("JDBC driver cache identity changed", true);
-                }
-            } else {
-                Path identity = currentReal.resolve(IDENTITY_FILE);
-                if (!Files.isRegularFile(identity) || !identity.toRealPath().getParent().equals(currentReal)) {
-                    throw new DriverIsolationException("JDBC driver cache identity changed", true);
-                }
-                CredentialVault.verifySecureFile(identity);
-                byte[] currentIdentity = Files.readAllBytes(identity);
-                boolean matches = MessageDigest.isEqual(fallbackIdentity, currentIdentity);
-                Arrays.fill(currentIdentity, (byte) 0);
-                if (!matches) throw new DriverIsolationException("JDBC driver cache identity changed", true);
+            if (!trustChain.get(1).realPath().getParent().equals(trustChain.get(0).realPath())
+                    || !trustChain.get(2).realPath().getParent().equals(trustChain.get(1).realPath())) {
+                throw new DriverIsolationException("JDBC driver trust chain changed", true);
             }
-            CredentialVault.verifySecureDirectory(currentReal);
         } catch (DriverIsolationException e) {
             throw e;
         } catch (IOException e) {
             throw new DriverIsolationException("JDBC driver cache verification failed", true);
+        }
+    }
+
+    private static DirectoryIdentity createAndCaptureDirectory(Path directory) throws IOException {
+        if (Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) {
+            if (Files.isSymbolicLink(directory)
+                    || !Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) {
+                throw new DriverIsolationException("JDBC driver trust chain contains a link", true);
+            }
+        } else {
+            Path parent = directory.getParent();
+            if (parent == null || !Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("Trusted directory parent is unavailable");
+            }
+            Files.createDirectory(directory);
+        }
+        Path real = directory.toRealPath(LinkOption.NOFOLLOW_LINKS);
+        if (!real.equals(directory.toAbsolutePath().normalize())) {
+            throw new DriverIsolationException("JDBC driver trust chain contains a link", true);
+        }
+        CredentialVault.secure(real, true);
+        CredentialVault.verifySecureDirectory(real);
+        Object fileKey = optionalFileKey(real);
+        byte[] fallback = fileKey == null ? loadOrCreateFallbackIdentity(real) : null;
+        return new DirectoryIdentity(real, fileKey, fallback);
+    }
+
+    private static void verifyDirectoryIdentity(DirectoryIdentity identity) throws IOException {
+        Path real = identity.realPath();
+        if (Files.isSymbolicLink(real) || !real.toRealPath(LinkOption.NOFOLLOW_LINKS).equals(real)) {
+            throw new DriverIsolationException("JDBC driver trust chain changed", true);
+        }
+        CredentialVault.verifySecureDirectory(real);
+        Object currentKey = optionalFileKey(real);
+        if (identity.fileKey() != null) {
+            if (!identity.fileKey().equals(currentKey)) {
+                throw new DriverIsolationException("JDBC driver trust chain changed", true);
+            }
+            return;
+        }
+        Path sentinel = real.resolve(IDENTITY_FILE);
+        if (!Files.isRegularFile(sentinel, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(sentinel)
+                || !sentinel.toRealPath(LinkOption.NOFOLLOW_LINKS).getParent().equals(real)) {
+            throw new DriverIsolationException("JDBC driver trust chain changed", true);
+        }
+        CredentialVault.verifySecureFile(sentinel);
+        byte[] current = Files.readAllBytes(sentinel);
+        boolean matches = MessageDigest.isEqual(identity.fallbackIdentity(), current);
+        Arrays.fill(current, (byte) 0);
+        if (!matches) throw new DriverIsolationException("JDBC driver trust chain changed", true);
+    }
+
+    private static StagedIdentity captureStagedIdentity(Path staged, String sha256) throws IOException {
+        if (Files.isSymbolicLink(staged)) throw new DriverIsolationException("Staged JDBC driver changed", true);
+        Path real = staged.toRealPath(LinkOption.NOFOLLOW_LINKS);
+        CredentialVault.verifySecureFile(real);
+        return new StagedIdentity(real, optionalFileKey(real), sha256);
+    }
+
+    private void verifyStagedIdentity(StagedIdentity identity) throws IOException {
+        Path real = identity.realPath();
+        if (Files.isSymbolicLink(real) || !real.toRealPath(LinkOption.NOFOLLOW_LINKS).equals(real)
+                || !real.getParent().equals(stagingDirectory)) {
+            throw new DriverIsolationException("Staged JDBC driver changed", true);
+        }
+        CredentialVault.verifySecureFile(real);
+        Object currentKey = optionalFileKey(real);
+        if (identity.fileKey() != null && !identity.fileKey().equals(currentKey)) {
+            throw new DriverIsolationException("Staged JDBC driver changed", true);
+        }
+        try {
+            verifySha256(real, identity.sha256());
+        } catch (SecurityException e) {
+            throw new DriverIsolationException("Staged JDBC driver changed", true);
         }
     }
 
@@ -224,7 +299,19 @@ public final class DmDriverLoader {
                         : "JDBC driver registration cleanup was not fully reliable; process restart is required",
                 true);
         failures.forEach(isolation::addSuppressed);
+        tripFatalIsolation();
         return isolation;
+    }
+
+    private static void tripFatalIsolation() {
+        FATAL_ISOLATION.compareAndSet(null, new DriverIsolationException(
+                "JDBC driver isolation failed; process restart is required", true));
+    }
+
+    private static void throwIfFatalIsolation() {
+        if (FATAL_ISOLATION.get() != null) {
+            throw new DriverIsolationException("JDBC driver isolation failed; process restart is required", true);
+        }
     }
 
     private static Throwable unwrapInvocation(Throwable failure) {
@@ -263,6 +350,12 @@ public final class DmDriverLoader {
         void delete(Path stagedJar) throws Exception;
     }
 
+    @FunctionalInterface
+    interface LoadObserver {
+        LoadObserver NONE = staged -> {};
+        void afterStagedHash(Path staged) throws IOException;
+    }
+
     public static final class DriverIsolationException extends IllegalStateException {
         private final boolean restartRequired;
 
@@ -296,6 +389,7 @@ public final class DmDriverLoader {
         }
 
         public synchronized Connection connect(String jdbcUrl, Properties properties) throws SQLException {
+            throwIfFatalIsolation();
             if (closed) throw new SQLException("JDBC driver handle is closed");
             Connection connection = driver.connect(jdbcUrl, properties);
             if (connection == null) throw new SQLException("JDBC driver did not accept the configured URL");
@@ -333,6 +427,9 @@ public final class DmDriverLoader {
     }
 
     private static final class CleanupCompleteMarker extends Throwable {}
+
+    private record DirectoryIdentity(Path realPath, Object fileKey, byte[] fallbackIdentity) {}
+    private record StagedIdentity(Path realPath, Object fileKey, String sha256) {}
 }
 
 /** Loaded by the child loader so DriverManager caller filtering exposes only that child's registrations. */

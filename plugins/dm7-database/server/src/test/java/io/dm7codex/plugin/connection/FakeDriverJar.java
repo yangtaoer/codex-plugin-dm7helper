@@ -35,6 +35,10 @@ final class FakeDriverJar {
                         System.setProperty("dm7.fixture.connectTimeout", String.valueOf(info.getProperty("connectTimeout")));
                         System.setProperty("dm7.fixture.socketTimeout", String.valueOf(info.getProperty("socketTimeout")));
                         if ("true".equals(info.getProperty("registerOnConnect"))) DriverManager.registerDriver(new FakeDmDriver());
+                        if ("true".equals(info.getProperty("registerThrowingOnConnect"))) {
+                            DriverManager.registerDriver(new FakeDmDriver(),
+                                    () -> { throw new IllegalStateException("connect deregister action"); });
+                        }
                         if (url.contains("forceFailure")) throw new SQLException("connection rejected: " + url + " " + info);
                         return proxy(Connection.class, (proxy, method, args) -> {
                             return switch (method.getName()) {

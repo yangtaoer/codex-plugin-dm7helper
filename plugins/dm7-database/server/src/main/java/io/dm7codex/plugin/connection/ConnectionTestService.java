@@ -31,7 +31,10 @@ public final class ConnectionTestService {
             String actualSchema = scalar(managed, profile, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')");
             boolean chineseRoundTrip = CHINESE_PROBE.equals(scalar(managed, profile, "SELECT '" + CHINESE_PROBE + "'"));
             return new ConnectionTestResult(true, latencyMs, driverVersion, serverVersion, actualUser,
-                    actualSchema, chineseRoundTrip, warnings);
+                    actualSchema, chineseRoundTrip, false, warnings);
+        } catch (DmDriverLoader.DriverIsolationException ignored) {
+            return new ConnectionTestResult(false, 0, "", "", "", "", false, true,
+                    List.of("JDBC_DRIVER_ISOLATION_RESTART_REQUIRED"));
         } catch (Exception ignored) {
             return failure(warnings);
         }
@@ -51,7 +54,7 @@ public final class ConnectionTestService {
     private static ConnectionTestResult failure(List<String> diagnostics) {
         var warnings = new java.util.ArrayList<>(diagnostics);
         warnings.add("Connection test failed; verify the saved settings and JDBC driver.");
-        return new ConnectionTestResult(false, 0, "", "", "", "", false,
+        return new ConnectionTestResult(false, 0, "", "", "", "", false, false,
                 warnings);
     }
 
@@ -73,6 +76,7 @@ public final class ConnectionTestService {
             String actualUser,
             String actualSchema,
             boolean chineseRoundTrip,
+            boolean restartRequired,
             List<String> warnings
     ) {
         public ConnectionTestResult {

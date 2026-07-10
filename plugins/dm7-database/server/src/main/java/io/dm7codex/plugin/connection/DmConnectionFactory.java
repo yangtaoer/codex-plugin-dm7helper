@@ -29,6 +29,8 @@ public final class DmConnectionFactory {
         DmDriverLoader.DriverHandle handle;
         try {
             handle = driverLoader.load(profile);
+        } catch (DmDriverLoader.DriverIsolationException e) {
+            throw e;
         } catch (RuntimeException e) {
             throw new SQLException("JDBC driver validation failed");
         }
@@ -58,6 +60,7 @@ public final class DmConnectionFactory {
         } catch (SQLException | RuntimeException e) {
             if (connection != null) closeQuietly(connection);
             closeQuietly(handle);
+            if (e instanceof DmDriverLoader.DriverIsolationException isolation) throw isolation;
             if (e instanceof SQLException sql) {
                 throw new SQLException("Database connection failed", sql.getSQLState(), sql.getErrorCode());
             }

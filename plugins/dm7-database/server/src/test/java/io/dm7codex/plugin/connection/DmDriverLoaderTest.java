@@ -13,6 +13,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.CountDownLatch;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -144,12 +145,80 @@ class DmDriverLoaderTest {
     }
 
     @Test void throwingDriverActionFailsClosedInIndependentJvmWithRestartRequired() throws Exception {
-        Path java = Path.of(System.getProperty("java.home"), "bin", "java.exe");
+        assertEquals(0, runProbe("factory-service"));
+    }
+
+    @Test void closeIsolationFailureLatchesAndBlocksExistingHandleInIndependentJvm() throws Exception {
+        assertEquals(0, runProbe("close"));
+    }
+
+    private int runProbe(String mode) throws Exception {
+        String executable = System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java";
+        Path java = Path.of(System.getProperty("java.home"), "bin", executable);
         Process process = new ProcessBuilder(java.toString(), "-cp", System.getProperty("java.class.path"),
                 DmDriverLoaderProcessProbe.class.getName(), tempDir.resolve("probe-data").toString(),
-                tempDir.resolve("probe-fixture").toString()).inheritIO().start();
+                tempDir.resolve("probe-fixture").toString(), mode).inheritIO().start();
         assertTimeoutPreemptively(Duration.ofSeconds(30), () -> assertTrue(process.waitFor(25, TimeUnit.SECONDS)));
-        assertEquals(0, process.exitValue());
+        return process.exitValue();
+    }
+
+    @Test void stagedFileReplacementAfterHashFailsBeforeDriverInitialization() throws Exception {
+        FakeDriverJar.Fixture fixture = FakeDriverJar.create(tempDir.resolve("stage-race-driver"));
+        RuntimePaths paths = paths("stage-race");
+        System.clearProperty("dm7.fixture.driverLoaded");
+        DmDriverLoader loader = new DmDriverLoader(paths, DmDriverLoader.LoaderFileOps.DEFAULT,
+                staged -> Files.writeString(staged, "tampered-after-hash"));
+        assertThrows(DmDriverLoader.DriverIsolationException.class, () -> loader.load(profile(fixture)));
+        assertNull(System.getProperty("dm7.fixture.driverLoaded"));
+    }
+
+    @Test void parentChainReplacementDuringLoadFailsClosedBeforeDriverInitialization() throws Exception {
+        FakeDriverJar.Fixture fixture = FakeDriverJar.create(tempDir.resolve("parent-race-driver"));
+        RuntimePaths paths = paths("parent-race");
+        CountDownLatch stagedHashed = new CountDownLatch(1);
+        CountDownLatch replacementDone = new CountDownLatch(1);
+        DmDriverLoader loader = new DmDriverLoader(paths, DmDriverLoader.LoaderFileOps.DEFAULT, staged -> {
+            stagedHashed.countDown();
+            try {
+                assertTrue(replacementDone.await(10, TimeUnit.SECONDS));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+        });
+        System.clearProperty("dm7.fixture.driverLoaded");
+        var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            var load = executor.submit(() -> loader.load(profile(fixture)));
+            assertTrue(stagedHashed.await(10, TimeUnit.SECONDS));
+            Path cacheParent = paths.pluginData().resolve("cache");
+            deliberatelyRelaxDirectoryForReplacement(paths.pluginData());
+            Files.move(cacheParent, cacheParent.resolveSibling("cache-original"));
+            Files.createDirectories(paths.driverCacheDirectory());
+            replacementDone.countDown();
+            Exception failure = assertThrows(Exception.class, load::get);
+            assertTrue(failure.getCause() instanceof DmDriverLoader.DriverIsolationException);
+            assertNull(System.getProperty("dm7.fixture.driverLoaded"));
+        } finally {
+            replacementDone.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    private static void deliberatelyRelaxDirectoryForReplacement(Path directory) throws Exception {
+        if (Files.getFileStore(directory).supportsFileAttributeView("posix")) {
+            Files.setPosixFilePermissions(directory, java.util.EnumSet.allOf(java.nio.file.attribute.PosixFilePermission.class));
+            return;
+        }
+        var view = Files.getFileAttributeView(directory, java.nio.file.attribute.AclFileAttributeView.class);
+        var owner = Files.getOwner(directory);
+        var entry = java.nio.file.attribute.AclEntry.newBuilder()
+                .setType(java.nio.file.attribute.AclEntryType.ALLOW)
+                .setPrincipal(owner)
+                .setPermissions(java.util.EnumSet.allOf(java.nio.file.attribute.AclEntryPermission.class))
+                .build();
+        view.setAcl(java.util.List.of(entry));
     }
 
     private static void assertNoStagedJars(Path directory) throws Exception {

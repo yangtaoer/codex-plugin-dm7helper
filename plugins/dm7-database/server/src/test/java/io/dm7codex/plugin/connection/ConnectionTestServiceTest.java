@@ -17,6 +17,7 @@ class ConnectionTestServiceTest {
         Setup setup = setup("jdbc:dm7://fixture.invalid:5236/SYSTEM?password=masked-value");
         ConnectionTestService.ConnectionTestResult result = setup.service.test(setup.id);
         assertTrue(result.success());
+        assertFalse(result.restartRequired());
         assertTrue(result.latencyMs() >= 0);
         assertTrue(result.driverVersion().contains("7.0-test"));
         assertTrue(result.serverVersion().contains("7-test"));
@@ -42,6 +43,7 @@ class ConnectionTestServiceTest {
                 new DmDriverLoader(RuntimePaths.forTest(tempDir.resolve("plugin-data-fail")))), repository);
         ConnectionTestService.ConnectionTestResult result = service.test(id);
         assertFalse(result.success());
+        assertFalse(result.restartRequired());
         String rendered = result.toString();
         assertTrue(result.warnings().stream().anyMatch(value -> value.contains("dbname=SYSTEM")));
         assertTrue(result.warnings().stream().anyMatch(value -> value.contains("Connection test failed")));
