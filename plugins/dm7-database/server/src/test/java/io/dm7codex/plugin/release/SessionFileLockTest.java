@@ -1,6 +1,8 @@
 package io.dm7codex.plugin.release;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -83,6 +85,64 @@ public class SessionFileLockTest {
         }
     }
 
+    @Test
+    void sameRootSessionJunctionCannotRedirectLockOrActiveContentToAnotherSession()
+            throws Exception {
+        var paths = RuntimePaths.forTest(tempDir.resolve("same-root-junction"));
+        try (var database = StateDatabase.open(paths.stateDatabase())) {
+            var initializer = new SessionInitializer(
+                    paths, new SessionRepository(database, paths.sessionsDirectory()));
+            var a = initializer.initialize(
+                    new SessionIdentity("junction-a", "test_override", "verified"));
+            var b = initializer.initialize(
+                    new SessionIdentity("junction-b", "test_override", "verified"));
+            var bBytes = Files.readAllBytes(b.activeSql());
+            var bLock = b.activeSql().resolveSibling("active.lock");
+            Files.delete(a.activeSql());
+            Files.delete(a.activeSql().getParent());
+            createDirectoryReparsePoint(a.activeSql().getParent(), b.activeSql().getParent());
+
+            assertThrows(IllegalStateException.class,
+                    () -> SessionFileLock.acquire(paths, a, Duration.ofMillis(100)));
+
+            assertArrayEquals(bBytes, Files.readAllBytes(b.activeSql()));
+            assertFalse(Files.exists(bLock));
+        }
+    }
+
+    @Test
+    void sessionsRootReparsePointIsRejectedWithoutTouchingSessionFiles() throws Exception {
+        var paths = RuntimePaths.forTest(tempDir.resolve("root-junction"));
+        try (var database = StateDatabase.open(paths.stateDatabase())) {
+            var session = new SessionInitializer(
+                            paths, new SessionRepository(database, paths.sessionsDirectory()))
+                    .initialize(new SessionIdentity(
+                            "root-junction-session", "test_override", "verified"));
+            var bytes = Files.readAllBytes(session.activeSql());
+            var actualSessions = paths.pluginData().resolve("actual-sessions");
+            Files.move(paths.sessionsDirectory(), actualSessions);
+            createDirectoryReparsePoint(paths.sessionsDirectory(), actualSessions);
+
+            assertThrows(IllegalStateException.class,
+                    () -> SessionFileLock.acquire(paths, session, Duration.ofMillis(100)));
+            assertArrayEquals(bytes, Files.readAllBytes(
+                    actualSessions.resolve(session.externalIdHash()).resolve("active.sql")));
+        }
+    }
+
+    @Test
+    void missingPosixAndAclViewsFailClosedWithoutChangingFile() throws Exception {
+        var file = tempDir.resolve("permission-sentinel.txt");
+        Files.writeString(file, "must survive");
+        var bytes = Files.readAllBytes(file);
+
+        var thrown = assertThrows(java.io.IOException.class,
+                () -> SessionFileLock.applyOwnerOnly(file, false, null, null));
+
+        assertEquals("Owner-only permissions are unavailable", thrown.getMessage());
+        assertArrayEquals(bytes, Files.readAllBytes(file));
+    }
+
     public static void main(String[] args) throws Exception {
         var pluginData = Path.of(args[0]);
         var paths = RuntimePaths.forTest(pluginData);
@@ -120,6 +180,21 @@ public class SessionFileLockTest {
 
     private static String processOutput(Process process) throws Exception {
         return new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private static void createDirectoryReparsePoint(Path link, Path target) throws Exception {
+        if (System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT)
+                .contains("windows")) {
+            var process = new ProcessBuilder(
+                    "cmd.exe", "/c", "mklink", "/J", link.toString(), target.toString())
+                    .redirectErrorStream(true)
+                    .start();
+            assertTrue(process.waitFor(5, TimeUnit.SECONDS), "mklink did not finish");
+            assertEquals(0, process.exitValue(), processOutput(process));
+            assertTrue(Files.exists(link), "junction was not created");
+        } else {
+            Files.createSymbolicLink(link, target);
+        }
     }
 
     private record Fixture(Path pluginData, RuntimePaths paths, StateDatabase database,

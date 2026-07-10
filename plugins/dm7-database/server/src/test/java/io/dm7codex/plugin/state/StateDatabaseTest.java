@@ -9,6 +9,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.dm7codex.plugin.runtime.RuntimePaths;
 import io.dm7codex.plugin.runtime.SessionIdentity;
 import io.dm7codex.plugin.runtime.SessionInitializer;
+import io.dm7codex.plugin.release.ReleaseExportService;
+import io.dm7codex.plugin.release.ReleaseLogService;
+import io.dm7codex.plugin.sql.DmSqlParser;
+import io.dm7codex.plugin.sql.SqlPurpose;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,12 +36,12 @@ class StateDatabaseTest {
     Path tempDir;
 
     @Test
-    void migrationV1CreatesRequiredSchemaAndConnectionPragmas() throws Exception {
+    void migrationV2CreatesRequiredSchemaAndConnectionPragmas() throws Exception {
         var paths = RuntimePaths.forTest(tempDir);
 
         try (var database = StateDatabase.open(paths.stateDatabase());
                 var connection = database.openConnection()) {
-            assertEquals(1, intPragma(connection, "user_version"));
+            assertEquals(2, intPragma(connection, "user_version"));
             assertEquals(1, intPragma(connection, "foreign_keys"));
             assertEquals(5_000, intPragma(connection, "busy_timeout"));
             assertEquals("wal", textPragma(connection, "journal_mode"));
@@ -165,8 +169,74 @@ class StateDatabaseTest {
 
         try (var database = StateDatabase.open(databasePath);
                 var connection = database.openConnection()) {
-            assertEquals(1, intPragma(connection, "user_version"));
+            assertEquals(2, intPragma(connection, "user_version"));
             assertEquals(5, countUserTables(connection));
+        }
+    }
+
+    @Test
+    void oldV1DatabaseMigratesIdempotentlyAndSupportsPendingRecoveryExport() throws Exception {
+        var paths = RuntimePaths.forTest(tempDir.resolve("old-v1"));
+        createOldV1Database(paths.stateDatabase());
+
+        try (var database = StateDatabase.open(paths.stateDatabase())) {
+            try (var connection = database.openConnection()) {
+                assertEquals(2, intPragma(connection, "user_version"));
+                assertColumns(connection, "statement_event", Set.of(
+                        "operation_id", "pending_fingerprint", "file_offset",
+                        "block_sha256", "binding_comment"));
+            }
+            var sessions = new SessionRepository(database, paths.sessionsDirectory());
+            var session = new SessionInitializer(paths, sessions)
+                    .initialize(new SessionIdentity(
+                            "old-v1-session", "test_override", "verified"));
+            var failing = new ReleaseLogService(
+                    paths, sessions, java.time.Duration.ofSeconds(2),
+                    new io.dm7codex.plugin.sql.SqlSecurityPolicy(), stage -> {
+                        if (stage == ReleaseLogService.RecordStage.AFTER_PARTIAL_APPEND) {
+                            throw new java.io.IOException("injected");
+                        }
+                    });
+            var parsed = new DmSqlParser().parse("CREATE TABLE V1_RECOVERY(ID INT)").get(0);
+            assertThrows(java.io.IOException.class, () -> failing.recordCommitted(
+                    session, "db-a", SqlPurpose.MIGRATION, "old-v1-operation",
+                    parsed, "CREATE TABLE V1_RECOVERY(ID INT)"));
+            var artifact = new ReleaseExportService(
+                    paths, sessions, new ExportRepository(database)).export(session);
+            assertEquals(1, artifact.statementCount());
+            assertTrue(Files.readString(artifact.path())
+                    .contains("CREATE TABLE V1_RECOVERY(ID INT);"));
+        }
+
+        try (var reopened = StateDatabase.open(paths.stateDatabase());
+                var connection = reopened.openConnection()) {
+            assertEquals(2, intPragma(connection, "user_version"));
+        }
+    }
+
+    @Test
+    void futureSchemaVersionIsRejected() throws Exception {
+        var path = RuntimePaths.forTest(tempDir.resolve("future-version")).stateDatabase();
+        try (var database = StateDatabase.open(path);
+                var connection = database.openConnection()) {
+            try (var statement = connection.createStatement()) {
+                statement.execute("PRAGMA user_version = 99");
+            }
+        }
+        assertThrows(SQLException.class, () -> StateDatabase.open(path));
+    }
+
+    private static void createOldV1Database(Path path) throws Exception {
+        try (var database = StateDatabase.open(path);
+                var connection = database.openConnection();
+                var statement = connection.createStatement()) {
+            statement.execute("DROP INDEX IF EXISTS statement_event_operation_id");
+            statement.execute("ALTER TABLE statement_event DROP COLUMN binding_comment");
+            statement.execute("ALTER TABLE statement_event DROP COLUMN block_sha256");
+            statement.execute("ALTER TABLE statement_event DROP COLUMN file_offset");
+            statement.execute("ALTER TABLE statement_event DROP COLUMN pending_fingerprint");
+            statement.execute("ALTER TABLE statement_event DROP COLUMN operation_id");
+            statement.execute("PRAGMA user_version = 1");
         }
     }
 

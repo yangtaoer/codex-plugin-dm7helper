@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 public final class StateDatabase implements AutoCloseable {
-    private static final int SCHEMA_VERSION = 1;
+    private static final int SCHEMA_VERSION = 2;
     private static final ConcurrentMap<Path, Object> MIGRATION_MONITORS = new ConcurrentHashMap<>();
 
     private final Path databasePath;
@@ -76,6 +76,11 @@ public final class StateDatabase implements AutoCloseable {
                 if (currentVersion == 0) {
                     migrateToVersion1(connection);
                     execute(connection, "PRAGMA user_version = 1");
+                    currentVersion = 1;
+                }
+                if (currentVersion == 1) {
+                    migrateToVersion2(connection);
+                    execute(connection, "PRAGMA user_version = 2");
                 }
                 execute(connection, "COMMIT");
             } catch (SQLException | RuntimeException failure) {
@@ -188,13 +193,6 @@ public final class StateDatabase implements AutoCloseable {
                     exclusion_reason TEXT,
                     raw_sql TEXT NOT NULL,
                     replayable_sql TEXT,
-                    operation_id TEXT,
-                    pending_fingerprint TEXT,
-                    file_offset INTEGER CHECK (file_offset IS NULL OR file_offset >= 0),
-                    block_sha256 TEXT,
-                    binding_comment INTEGER CHECK (
-                        binding_comment IS NULL OR binding_comment IN (0, 1)
-                    ),
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (execution_id, session_id)
                         REFERENCES execution(execution_id, session_id),
@@ -269,16 +267,30 @@ public final class StateDatabase implements AutoCloseable {
                 WHERE execution_id IS NOT NULL
                 """);
         execute(connection, """
-                CREATE UNIQUE INDEX statement_event_operation_id
-                ON statement_event(operation_id) WHERE operation_id IS NOT NULL
-                """);
-        execute(connection, """
                 CREATE INDEX statement_event_by_release_sequence
                 ON statement_event(session_id, release_version, sequence_number)
                 """);
         execute(connection, """
                 CREATE INDEX export_artifact_by_state
                 ON export_artifact(state, created_at)
+                """);
+    }
+
+    private static void migrateToVersion2(Connection connection) throws SQLException {
+        execute(connection, "ALTER TABLE statement_event ADD COLUMN operation_id TEXT");
+        execute(connection, "ALTER TABLE statement_event ADD COLUMN pending_fingerprint TEXT");
+        execute(connection, """
+                ALTER TABLE statement_event ADD COLUMN file_offset INTEGER
+                CHECK (file_offset IS NULL OR file_offset >= 0)
+                """);
+        execute(connection, "ALTER TABLE statement_event ADD COLUMN block_sha256 TEXT");
+        execute(connection, """
+                ALTER TABLE statement_event ADD COLUMN binding_comment INTEGER
+                CHECK (binding_comment IS NULL OR binding_comment IN (0, 1))
+                """);
+        execute(connection, """
+                CREATE UNIQUE INDEX statement_event_operation_id
+                ON statement_event(operation_id) WHERE operation_id IS NOT NULL
                 """);
     }
 

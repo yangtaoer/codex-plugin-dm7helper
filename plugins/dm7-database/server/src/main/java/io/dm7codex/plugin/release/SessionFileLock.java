@@ -16,6 +16,7 @@ import java.nio.file.attribute.AclEntryType;
 import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.util.EnumSet;
 import java.util.Objects;
@@ -50,6 +51,9 @@ public final class SessionFileLock implements AutoCloseable {
         secureDirectory(paths.sessionsDirectory());
         secureDirectory(sessionDirectory);
         var lockPath = sessionDirectory.resolve("active.lock");
+        if (Files.exists(lockPath, LinkOption.NOFOLLOW_LINKS)) {
+            requireRegularComponent(lockPath, sessionDirectory.toRealPath().resolve("active.lock"));
+        }
         if (Files.isSymbolicLink(lockPath)) {
             throw new IllegalStateException("Session release lock path is not trusted");
         }
@@ -63,6 +67,7 @@ public final class SessionFileLock implements AutoCloseable {
         }
         try {
             secureFile(lockPath);
+            requireRegularComponent(lockPath, sessionDirectory.toRealPath().resolve("active.lock"));
             var deadline = System.nanoTime() + timeout.toNanos();
             while (true) {
                 FileLock lock = null;
@@ -105,35 +110,74 @@ public final class SessionFileLock implements AutoCloseable {
                 || Files.isSymbolicLink(expectedActive)) {
             throw new IllegalStateException("Session release path is not trusted");
         }
-        if (Files.exists(expectedDirectory)) {
-            try {
-                var realPluginData = paths.pluginData().toRealPath();
-                var realSessionsRoot = sessionsRoot.toRealPath();
-                var realSessionDirectory = expectedDirectory.toRealPath();
-                if (!realSessionsRoot.startsWith(realPluginData)
-                        || !realSessionDirectory.startsWith(realSessionsRoot)) {
-                    throw new IllegalStateException("Session release path is not trusted");
-                }
-            } catch (IOException invalidRealPath) {
+        try {
+            requireDirectoryComponent(sessionsRoot);
+            requireDirectoryComponent(expectedDirectory);
+            var realPluginData = paths.pluginData().toRealPath();
+            var expectedSessionsReal = realPluginData.resolve("sessions").normalize();
+            var realSessionsRoot = sessionsRoot.toRealPath();
+            var expectedSessionReal = expectedSessionsReal
+                    .resolve(session.externalIdHash()).normalize();
+            var realSessionDirectory = expectedDirectory.toRealPath();
+            if (!realSessionsRoot.equals(expectedSessionsReal)
+                    || !realSessionDirectory.equals(expectedSessionReal)) {
                 throw new IllegalStateException("Session release path is not trusted");
             }
+            if (Files.exists(expectedActive, LinkOption.NOFOLLOW_LINKS)) {
+                requireRegularComponent(expectedActive, expectedSessionReal.resolve("active.sql"));
+            }
+        } catch (IOException invalidRealPath) {
+            throw new IllegalStateException("Session release path is not trusted");
         }
         return expectedDirectory;
     }
 
     static void secureDirectory(Path directory) throws IOException {
         Files.createDirectories(directory);
+        requireDirectoryComponent(directory);
         secure(directory, true);
     }
 
     static void secureFile(Path file) throws IOException {
+        var attributes = Files.readAttributes(
+                file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!attributes.isRegularFile() || attributes.isOther() || attributes.isSymbolicLink()) {
+            throw new IOException("Release storage component is not a regular file");
+        }
         secure(file, false);
+    }
+
+    private static void requireDirectoryComponent(Path directory) throws IOException {
+        var attributes = Files.readAttributes(
+                directory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!attributes.isDirectory() || attributes.isOther() || attributes.isSymbolicLink()) {
+            throw new IOException("Release storage component is not a directory");
+        }
+    }
+
+    private static void requireRegularComponent(Path file, Path expectedReal) throws IOException {
+        var attributes = Files.readAttributes(
+                file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!attributes.isRegularFile() || attributes.isOther() || attributes.isSymbolicLink()
+                || !file.toRealPath().equals(expectedReal)) {
+            throw new IOException("Release storage component is not a trusted regular file");
+        }
     }
 
     private static void secure(Path path, boolean directory) throws IOException {
         var posix = Files.getFileAttributeView(
                 path, java.nio.file.attribute.PosixFileAttributeView.class,
                 LinkOption.NOFOLLOW_LINKS);
+        var acl = Files.getFileAttributeView(path, AclFileAttributeView.class,
+                LinkOption.NOFOLLOW_LINKS);
+        applyOwnerOnly(path, directory, posix, acl);
+    }
+
+    static void applyOwnerOnly(
+            Path path,
+            boolean directory,
+            java.nio.file.attribute.PosixFileAttributeView posix,
+            AclFileAttributeView acl) throws IOException {
         if (posix != null) {
             Files.setPosixFilePermissions(path,
                     directory ? OWNER_DIRECTORY_PERMISSIONS : OWNER_FILE_PERMISSIONS);
@@ -143,8 +187,6 @@ public final class SessionFileLock implements AutoCloseable {
             }
             return;
         }
-        var acl = Files.getFileAttributeView(path, AclFileAttributeView.class,
-                LinkOption.NOFOLLOW_LINKS);
         if (acl != null) {
             UserPrincipal processPrincipal;
             try {
@@ -189,7 +231,9 @@ public final class SessionFileLock implements AutoCloseable {
             if (!acl.getAcl().equals(java.util.List.of(expected))) {
                 throw new IOException("Owner-only ACL could not be verified");
             }
+            return;
         }
+        throw new IOException("Owner-only permissions are unavailable");
     }
 
     @Override

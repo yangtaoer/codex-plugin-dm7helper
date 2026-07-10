@@ -241,6 +241,7 @@ public final class ReleaseExportService {
 
     private void secureContainedDirectory(Path directory) throws IOException {
         var pluginData = paths.pluginData().toAbsolutePath().normalize();
+        var realPluginData = pluginData.toRealPath();
         var normalized = directory.toAbsolutePath().normalize();
         if (!normalized.startsWith(pluginData)) {
             throw new IOException("Release directory escaped plugin data");
@@ -254,12 +255,20 @@ public final class ReleaseExportService {
                 throw new IOException("Release directory contains a symbolic link");
             }
             if (!Files.exists(cursor)) Files.createDirectory(cursor);
-            if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS)) {
+            var attributes = Files.readAttributes(
+                    cursor, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!attributes.isDirectory() || attributes.isOther()
+                    || attributes.isSymbolicLink()) {
                 throw new IOException("Release path is not a directory");
+            }
+            var expectedReal = realPluginData.resolve(pluginData.relativize(cursor)).normalize();
+            if (!cursor.toRealPath().equals(expectedReal)) {
+                throw new IOException("Release directory identity is not trusted");
             }
             SessionFileLock.secureDirectory(cursor);
         }
-        if (!normalized.toRealPath().startsWith(pluginData.toRealPath())) {
+        if (!normalized.toRealPath().equals(
+                realPluginData.resolve(pluginData.relativize(normalized)).normalize())) {
             throw new IOException("Release directory escaped plugin data");
         }
     }
@@ -393,8 +402,12 @@ public final class ReleaseExportService {
     }
 
     private static void requireRegularNonLink(Path path) throws IOException {
-        if (Files.isSymbolicLink(path)
-                || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+        var normalized = path.toAbsolutePath().normalize();
+        var attributes = Files.readAttributes(
+                normalized, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!attributes.isRegularFile() || attributes.isOther()
+                || attributes.isSymbolicLink()
+                || !normalized.toRealPath().equals(normalized)) {
             throw new IOException("Release path is not a regular file");
         }
     }
