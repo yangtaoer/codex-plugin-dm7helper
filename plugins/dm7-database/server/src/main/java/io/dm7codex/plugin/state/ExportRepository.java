@@ -21,7 +21,7 @@ public final class ExportRepository {
                         UPDATE release_version
                         SET status = 'sealed', sealed_source_path = ?, sealed_source_sha256 = ?,
                             first_sequence = ?, last_sequence = ?, statement_count = ?, sealed_at = ?
-                        WHERE session_id = ? AND version = ?
+                        WHERE session_id = ? AND version = ? AND status = 'active'
                         """)) {
             statement.setString(1, normalizedText(release.sealedSourcePath()));
             statement.setString(2, release.sealedSourceSha256());
@@ -31,10 +31,15 @@ public final class ExportRepository {
             statement.setString(6, release.sealedAt().toString());
             statement.setString(7, release.sessionId());
             statement.setInt(8, release.version());
-            if (statement.executeUpdate() != 1) {
-                throw new SQLException("Release version does not exist");
-            }
+            if (statement.executeUpdate() == 1) return;
         }
+        var existing = findSealed(release.sessionId(), release.version());
+        if (existing.isPresent() && existing.get().equals(release)) {
+            return;
+        }
+        throw new SQLException(existing.isPresent()
+                ? "Sealed release metadata is immutable"
+                : "Release version does not exist");
     }
 
     public Optional<SealedRelease> findSealed(String sessionId, int version) throws SQLException {
@@ -43,7 +48,7 @@ public final class ExportRepository {
                         SELECT session_id, version, sealed_source_path, sealed_source_sha256,
                                first_sequence, last_sequence, statement_count, sealed_at
                         FROM release_version
-                        WHERE session_id = ? AND version = ? AND sealed_source_sha256 IS NOT NULL
+                        WHERE session_id = ? AND version = ? AND status = 'sealed'
                         """)) {
             statement.setString(1, sessionId);
             statement.setInt(2, version);
@@ -72,9 +77,16 @@ public final class ExportRepository {
                             created_at = excluded.created_at,
                             completed_at = excluded.completed_at,
                             error_message = excluded.error_message
+                        WHERE export_artifact.state <> 'COMPLETE'
                         """)) {
             bindArtifact(statement, artifact);
-            statement.executeUpdate();
+            var updated = statement.executeUpdate();
+            if (updated == 0) {
+                var existing = findArtifact(artifact.sessionId(), artifact.version()).orElseThrow();
+                if (!existing.equals(artifact)) {
+                    throw new SQLException("Completed export artifact is immutable");
+                }
+            }
         }
     }
 
