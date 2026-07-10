@@ -2,7 +2,7 @@
 
 日期：2026-07-10
 
-状态：已完成方案评审，待书面规格确认
+状态：书面规格已确认，进入实施计划
 
 目标插件名：`dm7-database`
 
@@ -46,7 +46,7 @@ Codex 当前公开插件能力支持打包 MCP 服务，但没有公开保证“
 
 - 可分享插件中不提交 `Dm7JdbcDriver-7.0.jar`。
 - 管理页允许选择本地驱动 JAR，并持久化驱动文件路径和 SHA-256。
-- 测试时使用用户提供的本地驱动：`C:\Users\yangt\.m2\repository\com\dameng\Dm7JdbcDriver\7.0\Dm7JdbcDriver-7.0.jar`。
+- 测试时由 `DM7_IT_DRIVER_JAR` 指向用户提供的 `Dm7JdbcDriver-7.0.jar`；机器上的绝对路径不写入仓库或验收报告。
 - 服务显式加载 `dm7.jdbc.driver.Dm7Driver`，不能依赖 JDBC Service Provider 自动发现。
 
 ## 3. 总体架构
