@@ -13,13 +13,17 @@ import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
 
 public final class DmLiteralRenderer {
+    private static final long MAX_PLAIN_LITERAL_LENGTH = 100_000L;
+
     public String render(Object value, int jdbcType) {
         if (value == null) return "NULL";
         if (isBooleanType(jdbcType) && value instanceof Boolean booleanValue) {
             return booleanValue ? "TRUE" : "FALSE";
         }
         if (isIntegralType(jdbcType) && isIntegral(value)) return value.toString();
-        if (isDecimalType(jdbcType) && value instanceof BigDecimal decimal) return decimal.toPlainString();
+        if (isDecimalType(jdbcType) && value instanceof BigDecimal decimal) {
+            return renderPlainDecimal(decimal, jdbcType);
+        }
         if (isDecimalType(jdbcType) && isIntegral(value)) return value.toString();
         if (isFloatingType(jdbcType) && value instanceof Float floating) {
             if (!Float.isFinite(floating)) throw unsupported(jdbcType);
@@ -68,6 +72,28 @@ public final class DmLiteralRenderer {
 
     private static String quote(String value, boolean national) {
         return (national ? "N'" : "'") + value.replace("'", "''") + "'";
+    }
+
+    private static String renderPlainDecimal(BigDecimal decimal, int jdbcType) {
+        long precision = decimal.precision();
+        long scale = decimal.scale();
+        long unsignedLength;
+        if (decimal.signum() == 0 && scale <= 0) {
+            unsignedLength = 1L;
+        } else if (scale <= 0) {
+            unsignedLength = precision - scale;
+        } else if (scale >= precision) {
+            unsignedLength = scale + 2L;
+        } else {
+            unsignedLength = precision + 1L;
+        }
+        long renderedLength = unsignedLength + (decimal.signum() < 0 ? 1L : 0L);
+        if (renderedLength > MAX_PLAIN_LITERAL_LENGTH) throw unsupported(jdbcType);
+        try {
+            return decimal.toPlainString();
+        } catch (ArithmeticException unsafeLayout) {
+            throw unsupported(jdbcType);
+        }
     }
 
     private static boolean isIntegral(Object value) {

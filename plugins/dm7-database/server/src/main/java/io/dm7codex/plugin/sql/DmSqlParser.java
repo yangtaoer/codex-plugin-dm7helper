@@ -3,7 +3,9 @@ package io.dm7codex.plugin.sql;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
@@ -16,7 +18,6 @@ public final class DmSqlParser {
     private static final Set<String> DML = Set.of("MERGE", "INSERT", "UPDATE", "DELETE");
     private static final Set<String> DCL = Set.of("GRANT", "REVOKE");
     private static final Set<String> TRANSACTION = Set.of("COMMIT", "ROLLBACK", "SAVEPOINT");
-    private static final Set<String> STRUCTURED_END_SUFFIXES = Set.of("IF", "LOOP", "CASE");
 
     public List<ParsedStatement> parse(String script) {
         Objects.requireNonNull(script, "script");
@@ -196,15 +197,14 @@ public final class DmSqlParser {
         private final List<String> statements = new ArrayList<>();
         private final StringBuilder current = new StringBuilder();
         private final List<String> headerWords = new ArrayList<>();
+        private final Deque<ProceduralBlock> proceduralBlocks = new ArrayDeque<>();
         private LexState state = LexState.NORMAL;
         private LexState quotedReturnState = LexState.NORMAL;
         private int parenthesesDepth;
         private int commentDepth;
-        private int beginDepth;
-        private int caseDepth;
-        private boolean sawBegin;
+        private boolean proceduralRootSeen;
         private boolean proceduralComplete;
-        private boolean skipClosingCaseKeyword;
+        private ProceduralBlock closingKeywordToConsume;
 
         private Lexer(String script) {
             this.script = script;
@@ -301,34 +301,43 @@ public final class DmSqlParser {
                 if (isAnonymousHeader(headerWords) || isCreateRoutineHeader(headerWords)) {
                     state = LexState.PROCEDURAL_BLOCK;
                     if ("BEGIN".equals(word)) {
-                        beginDepth = 1;
-                        sawBegin = true;
+                        openProceduralBlock(ProceduralBlock.BEGIN);
                     }
                 }
                 return;
             }
-            if ("BEGIN".equals(word)) {
-                beginDepth++;
-                sawBegin = true;
-                proceduralComplete = false;
-            } else if ("CASE".equals(word)) {
-                if (skipClosingCaseKeyword) {
-                    skipClosingCaseKeyword = false;
-                } else {
-                    caseDepth++;
-                }
-            } else if ("END".equals(word) && sawBegin) {
-                String suffix = nextSignificantWord(script, wordEnd);
-                if ("CASE".equals(suffix)) {
-                    if (caseDepth > 0) caseDepth--;
-                    skipClosingCaseKeyword = true;
-                } else if (caseDepth > 0 && !STRUCTURED_END_SUFFIXES.contains(suffix)) {
-                    caseDepth--;
-                } else if (!STRUCTURED_END_SUFFIXES.contains(suffix)) {
-                    if (beginDepth > 0) beginDepth--;
-                    proceduralComplete = beginDepth == 0;
+            if (closingKeywordToConsume != null) {
+                ProceduralBlock expected = closingKeywordToConsume;
+                closingKeywordToConsume = null;
+                if (expected.keyword().equals(word)) return;
+            }
+            switch (word) {
+                case "BEGIN" -> openProceduralBlock(ProceduralBlock.BEGIN);
+                case "CASE" -> openProceduralBlock(ProceduralBlock.CASE);
+                case "IF" -> openProceduralBlock(ProceduralBlock.IF);
+                case "LOOP" -> openProceduralBlock(ProceduralBlock.LOOP);
+                case "END" -> closeProceduralBlock(nextSignificantWord(script, wordEnd));
+                default -> { }
+            }
+        }
+
+        private void openProceduralBlock(ProceduralBlock block) {
+            proceduralBlocks.push(block);
+            if (block == ProceduralBlock.BEGIN) proceduralRootSeen = true;
+            proceduralComplete = false;
+        }
+
+        private void closeProceduralBlock(String suffix) {
+            ProceduralBlock expected = ProceduralBlock.forClosingSuffix(suffix);
+            if (expected == null) {
+                if (!proceduralBlocks.isEmpty()) proceduralBlocks.pop();
+            } else {
+                closingKeywordToConsume = expected;
+                if (!proceduralBlocks.isEmpty() && proceduralBlocks.peek() == expected) {
+                    proceduralBlocks.pop();
                 }
             }
+            proceduralComplete = proceduralRootSeen && proceduralBlocks.isEmpty();
         }
 
         private boolean isDelimiter(boolean procedural) {
@@ -344,11 +353,10 @@ public final class DmSqlParser {
             quotedReturnState = LexState.NORMAL;
             parenthesesDepth = 0;
             commentDepth = 0;
-            beginDepth = 0;
-            caseDepth = 0;
-            sawBegin = false;
+            proceduralBlocks.clear();
+            proceduralRootSeen = false;
             proceduralComplete = false;
-            skipClosingCaseKeyword = false;
+            closingKeywordToConsume = null;
         }
 
         private static boolean isAnonymousHeader(List<String> words) {
@@ -361,6 +369,26 @@ public final class DmSqlParser {
             if (words.size() > cursor && "OR".equals(words.get(cursor))) cursor++;
             if (words.size() > cursor && "REPLACE".equals(words.get(cursor))) cursor++;
             return words.size() > cursor && Set.of("PROCEDURE", "FUNCTION", "TRIGGER").contains(words.get(cursor));
+        }
+    }
+
+    private enum ProceduralBlock {
+        BEGIN,
+        CASE,
+        IF,
+        LOOP;
+
+        private String keyword() {
+            return name();
+        }
+
+        private static ProceduralBlock forClosingSuffix(String suffix) {
+            return switch (suffix) {
+                case "CASE" -> CASE;
+                case "IF" -> IF;
+                case "LOOP" -> LOOP;
+                default -> null;
+            };
         }
     }
 

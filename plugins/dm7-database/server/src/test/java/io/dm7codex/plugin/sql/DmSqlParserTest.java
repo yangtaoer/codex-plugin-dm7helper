@@ -2,6 +2,7 @@ package io.dm7codex.plugin.sql;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -144,6 +145,77 @@ class DmSqlParserTest {
         for (String script : scripts) {
             assertEquals(2, parser.parse(script).size(), script);
         }
+    }
+
+    @Test
+    void nestedBeginInsideCaseCannotHideFollowingCredentialDdl() {
+        String script = """
+                CREATE OR REPLACE PROCEDURE REVIEW_CASE AS
+                BEGIN
+                  CASE
+                    WHEN 1 = 1 THEN
+                      BEGIN
+                        NULL;
+                      END;
+                  END CASE;
+                END;
+                CREATE USER REVIEW_USER IDENTIFIED BY fixture_review_value;
+                """;
+
+        List<ParsedStatement> statements = parser.parse(script);
+
+        assertEquals(2, statements.size());
+        assertEquals(SqlKind.DDL, statements.get(0).kind());
+        assertEquals(SqlKind.DDL, statements.get(1).kind());
+        assertThrows(SecretBearingSqlException.class,
+                () -> new SqlSecurityPolicy().assertNoEmbeddedCredentials(statements.get(1)));
+    }
+
+    @ParameterizedTest
+    @MethodSource("proceduralStackCases")
+    void tracksNestedProceduralBlocksUntilTheRoutineTerminator(String routine, String bodyMarker) {
+        List<ParsedStatement> statements = parser.parse(routine + "\nSELECT 1;");
+
+        assertEquals(2, statements.size(), bodyMarker);
+        assertEquals(SqlKind.DDL, statements.get(0).kind());
+        assertTrue(statements.get(0).originalSql().contains(bodyMarker));
+        assertEquals(SqlKind.QUERY, statements.get(1).kind());
+    }
+
+    static Stream<Arguments> proceduralStackCases() {
+        return Stream.of(
+                Arguments.of("""
+                        CREATE OR REPLACE PROCEDURE STACKED_IF AS
+                        BEGIN
+                          IF 1 = 1 THEN
+                            BEGIN
+                              CASE WHEN 1 = 1 THEN NULL; ELSE NULL; END CASE;
+                            END;
+                          ELSIF 2 = 2 THEN
+                            NULL;
+                          END IF;
+                        END STACKED_IF;
+                        """, "ELSIF 2 = 2"),
+                Arguments.of("""
+                        CREATE OR REPLACE TRIGGER STACKED_LOOPS AFTER INSERT ON T
+                        BEGIN
+                          FOR I IN 1..2 LOOP
+                            WHILE I > 0 LOOP
+                              BEGIN
+                                NULL;
+                              END;
+                            END LOOP;
+                          END LOOP;
+                        END STACKED_LOOPS;
+                        """, "WHILE I > 0 LOOP"),
+                Arguments.of("""
+                        CREATE OR REPLACE PROCEDURE NESTED_CASE AS
+                        BEGIN
+                          INSERT INTO T(V) SELECT CASE WHEN 1 = 1
+                            THEN CASE WHEN 2 = 2 THEN 2 ELSE 3 END
+                            ELSE 4 END FROM DUAL;
+                        END;
+                        """, "THEN CASE WHEN 2 = 2"));
     }
 
     private static String fixture(String name) throws IOException {

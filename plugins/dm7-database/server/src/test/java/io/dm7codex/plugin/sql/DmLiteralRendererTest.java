@@ -2,8 +2,10 @@ package io.dm7codex.plugin.sql;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.sql.Date;
 import java.sql.Time;
 import java.sql.Timestamp;
@@ -13,6 +15,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.stream.Stream;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -38,6 +41,7 @@ class DmLiteralRendererTest {
                 Arguments.of(new BigDecimal("123.4500"), Types.DECIMAL, "123.4500"),
                 Arguments.of(1.25f, Types.REAL, "1.25"),
                 Arguments.of(2.5d, Types.DOUBLE, "2.5"),
+                Arguments.of(Double.MAX_VALUE, Types.DOUBLE, "1.7976931348623157E308"),
                 Arguments.of("O'Brien 中文", Types.VARCHAR, "'O''Brien 中文'"),
                 Arguments.of("中文", Types.NVARCHAR, "N'中文'"),
                 Arguments.of(Date.valueOf("2026-07-11"), Types.DATE, "DATE '2026-07-11'"),
@@ -69,5 +73,31 @@ class DmLiteralRendererTest {
                 Arguments.of(new Object(), Types.JAVA_OBJECT),
                 Arguments.of("1", Types.INTEGER),
                 Arguments.of(1, Types.VARCHAR));
+    }
+
+    @Test
+    void rejectsDecimalWhosePlainRenderingExceedsTheSafetyLimit() {
+        assertThrows(UnrenderableParameterException.class,
+                () -> renderer.render(new BigDecimal("1E-1000000"), Types.DECIMAL));
+    }
+
+    @Test
+    void rendersDecimalWhosePlainRenderingIsInsideTheSafetyLimit() {
+        String rendered = renderer.render(new BigDecimal("1E-99998"), Types.DECIMAL);
+
+        assertEquals(100_000, rendered.length());
+        assertTrue(rendered.startsWith("0."));
+        assertTrue(rendered.endsWith("1"));
+    }
+
+    @Test
+    void rejectsExtremeScalesBeforeBigDecimalCanOverflowItsLayout() {
+        BigDecimal extremeNegative = new BigDecimal(BigInteger.ONE, Integer.MIN_VALUE);
+        BigDecimal extremePositive = new BigDecimal(BigInteger.ONE, Integer.MAX_VALUE);
+
+        assertThrows(UnrenderableParameterException.class,
+                () -> renderer.render(extremeNegative, Types.NUMERIC));
+        assertThrows(UnrenderableParameterException.class,
+                () -> renderer.render(extremePositive, Types.NUMERIC));
     }
 }
