@@ -1,2 +1,9 @@
+**/target/
+**/node_modules/
+plugins/dm7-database/web/dist/
+dist/
+.env
+.env.*
+*.env.local
 .worktrees/
 .superpowers/

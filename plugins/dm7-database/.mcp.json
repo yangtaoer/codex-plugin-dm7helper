@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "dm7": {
+      "command": "java",
+      "args": [
+        "-Dfile.encoding=UTF-8",
+        "-jar",
+        "${PLUGIN_ROOT}/lib/dm7-codex-plugin.jar",
+        "--stdio"
+      ]
+    }
+  }
+}

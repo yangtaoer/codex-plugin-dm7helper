@@ -1,0 +1,20 @@
+{
+  "name": "dm7-database-local",
+  "interface": {
+    "displayName": "DM7 Database Local"
+  },
+  "plugins": [
+    {
+      "name": "dm7-database",
+      "source": {
+        "source": "local",
+        "path": "./plugins/dm7-database"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

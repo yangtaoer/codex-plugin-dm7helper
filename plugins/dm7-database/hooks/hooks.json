@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File ${PLUGIN_ROOT}/hooks/session-context.ps1",
+            "statusMessage": "Preparing DM7 session context"
+          }
+        ]
+      }
+    ]
+  }
+}

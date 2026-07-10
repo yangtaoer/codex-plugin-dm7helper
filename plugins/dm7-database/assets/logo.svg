@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">Dameng 7 Database</title>
+  <rect width="256" height="256" rx="56" fill="#F2FBF8"/>
+  <ellipse cx="128" cy="72" rx="72" ry="32" fill="#147D64"/>
+  <path fill="#147D64" d="M56 72v112c0 17.7 32.2 32 72 32s72-14.3 72-32V72c-12.1 20-39.4 32-72 32S68.1 92 56 72Z"/>
+  <path fill="none" stroke="#BCE8DA" stroke-linecap="round" stroke-width="12" d="M62 116c9.6 17.1 35.1 28 66 28s56.4-10.9 66-28M62 160c9.6 17.1 35.1 28 66 28 15.1 0 29.1-2.6 40.5-7.2"/>
+  <path fill="#F2FBF8" d="m190 139 8.3 16.8 18.5 2.7-13.4 13 3.2 18.5-16.6-8.7-16.6 8.7 3.2-18.5-13.4-13 18.5-2.7L190 139Z"/>
+</svg>

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Dameng 7 database</title>
+  <defs>
+    <linearGradient id="g" x1="12" y1="8" x2="52" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#20A47F"/>
+      <stop offset="1" stop-color="#0B5D4B"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#g)" d="M8 16c0-6.6 10.7-12 24-12s24 5.4 24 12v32c0 6.6-10.7 12-24 12S8 54.6 8 48V16Z"/>
+  <path fill="none" stroke="#E7FFF8" stroke-linecap="round" stroke-width="4" d="M12 16c0 5.5 9 10 20 10s20-4.5 20-10M12 32c0 5.5 9 10 20 10 3.1 0 6-.4 8.6-1.1M12 48c0 5.5 9 10 20 10 3.1 0 6-.4 8.6-1.1"/>
+  <path fill="#E7FFF8" d="m47.2 34.2 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9 2.7-5.5Z"/>
+</svg>
