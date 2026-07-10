@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.UUID;
 
 public final class SessionRepository {
@@ -15,9 +16,13 @@ public final class SessionRepository {
     private static final String UNBOUND = "unbound";
 
     private final StateDatabase database;
+    private final Path sessionsDirectory;
 
-    public SessionRepository(StateDatabase database) {
-        this.database = database;
+    public SessionRepository(StateDatabase database, Path sessionsDirectory) {
+        this.database = Objects.requireNonNull(database, "database");
+        this.sessionsDirectory = Objects.requireNonNull(sessionsDirectory, "sessionsDirectory")
+                .toAbsolutePath()
+                .normalize();
     }
 
     public SessionState initialize(
@@ -26,7 +31,7 @@ public final class SessionRepository {
             Path activeSql,
             ActiveSqlCreator activeSqlCreator)
             throws SQLException, IOException {
-        var normalizedActiveSql = activeSql.toAbsolutePath().normalize();
+        var normalizedActiveSql = requireExpectedActiveSql(externalIdHash, activeSql);
         var creationAttempted = false;
         try (var connection = database.openConnection()) {
             StateDatabase.execute(connection, "BEGIN IMMEDIATE");
@@ -62,6 +67,23 @@ public final class SessionRepository {
                 throw failure;
             }
         }
+    }
+
+    private Path requireExpectedActiveSql(String externalIdHash, Path activeSql)
+            throws SQLException {
+        Objects.requireNonNull(externalIdHash, "externalIdHash");
+        var expected = sessionsDirectory.resolve(externalIdHash).resolve("active.sql")
+                .toAbsolutePath()
+                .normalize();
+        var expectedParent = expected.getParent();
+        if (expectedParent == null
+                || !sessionsDirectory.equals(expectedParent.getParent())
+                || !expected.equals(Objects.requireNonNull(activeSql, "activeSql")
+                        .toAbsolutePath()
+                        .normalize())) {
+            throw new SQLException("Active SQL path does not match the trusted session path");
+        }
+        return expected;
     }
 
     private static SessionState findByExternalIdHash(

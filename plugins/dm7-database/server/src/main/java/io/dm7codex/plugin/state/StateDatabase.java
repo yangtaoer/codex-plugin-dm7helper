@@ -124,7 +124,21 @@ public final class StateDatabase implements AutoCloseable {
                     FOREIGN KEY (session_id) REFERENCES logical_session(session_id) ON DELETE CASCADE,
                     CHECK (
                         (first_sequence IS NULL AND last_sequence IS NULL)
-                        OR (first_sequence >= 0 AND last_sequence >= first_sequence)
+                        OR (
+                            first_sequence IS NOT NULL AND last_sequence IS NOT NULL
+                            AND first_sequence >= 0 AND last_sequence >= first_sequence
+                        )
+                    ),
+                    CHECK (
+                        status <> 'sealed'
+                        OR (
+                            sealed_source_path IS NOT NULL
+                            AND length(trim(sealed_source_path)) > 0
+                            AND sealed_source_sha256 IS NOT NULL
+                            AND length(trim(sealed_source_sha256)) > 0
+                            AND sealed_at IS NOT NULL
+                            AND length(trim(sealed_at)) > 0
+                        )
                     )
                 )
                 """);
@@ -152,7 +166,8 @@ public final class StateDatabase implements AutoCloseable {
                     error_message TEXT,
                     recorded INTEGER NOT NULL DEFAULT 0 CHECK (recorded IN (0, 1)),
                     exclusion_reason TEXT,
-                    FOREIGN KEY (session_id) REFERENCES logical_session(session_id) ON DELETE CASCADE
+                    FOREIGN KEY (session_id) REFERENCES logical_session(session_id) ON DELETE CASCADE,
+                    UNIQUE (execution_id, session_id)
                 )
                 """);
         execute(connection, """
@@ -174,7 +189,8 @@ public final class StateDatabase implements AutoCloseable {
                     raw_sql TEXT NOT NULL,
                     replayable_sql TEXT,
                     created_at TEXT NOT NULL,
-                    FOREIGN KEY (execution_id) REFERENCES execution(execution_id) ON DELETE SET NULL,
+                    FOREIGN KEY (execution_id, session_id)
+                        REFERENCES execution(execution_id, session_id),
                     FOREIGN KEY (session_id, release_version)
                         REFERENCES release_version(session_id, version) ON DELETE CASCADE,
                     UNIQUE (session_id, release_version, sequence_number)
@@ -199,9 +215,34 @@ public final class StateDatabase implements AutoCloseable {
                     UNIQUE (session_id, version),
                     CHECK (
                         (first_sequence IS NULL AND last_sequence IS NULL)
-                        OR (first_sequence >= 0 AND last_sequence >= first_sequence)
+                        OR (
+                            first_sequence IS NOT NULL AND last_sequence IS NOT NULL
+                            AND first_sequence >= 0 AND last_sequence >= first_sequence
+                        )
+                    ),
+                    CHECK (
+                        state <> 'COMPLETE'
+                        OR (
+                            artifact_path IS NOT NULL
+                            AND length(trim(artifact_path)) > 0
+                            AND artifact_sha256 IS NOT NULL
+                            AND length(trim(artifact_sha256)) > 0
+                            AND completed_at IS NOT NULL
+                            AND length(trim(completed_at)) > 0
+                        )
                     )
                 )
+                """);
+        execute(connection, """
+                CREATE TRIGGER detach_statement_events_before_execution_delete
+                BEFORE DELETE ON execution
+                FOR EACH ROW
+                BEGIN
+                    UPDATE statement_event
+                    SET execution_id = NULL
+                    WHERE execution_id = OLD.execution_id
+                      AND session_id = OLD.session_id;
+                END
                 """);
         execute(connection, """
                 CREATE UNIQUE INDEX one_active_release_per_session

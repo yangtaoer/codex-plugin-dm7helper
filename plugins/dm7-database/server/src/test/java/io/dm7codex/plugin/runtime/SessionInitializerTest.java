@@ -29,7 +29,8 @@ class SessionInitializerTest {
     void firstCallCreatesIndependentV001ActiveSql() throws Exception {
         var paths = RuntimePaths.forTest(tempDir);
         try (var database = StateDatabase.open(paths.stateDatabase())) {
-            var initializer = new SessionInitializer(paths, new SessionRepository(database));
+            var initializer = new SessionInitializer(
+                    paths, new SessionRepository(database, paths.sessionsDirectory()));
 
             var a = initializer.initialize(new SessionIdentity("thread-a", "codex_thread", "verified"));
             var b = initializer.initialize(new SessionIdentity("thread-b", "codex_thread", "verified"));
@@ -48,7 +49,8 @@ class SessionInitializerTest {
     void repeatedInitializationReturnsSameVersionWithoutTruncating() throws Exception {
         var paths = RuntimePaths.forTest(tempDir);
         try (var database = StateDatabase.open(paths.stateDatabase())) {
-            var initializer = new SessionInitializer(paths, new SessionRepository(database));
+            var initializer = new SessionInitializer(
+                    paths, new SessionRepository(database, paths.sessionsDirectory()));
             var identity = new SessionIdentity("thread-repeat", "codex_thread", "verified");
             var first = initializer.initialize(identity);
             Files.writeString(first.activeSql(), "-- sentinel\n", UTF_8, StandardOpenOption.APPEND);
@@ -69,7 +71,8 @@ class SessionInitializerTest {
                 MessageDigest.getInstance("SHA-256").digest(unsafeId.getBytes(UTF_8)));
 
         try (var database = StateDatabase.open(paths.stateDatabase())) {
-            var initializer = new SessionInitializer(paths, new SessionRepository(database));
+            var initializer = new SessionInitializer(
+                    paths, new SessionRepository(database, paths.sessionsDirectory()));
             var session = initializer.initialize(
                     new SessionIdentity(unsafeId, "codex_thread", "verified"));
 
@@ -84,7 +87,8 @@ class SessionInitializerTest {
     void concurrentInitializationCreatesOneSessionAndOneHeader() throws Exception {
         var paths = RuntimePaths.forTest(tempDir);
         try (var database = StateDatabase.open(paths.stateDatabase())) {
-            var initializer = new SessionInitializer(paths, new SessionRepository(database));
+            var initializer = new SessionInitializer(
+                    paths, new SessionRepository(database, paths.sessionsDirectory()));
             var identity = new SessionIdentity("thread-concurrent", "codex_thread", "verified");
             var executor = Executors.newFixedThreadPool(8);
             try {
@@ -113,21 +117,54 @@ class SessionInitializerTest {
         var activeSql = paths.sessionsDirectory().resolve(externalIdHash).resolve("active.sql");
 
         try (var database = StateDatabase.open(paths.stateDatabase())) {
-            var repository = new SessionRepository(database);
-            org.junit.jupiter.api.Assertions.assertThrows(IOException.class, () -> repository.initialize(
-                    identity,
-                    externalIdHash,
-                    activeSql,
-                    file -> {
-                        Files.createDirectories(file.getParent());
-                        Files.writeString(file, "-- partial\n", UTF_8, StandardOpenOption.CREATE_NEW);
-                        throw new IOException("simulated creator failure");
-                    }));
+            var repository = new SessionRepository(database, paths.sessionsDirectory());
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IOException.class,
+                    () -> repository.initialize(
+                            identity,
+                            externalIdHash,
+                            activeSql,
+                            file -> {
+                                Files.createDirectories(file.getParent());
+                                Files.writeString(
+                                        file,
+                                        "-- partial\n",
+                                        UTF_8,
+                                        StandardOpenOption.CREATE_NEW);
+                                throw new IOException("simulated creator failure");
+                            }));
 
             assertFalse(Files.exists(activeSql));
             var recovered = new SessionInitializer(paths, repository).initialize(identity);
             assertHeaderOnlyV001(recovered.activeSql());
         }
+    }
+
+    @Test
+    void repositoryRejectsExternalActiveSqlWithoutDeletingIt() throws Exception {
+        var paths = RuntimePaths.forTest(tempDir);
+        var identity = new SessionIdentity("thread-external-path", "codex_thread", "verified");
+        var externalFile = tempDir.resolve("external.sql").toAbsolutePath().normalize();
+        Files.writeString(externalFile, "-- must survive\n", UTF_8, StandardOpenOption.CREATE_NEW);
+        var expectedBytes = Files.readAllBytes(externalFile);
+
+        try (var database = StateDatabase.open(paths.stateDatabase())) {
+            var repository = new SessionRepository(database, paths.sessionsDirectory());
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    java.sql.SQLException.class,
+                    () -> repository.initialize(
+                            identity,
+                            sha256(identity.externalId()),
+                            externalFile,
+                            file -> Files.writeString(
+                                    file,
+                                    "-- replaced\n",
+                                    UTF_8,
+                                    StandardOpenOption.CREATE_NEW)));
+        }
+
+        assertArrayEquals(expectedBytes, Files.readAllBytes(externalFile));
     }
 
     @Test
@@ -144,7 +181,8 @@ class SessionInitializerTest {
 
         try (var restartedDatabase = StateDatabase.open(paths.stateDatabase())) {
             var recovered = new SessionInitializer(
-                            paths, new SessionRepository(restartedDatabase))
+                            paths,
+                            new SessionRepository(restartedDatabase, paths.sessionsDirectory()))
                     .initialize(identity);
 
             assertEquals(orphan, recovered.activeSql());
@@ -158,7 +196,8 @@ class SessionInitializerTest {
         var paths = RuntimePaths.forTest(tempDir);
         var identity = new SessionIdentity("thread-path-tamper", "codex_thread", "verified");
         try (var database = StateDatabase.open(paths.stateDatabase())) {
-            var initializer = new SessionInitializer(paths, new SessionRepository(database));
+            var initializer = new SessionInitializer(
+                    paths, new SessionRepository(database, paths.sessionsDirectory()));
             var session = initializer.initialize(identity);
             Files.writeString(session.activeSql(), "-- preserved\n", UTF_8, StandardOpenOption.APPEND);
             var expectedBytes = Files.readAllBytes(session.activeSql());
@@ -183,7 +222,8 @@ class SessionInitializerTest {
         var paths = RuntimePaths.forTest(tempDir);
         var identity = new SessionIdentity("thread-equivalent-path", "codex_thread", "verified");
         try (var database = StateDatabase.open(paths.stateDatabase())) {
-            var initializer = new SessionInitializer(paths, new SessionRepository(database));
+            var initializer = new SessionInitializer(
+                    paths, new SessionRepository(database, paths.sessionsDirectory()));
             var session = initializer.initialize(identity);
             Files.writeString(session.activeSql(), "-- must survive\n", UTF_8, StandardOpenOption.APPEND);
             var expectedBytes = Files.readAllBytes(session.activeSql());

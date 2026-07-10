@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.dm7codex.plugin.runtime.RuntimePaths;
+import io.dm7codex.plugin.runtime.SessionIdentity;
+import io.dm7codex.plugin.runtime.SessionInitializer;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -102,6 +104,47 @@ class StateDatabaseTest {
     }
 
     @Test
+    void sequenceRangesRejectHalfNullAndReverseValues() throws Exception {
+        var paths = RuntimePaths.forTest(tempDir);
+        try (var database = StateDatabase.open(paths.stateDatabase())) {
+            var session = new SessionInitializer(
+                            paths, new SessionRepository(database, paths.sessionsDirectory()))
+                    .initialize(new SessionIdentity(
+                            "range-thread", "codex_thread", "verified"));
+            try (var connection = database.openConnection()) {
+                assertSqlRejected(connection, """
+                        UPDATE release_version
+                        SET first_sequence = 0, last_sequence = NULL
+                        WHERE session_id = '%s' AND version = %d
+                        """.formatted(session.sessionId(), session.version()));
+                assertSqlRejected(connection, """
+                        UPDATE release_version
+                        SET first_sequence = 2, last_sequence = 1
+                        WHERE session_id = '%s' AND version = %d
+                        """.formatted(session.sessionId(), session.version()));
+                assertSqlRejected(connection, """
+                        INSERT INTO export_artifact(
+                            export_id, session_id, version, state,
+                            first_sequence, last_sequence, created_at
+                        ) VALUES (
+                            'half-null-export', '%s', %d, 'RECOVERY_REQUIRED',
+                            0, NULL, '2026-07-10T00:00:00Z'
+                        )
+                        """.formatted(session.sessionId(), session.version()));
+                assertSqlRejected(connection, """
+                        INSERT INTO export_artifact(
+                            export_id, session_id, version, state,
+                            first_sequence, last_sequence, created_at
+                        ) VALUES (
+                            'reverse-export', '%s', %d, 'RECOVERY_REQUIRED',
+                            2, 1, '2026-07-10T00:00:00Z'
+                        )
+                        """.formatted(session.sessionId(), session.version()));
+            }
+        }
+    }
+
+    @Test
     void concurrentOpensApplyMigrationExactlyOnce() throws Exception {
         var databasePath = RuntimePaths.forTest(tempDir).stateDatabase();
         var executor = Executors.newFixedThreadPool(4);
@@ -182,6 +225,14 @@ class StateDatabaseTest {
             rows.next();
             return rows.getInt(1);
         }
+    }
+
+    private static void assertSqlRejected(Connection connection, String sql) {
+        assertThrows(SQLException.class, () -> {
+            try (var statement = connection.createStatement()) {
+                statement.executeUpdate(sql);
+            }
+        });
     }
 
     private static String textPragma(Connection connection, String pragma) throws SQLException {
