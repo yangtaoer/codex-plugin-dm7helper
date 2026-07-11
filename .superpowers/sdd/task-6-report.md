@@ -36,7 +36,7 @@ The follow-up review was addressed in a separate fix commit:
 - DM metadata fallback now uses a fixed `ALL_TABLES`/`ALL_VIEWS` union, parameterized `ROWNUM` paging, real `ALL_TAB_COLUMNS` fields, and explicit DM type-name to `java.sql.Types` mapping.
 - Driver isolation restart requirements are discovered recursively through cause and suppressed exception graphs. Event session histories use bounded LRU retention, and low-cost record invariants/defensive copies were added.
 
-Final clean verification after remediation: 226 tests, zero failures, zero errors, Java 17 target.
+Final clean verification after terminal-claim remediation: 238 tests, zero failures, zero errors, Java 17 target (Maven executed on JDK 21).
 
 ## Strict cancellation and limit remediation
 
@@ -51,3 +51,5 @@ Final clean verification after remediation: 226 tests, zero failures, zero error
 - Every statement retains its original safe error. Overall failure uses the first statement error's phase/message/SQLState/vendor code and only aggregates `restartRequired` across later errors.
 - Unknown binary streams start with at most a small 12 KiB-derived Base64 capacity; byte arrays size capacity from their actual bounded length. Large configured limits no longer cause eager budget-sized allocation.
 - Registry terminal claims atomically resolve cancellation versus completion. Cancellation checks surround open, reservation, attachment, execution, commit, logging, close, and terminal publication boundaries. Commit-before-cancel facts finish required logging and return `CANCELLED`; completion-before-cancel makes later cancellation return false.
+- Query and mutation terminal exits now use unified finish helpers: the registry stores the winning terminal status, then exactly one event/history/result is produced from that status. Cleanup finally blocks only unregister resources and cannot change the claimed terminal outcome.
+- Deterministic latch tests cover queued cancellation before connection open, cancellation while open returns before statement execution, and cancellation during slow connection close. Registry tests cover cancel-first arbitration and terminal-claim-first rejection of late cancellation.

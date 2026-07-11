@@ -98,11 +98,7 @@ public final class ExecutionService implements AutoCloseable {
         try {
             return bounded(executionId, () -> queryValidated(session, command, statements, executionId, correlationId));
         } catch (ExecutionQueueFullException full) {
-            registry.complete(executionId);
-            publish(session, executionId, ExecutionStatus.REJECTED);
-            terminalHistory(executionId, ExecutionStatus.REJECTED, Optional.of(
-                    new SafeError(correlationId, ExecutionStatus.QUEUED,
-                            "Execution queue is full", "DM7APP", 70002, false)));
+            finishRejected(session, executionId, correlationId);
             throw full;
         }
     }
@@ -178,35 +174,16 @@ public final class ExecutionService implements AutoCloseable {
             }
             managed.close();
             managed = null;
-            if (!registry.claimTerminal(executionId)) {
-                var cancelled = new SafeError(correlationId, currentPhase,
-                        "Execution was cancelled", "DM7APP", 70004, false);
-                publish(session, executionId, ExecutionStatus.CANCELLED);
-                terminalHistory(executionId, ExecutionStatus.CANCELLED, Optional.of(cancelled));
-                return new QueryResult(executionId, List.of(), List.of(), false, 0, 0,
-                        elapsed(started), fingerprint, Optional.of(cancelled));
-            }
-            publish(session, executionId, ExecutionStatus.COMPLETED);
-            if (history != null) {
-                history.queryFinished(executionId, successful.returnedRows());
-                history.terminal(executionId, ExecutionStatus.COMPLETED, Optional.empty());
-            }
-            return successful;
+            return finishQuery(session, executionId, correlationId, successful, started,
+                    fingerprint, ExecutionStatus.COMPLETED, Optional.empty());
         } catch (Exception failure) {
-            var terminal = registry.claimTerminal(executionId)
-                    ? ExecutionStatus.FAILED : ExecutionStatus.CANCELLED;
-            publish(session, executionId, terminal);
             if (managed != null) {
                 try { managed.close(); } catch (Exception cleanup) { failure.addSuppressed(cleanup); }
                 managed = null;
             }
             var error = safe(correlationId, currentPhase, failure);
-            if (history != null && historyStarted) try {
-                if (successful != null) history.queryFinished(executionId, successful.returnedRows());
-                history.terminal(executionId, terminal, Optional.of(error));
-            } catch (SQLException persistenceFailure) { failure.addSuppressed(persistenceFailure); }
-            return new QueryResult(executionId, List.of(), List.of(), false, 0, 0,
-                    elapsed(started), fingerprint, Optional.of(error));
+            return finishQuery(session, executionId, correlationId, successful, started,
+                    fingerprint, ExecutionStatus.FAILED, Optional.of(error));
         } finally {
             registry.complete(executionId);
             if (managed != null) try { managed.close(); } catch (Exception ignored) { }
@@ -241,11 +218,7 @@ public final class ExecutionService implements AutoCloseable {
         try {
             return bounded(executionId, () -> executeValidated(session, command, statements, executionId, correlationId));
         } catch (ExecutionQueueFullException full) {
-            registry.complete(executionId);
-            publish(session, executionId, ExecutionStatus.REJECTED);
-            terminalHistory(executionId, ExecutionStatus.REJECTED, Optional.of(
-                    new SafeError(correlationId, ExecutionStatus.QUEUED,
-                            "Execution queue is full", "DM7APP", 70002, false)));
+            finishRejected(session, executionId, correlationId);
             throw full;
         }
     }
@@ -263,8 +236,10 @@ public final class ExecutionService implements AutoCloseable {
         ReleaseWriteReservation reservation = null;
         try {
             publish(session, executionId, ExecutionStatus.CONNECTING);
+            checkCancelled(executionId);
             managed = connections.open(command.profileId());
             fingerprint = managed.databaseFingerprint();
+            checkCancelled(executionId);
             if (history != null) history.connected(executionId, fingerprint);
             if (releaseLog != null) {
                 reservation = releaseLog.reserveWritable(session, fingerprint, command.purpose());
@@ -309,11 +284,8 @@ public final class ExecutionService implements AutoCloseable {
                     reservation = null; managed = null;
                     var error = safe(correlationId, ExecutionStatus.EXECUTING, atomicFailure);
                     results.set(results.size() - 1, withError(results.get(results.size() - 1), error));
-                    publish(session, executionId, ExecutionStatus.FAILED);
-                    persistTerminal(executionId, results, ExecutionStatus.FAILED, Optional.of(error));
-                    return new ExecutionResult(executionId, false, ExecutionStatus.FAILED,
-                            results, elapsed(started), fingerprint,
-                            Optional.of(error));
+                    return finishMutation(session, executionId, correlationId, results,
+                            started, fingerprint, ExecutionStatus.FAILED, Optional.of(error));
                 }
                 publish(session, executionId, ExecutionStatus.COMMITTING);
                 currentPhase = ExecutionStatus.COMMITTING;
@@ -337,11 +309,8 @@ public final class ExecutionService implements AutoCloseable {
                             managed = null;
                             var error = safe(correlationId, ExecutionStatus.LOGGING, loggingFailure);
                             results.set(i, markLoggingFailure(results.get(i), error));
-                            publish(session, executionId, ExecutionStatus.FAILED);
-                            persistTerminal(executionId, results, ExecutionStatus.FAILED,
-                                    Optional.of(error));
-                            return new ExecutionResult(executionId, false, ExecutionStatus.FAILED,
-                                    results, elapsed(started), fingerprint, Optional.of(error));
+                            return finishMutation(session, executionId, correlationId, results,
+                                    started, fingerprint, ExecutionStatus.FAILED, Optional.of(error));
                         }
                     }
                 }
@@ -397,11 +366,8 @@ public final class ExecutionService implements AutoCloseable {
                     reservation = null; managed = null;
                     var terminalSafeError = terminalAggregate(correlationId, results,
                             safe(correlationId, currentPhase, terminalFailure));
-                    publish(session, executionId, ExecutionStatus.FAILED);
-                    persistTerminal(executionId, results, ExecutionStatus.FAILED,
-                            Optional.of(terminalSafeError));
-                    return new ExecutionResult(executionId, false, ExecutionStatus.FAILED,
-                            results, elapsed(started), fingerprint,
+                    return finishMutation(session, executionId, correlationId, results,
+                            started, fingerprint, ExecutionStatus.FAILED,
                             Optional.of(terminalSafeError));
                 }
             }
@@ -411,21 +377,8 @@ public final class ExecutionService implements AutoCloseable {
             }
             managed.close();
             managed = null;
-            if (!registry.claimTerminal(executionId)) {
-                var cancelled = new SafeError(correlationId, currentPhase,
-                        "Execution was cancelled", "DM7APP", 70004, false);
-                publish(session, executionId, ExecutionStatus.CANCELLED);
-                persistTerminal(executionId, results, ExecutionStatus.CANCELLED, Optional.of(cancelled));
-                return new ExecutionResult(executionId, false, ExecutionStatus.CANCELLED, results,
-                        elapsed(started), fingerprint, Optional.of(cancelled));
-            }
-            publish(session, executionId, ExecutionStatus.COMPLETED);
-            if (history != null) {
-                for (var result : results) history.statementFinished(executionId, result);
-                history.terminal(executionId, ExecutionStatus.COMPLETED, Optional.empty());
-            }
-            return new ExecutionResult(executionId, true, ExecutionStatus.COMPLETED, results,
-                    elapsed(started), fingerprint, Optional.empty());
+            return finishMutation(session, executionId, correlationId, results, started,
+                    fingerprint, ExecutionStatus.COMPLETED, Optional.empty());
         } catch (Exception failure) {
             if (managed != null && command.atomic() && !databaseCommitted) try { managed.connection().rollback(); }
                 catch (Exception rollback) { failure.addSuppressed(rollback); }
@@ -437,15 +390,9 @@ public final class ExecutionService implements AutoCloseable {
                 try { managed.close(); } catch (Exception cleanup) { failure.addSuppressed(cleanup); }
                 managed = null;
             }
-            var status = registry.claimTerminal(executionId)
-                    ? ExecutionStatus.FAILED : ExecutionStatus.CANCELLED;
-            publish(session, executionId, status);
             var error = safe(correlationId, currentPhase, asException(failure));
-            if (history != null && historyStarted) try {
-                history.finish(executionId, results, status, Optional.of(error));
-            } catch (SQLException persistenceFailure) { failure.addSuppressed(persistenceFailure); }
-            return new ExecutionResult(executionId, false, status, results, elapsed(started),
-                    fingerprint, Optional.of(error));
+            return finishMutation(session, executionId, correlationId, results, started,
+                    fingerprint, ExecutionStatus.FAILED, Optional.of(error));
         } finally {
             if (reservation != null) try { reservation.close(); } catch (Exception ignored) { }
             registry.complete(executionId);
@@ -684,6 +631,55 @@ public final class ExecutionService implements AutoCloseable {
             ExecutionStatus status, Optional<SafeError> error) throws SQLException {
         if (history == null) return;
         history.finish(executionId, results, status, error);
+    }
+
+    private ExecutionResult finishMutation(SessionState session, UUID executionId,
+            UUID correlationId, List<StatementResult> results, long started, String fingerprint,
+            ExecutionStatus desired, Optional<SafeError> desiredError) {
+        ExecutionStatus actual = registry.claimTerminal(executionId, desired);
+        Optional<SafeError> actualError = desiredError;
+        if (actual == ExecutionStatus.CANCELLED) {
+            actualError = Optional.of(new SafeError(correlationId, ExecutionStatus.EXECUTING,
+                    "Execution was cancelled", "DM7APP", 70004,
+                    desiredError.map(SafeError::restartRequired).orElse(false)));
+        }
+        publish(session, executionId, actual);
+        try { persistTerminal(executionId, results, actual, actualError); }
+        catch (SQLException ignored) { }
+        return new ExecutionResult(executionId, actual == ExecutionStatus.COMPLETED, actual,
+                results, elapsed(started), fingerprint, actualError);
+    }
+
+    private void finishRejected(SessionState session, UUID executionId, UUID correlationId) {
+        ExecutionStatus actual = registry.claimTerminal(executionId, ExecutionStatus.REJECTED);
+        SafeError error = actual == ExecutionStatus.CANCELLED
+                ? new SafeError(correlationId, ExecutionStatus.CANCELLED,
+                        "Execution was cancelled", "DM7APP", 70004, false)
+                : new SafeError(correlationId, ExecutionStatus.QUEUED,
+                        "Execution queue is full", "DM7APP", 70002, false);
+        publish(session, executionId, actual);
+        terminalHistory(executionId, actual, Optional.of(error));
+        registry.complete(executionId);
+    }
+
+    private QueryResult finishQuery(SessionState session, UUID executionId, UUID correlationId,
+            QueryResult successful, long started, String fingerprint, ExecutionStatus desired,
+            Optional<SafeError> desiredError) {
+        ExecutionStatus actual = registry.claimTerminal(executionId, desired);
+        Optional<SafeError> actualError = desiredError;
+        if (actual == ExecutionStatus.CANCELLED) {
+            actualError = Optional.of(new SafeError(correlationId, ExecutionStatus.EXECUTING,
+                    "Execution was cancelled", "DM7APP", 70004,
+                    desiredError.map(SafeError::restartRequired).orElse(false)));
+        }
+        publish(session, executionId, actual);
+        if (history != null) try {
+            if (successful != null) history.queryFinished(executionId, successful.returnedRows());
+            history.terminal(executionId, actual, actualError);
+        } catch (SQLException ignored) { }
+        if (actual == ExecutionStatus.COMPLETED && successful != null) return successful;
+        return new QueryResult(executionId, List.of(), List.of(), false, 0, 0,
+                elapsed(started), fingerprint, actualError);
     }
 
     private static void closeForTerminal(ReleaseWriteReservation reservation,

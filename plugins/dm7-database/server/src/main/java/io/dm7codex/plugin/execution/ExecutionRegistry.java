@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.Statement;
 import java.util.Objects;
 import java.util.UUID;
+import io.dm7codex.plugin.execution.ExecutionModels.ExecutionStatus;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -87,12 +88,17 @@ public final class ExecutionRegistry implements AutoCloseable {
 
     /** Atomically claims terminal completion. False means cancellation won the race. */
     public boolean claimTerminal(UUID executionId) {
+        return claimTerminal(executionId, ExecutionStatus.COMPLETED) == ExecutionStatus.COMPLETED;
+    }
+
+    public ExecutionStatus claimTerminal(UUID executionId, ExecutionStatus desired) {
         var entry = entries.get(executionId);
-        if (entry == null) return false;
+        if (entry == null) return ExecutionStatus.CANCELLED;
         synchronized (entry) {
-            if (entry.terminal) return !entry.cancelled;
+            if (entry.terminal) return entry.terminalStatus;
             entry.terminal = true;
-            return !entry.cancelled;
+            entry.terminalStatus = entry.cancelled ? ExecutionStatus.CANCELLED : desired;
+            return entry.terminalStatus;
         }
     }
 
@@ -162,6 +168,7 @@ public final class ExecutionRegistry implements AutoCloseable {
         private boolean cancelIssued;
         private boolean forceCloseScheduled;
         private boolean terminal;
+        private ExecutionStatus terminalStatus;
         private Connection connection;
         private Statement statement;
     }

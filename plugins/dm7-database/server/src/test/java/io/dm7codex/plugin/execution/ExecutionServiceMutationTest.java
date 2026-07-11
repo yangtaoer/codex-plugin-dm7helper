@@ -31,6 +31,113 @@ class ExecutionServiceMutationTest {
         assertEquals(0, opener.openCount());
     }
 
+    @Test void queuedCancellationPreventsConnectionOpen() throws Exception {
+        UUID queryProfile = UUID.randomUUID(); UUID mutationProfile = UUID.randomUUID();
+        var queryOpen = new java.util.concurrent.CountDownLatch(1);
+        var releaseQuery = new java.util.concurrent.CountDownLatch(1);
+        var mutationOpens = new java.util.concurrent.atomic.AtomicInteger();
+        DmConnectionFactory.ConnectionOpener opener = id -> {
+            if (id.equals(queryProfile)) {
+                queryOpen.countDown();
+                try { releaseQuery.await(); } catch (InterruptedException ignored) { }
+                var statement = TestJdbc.statement(List.of(List.of("一")), List.of("V"));
+                return new DmConnectionFactory.ManagedConnection(TestJdbc.connection(statement), () -> {}, "fp");
+            }
+            mutationOpens.incrementAndGet();
+            return new TestJdbc.Opener().open(id);
+        };
+        try (var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                null, null, new ExecutionEventBus(20), new ExecutionRegistry(), 1, 2)) {
+            var query = CompletableFuture.supplyAsync(() -> service.query(TestJdbc.session(),
+                    new QueryCommand(queryProfile, "SELECT 1", 1, 100, 30)));
+            queryOpen.await();
+            UUID queryId = service.events("session", 0).stream()
+                    .filter(event -> event.status() == ExecutionStatus.QUEUED)
+                    .findFirst().orElseThrow().executionId();
+            var mutation = CompletableFuture.supplyAsync(() -> service.execute(TestJdbc.session(),
+                    new ExecuteCommand(mutationProfile, "UPDATE T SET C=1", SqlPurpose.TEST,
+                            false, false, 30)));
+            UUID queuedMutation;
+            do {
+                queuedMutation = service.events("session", 0).stream()
+                        .filter(event -> event.status() == ExecutionStatus.QUEUED)
+                        .map(ExecutionEvent::executionId)
+                        .filter(id -> !id.equals(queryId))
+                        .findFirst().orElse(null);
+                if (queuedMutation == null) Thread.onSpinWait();
+            } while (queuedMutation == null);
+            assertTrue(service.cancel(queuedMutation));
+            releaseQuery.countDown(); query.join();
+            assertEquals(ExecutionStatus.CANCELLED, mutation.join().status());
+            assertEquals(0, mutationOpens.get());
+        }
+    }
+
+    @Test void cancellationWhileOpenReturnsPreventsStatementExecution() throws Exception {
+        var openEntered = new java.util.concurrent.CountDownLatch(1);
+        var allowOpenReturn = new java.util.concurrent.CountDownLatch(1);
+        var executions = new java.util.concurrent.atomic.AtomicInteger();
+        DmConnectionFactory.ConnectionOpener opener = id -> {
+            openEntered.countDown();
+            try { allowOpenReturn.await(); } catch (InterruptedException ignored) { }
+            var statement = TestJdbc.mutationStatement(executions, Integer.MAX_VALUE);
+            return new DmConnectionFactory.ManagedConnection(TestJdbc.connection(statement), () -> {}, "fp");
+        };
+        try (var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                null, null, new ExecutionEventBus(20), new ExecutionRegistry())) {
+            var future = CompletableFuture.supplyAsync(() -> service.execute(TestJdbc.session(),
+                    new ExecuteCommand(UUID.randomUUID(), "UPDATE T SET C=1", SqlPurpose.TEST,
+                            false, false, 30)));
+            openEntered.await();
+            UUID id = service.events("session", 0).get(0).executionId();
+            service.cancel(id); allowOpenReturn.countDown();
+            assertEquals(ExecutionStatus.CANCELLED, future.join().status());
+            assertEquals(0, executions.get());
+        }
+    }
+
+    @Test void cancellationDuringSlowCloseWinsTerminalClaim() throws Exception {
+        var closeEntered = new java.util.concurrent.CountDownLatch(1);
+        var allowClose = new java.util.concurrent.CountDownLatch(1);
+        var executions = new java.util.concurrent.atomic.AtomicInteger();
+        var statement = TestJdbc.mutationStatement(executions, Integer.MAX_VALUE);
+        var closed = new java.util.concurrent.atomic.AtomicBoolean();
+        var connection = (java.sql.Connection) java.lang.reflect.Proxy.newProxyInstance(
+                getClass().getClassLoader(), new Class<?>[]{java.sql.Connection.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAutoCommit" -> null;
+                    case "createStatement" -> statement;
+                    case "close" -> {
+                        closeEntered.countDown();
+                        try { allowClose.await(); } catch (InterruptedException ignored) { }
+                        closed.set(true);
+                        yield null;
+                    }
+                    case "isClosed" -> closed.get();
+                    case "unwrap" -> null;
+                    case "isWrapperFor" -> false;
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
+        DmConnectionFactory.ConnectionOpener opener = id ->
+                new DmConnectionFactory.ManagedConnection(connection, () -> {}, "fp");
+        try (var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                null, null, new ExecutionEventBus(20), new ExecutionRegistry())) {
+            var future = CompletableFuture.supplyAsync(() -> service.execute(TestJdbc.session(),
+                    new ExecuteCommand(UUID.randomUUID(), "UPDATE T SET C=1", SqlPurpose.TEST,
+                            false, false, 30)));
+            closeEntered.await();
+            UUID id = service.events("session", 0).stream()
+                    .filter(event -> event.status() == ExecutionStatus.QUEUED)
+                    .findFirst().orElseThrow().executionId();
+            assertTrue(service.cancel(id));
+            allowClose.countDown();
+            var result = future.join();
+            assertEquals(ExecutionStatus.CANCELLED, result.status());
+            assertEquals(1, executions.get());
+            assertTrue(result.statements().get(0).committed());
+        }
+    }
+
     @Test void continueOnErrorPreservesEachStatementErrorAndTerminalUsesFirstError() throws Exception {
         try (var fixture = releaseFixture("multi-error", ReleaseLogService.RecordStage.AFTER_PENDING)) {
             var opener = new TestJdbc.Opener().fingerprint("db-a").failOnStatement(2);
