@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 public final class StateDatabase implements AutoCloseable {
-    private static final int SCHEMA_VERSION = 2;
+    private static final int SCHEMA_VERSION = 3;
     private static final ConcurrentMap<Path, Object> MIGRATION_MONITORS = new ConcurrentHashMap<>();
 
     private final Path databasePath;
@@ -81,6 +81,11 @@ public final class StateDatabase implements AutoCloseable {
                 if (currentVersion == 1) {
                     migrateToVersion2(connection);
                     execute(connection, "PRAGMA user_version = 2");
+                    currentVersion = 2;
+                }
+                if (currentVersion == 2) {
+                    migrateToVersion3(connection);
+                    execute(connection, "PRAGMA user_version = 3");
                 }
                 execute(connection, "COMMIT");
             } catch (SQLException | RuntimeException failure) {
@@ -292,6 +297,17 @@ public final class StateDatabase implements AutoCloseable {
                 CREATE UNIQUE INDEX statement_event_operation_id
                 ON statement_event(operation_id) WHERE operation_id IS NOT NULL
                 """);
+    }
+
+    private static void migrateToVersion3(Connection connection) throws SQLException {
+        execute(connection,"ALTER TABLE execution ADD COLUMN restart_required INTEGER NOT NULL DEFAULT 0 CHECK (restart_required IN (0,1))");
+        execute(connection,"ALTER TABLE statement_event ADD COLUMN success INTEGER NOT NULL DEFAULT 0 CHECK (success IN (0,1))");
+        execute(connection,"ALTER TABLE statement_event ADD COLUMN committed INTEGER NOT NULL DEFAULT 0 CHECK (committed IN (0,1))");
+        execute(connection,"ALTER TABLE statement_event ADD COLUMN commit_behavior TEXT");
+        execute(connection,"ALTER TABLE statement_event ADD COLUMN elapsed_millis INTEGER NOT NULL DEFAULT 0 CHECK (elapsed_millis >= 0)");
+        execute(connection,"ALTER TABLE statement_event ADD COLUMN error_message TEXT");
+        execute(connection,"ALTER TABLE statement_event ADD COLUMN restart_required INTEGER NOT NULL DEFAULT 0 CHECK (restart_required IN (0,1))");
+        execute(connection,"UPDATE statement_event SET success=CASE WHEN status='SUCCEEDED' THEN 1 ELSE 0 END, committed=CASE WHEN status='SUCCEEDED' AND phase IN ('COMMITTED','LOGGING') THEN 1 ELSE 0 END");
     }
 
     private static int pragmaInt(Connection connection, String name) throws SQLException {

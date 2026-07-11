@@ -293,5 +293,14 @@ public final class ConsoleHttpServer implements AutoCloseable {
         @Override public synchronized void close()throws IOException{try{snapshot.close();}finally{Files.deleteIfExists(temporary);}}
     }
     public static final class DownloadRejected extends Exception {private final String code;public DownloadRejected(String code){super(code);this.code=code;}public String code(){return code;}}
-    public static final class BackendProblem extends RuntimeException {private final int status;private final String code;private final String safeMessage;private BackendProblem(int status,String code,String safeMessage){super(code);this.status=status;this.code=code;this.safeMessage=safeMessage;}public static BackendProblem notFound(){return new BackendProblem(404,"NOT_FOUND","资源不存在。");}public static BackendProblem conflict(){return new BackendProblem(409,"CONFLICT","操作与当前状态冲突。");}public static BackendProblem credentialRecoveryRequired(){return new BackendProblem(409,"CREDENTIAL_RECOVERY_REQUIRED","凭据已安全移除，请重新输入密码后重试。");}public static BackendProblem credentialStateUncertain(){return new BackendProblem(500,"CREDENTIAL_STATE_UNCERTAIN","凭据状态无法确认，请重启插件并重新保存连接。");}int status(){return status;}String code(){return code;}String safeMessage(){return safeMessage;}}
+    public static final class BackendProblem extends RuntimeException {
+        private final int status;private final String code;private final String safeMessage;
+        private BackendProblem(int status,String code,String safeMessage){super(code);this.status=status;this.code=code;this.safeMessage=safeMessage;}
+        public static BackendProblem notFound(){return new BackendProblem(404,"NOT_FOUND","资源不存在。");}
+        public static BackendProblem conflict(){return new BackendProblem(409,"CONFLICT","操作与当前状态冲突。");}
+        public static BackendProblem releaseRecoveryUnavailable(){return new BackendProblem(409,"RELEASE_RECOVERY_UNAVAILABLE","发版恢复源不可用或状态已变更。");}
+        public static BackendProblem credentialRecoveryRequired(){return new BackendProblem(409,"CREDENTIAL_RECOVERY_REQUIRED","凭据已安全移除，请重新输入密码后重试。");}
+        public static BackendProblem credentialStateUncertain(){return new BackendProblem(500,"CREDENTIAL_STATE_UNCERTAIN","凭据状态无法确认，请重启插件并重新保存连接。");}
+        int status(){return status;}String code(){return code;}String safeMessage(){return safeMessage;}
+    }
 }

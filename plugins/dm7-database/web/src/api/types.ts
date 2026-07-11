@@ -78,7 +78,28 @@ export type MetadataQuery = { connectionId?: string; schemaPattern?: string; obj
 export type SchemaColumn = { name: string; jdbcType: number; typeName: string; nullable: boolean; ordinal: number }
 export type SchemaObject = { schema: string; name: string; type: string; columns: SchemaColumn[] }
 export type SchemaPage = { items: SchemaObject[]; offset: number; limit: number; hasMore: boolean }
-export type ExecutionDetail = { summary: Record<string, unknown> & {sqlSummary?:string}; statements: (Record<string, unknown>&{sqlSummary?:string})[]; events: { sequence: number; status: string; timestamp: string; detail: string }[] }
+export type ExecutionDetailError = Omit<SafeExecutionError, 'correlationId'> & { correlationId?: string }
+export type ExecutionDetailSummary = HistoryItem & {
+  phase: string | null
+  sqlSummary: string
+  error: ExecutionDetailError | null
+}
+export type ExecutionDetailStatement = {
+  index: number
+  kind: SqlKind
+  status: string
+  phase: string | null
+  rowCount: number
+  success: boolean
+  committed: boolean
+  commitBehavior: string | null
+  elapsedMillis: number
+  recorded: boolean
+  exclusionReason: string | null
+  sqlSummary: string
+  error: ExecutionDetailError | null
+}
+export type ExecutionDetail = { summary: ExecutionDetailSummary; statements: ExecutionDetailStatement[]; events: { sequence: number; status: string; timestamp: string; detail: string }[] }
 export type CancelResult = { executionId: string; cancelRequested: boolean }
 export type ReleaseEntry={sequence:number|null;index:number;kind:SqlKind;status:string;source:ExecutionSource|null;purpose:SqlPurpose|null;recorded:boolean;exclusionReason:string|null;createdAt:string;sqlSummary:string}
 export type ReleaseArtifact={id:string;state:'SEALED'|'RECOVERY_REQUIRED'|'COMPLETE';version:string;filename:string|null;sha256:string|null;expectedSha256?:string|null;byteLength:number|null;statementCount:number;firstSequence:number|null;lastSequence:number|null;createdAt:string;completedAt:string|null;downloadAvailable:boolean;downloadUrl:string|null;integrityState:string}

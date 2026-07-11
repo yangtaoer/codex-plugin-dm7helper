@@ -1,7 +1,6 @@
 package io.dm7codex.plugin.sql;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Objects;
 
 /** Produces a non-replayable, bounded SQL label for operational screens. */
 public final class SqlSummaryRedactor {
@@ -23,9 +22,7 @@ public final class SqlSummaryRedactor {
         try {
             scan(sql, out);
         } catch (RuntimeException malformed) {
-            // The scanner is deliberately fail-closed. It never copies the remainder.
-            appendSpace(out);
-            out.append(REDACTED);
+            return REDACTED;
         }
         return bound(collapse(out));
     }
@@ -59,8 +56,15 @@ public final class SqlSummaryRedactor {
                 continue;
             }
             if (c == '"') {
-                do { out.append(sql.charAt(i++)); }
-                while (i < sql.length() && (sql.charAt(i - 1) != '"' || (i < sql.length() && sql.charAt(i) == '"')));
+                out.append(c);i++;boolean closed=false;
+                while(i<sql.length()){
+                    char current=sql.charAt(i++);out.append(Character.isISOControl(current)?' ':current);
+                    if(current=='"'){
+                        if(i<sql.length()&&sql.charAt(i)=='"'){out.append('"');i++;continue;}
+                        closed=true;break;
+                    }
+                }
+                if(!closed)throw new IllegalArgumentException("unterminated quoted identifier");
                 continue;
             }
             int cp = sql.codePointAt(i);

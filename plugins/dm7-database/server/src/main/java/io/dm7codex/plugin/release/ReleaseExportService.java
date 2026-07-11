@@ -81,6 +81,29 @@ public final class ReleaseExportService {
         }
     }
 
+    public ExportArtifact recover(SessionState session)
+            throws IOException, SQLException, ReleaseRecoveryNotAvailable {
+        Objects.requireNonNull(session, "session");
+        SessionFileLock.trustedSessionDirectory(paths, session);
+        try (var ignored = SessionFileLock.acquire(paths, session, lockTimeout)) {
+            var artifact = exports.findArtifact(session.sessionId(), session.version())
+                    .orElseThrow(ReleaseRecoveryNotAvailable::new);
+            if (!java.util.Set.of("SEALED", "RECOVERY_REQUIRED").contains(artifact.state()))
+                throw new ReleaseRecoveryNotAvailable();
+            var release = sessions.findVersion(session.sessionId(), session.version());
+            if (!"sealed".equals(release.status())
+                    || exports.findSealed(session.sessionId(), session.version()).isEmpty())
+                throw new ReleaseRecoveryNotAvailable();
+            return exportLocked(session);
+        } catch (ReleaseExportLockTimeout timeout) {
+            throw timeout;
+        } catch (ReleaseRecoveryNotAvailable unavailable) {
+            throw unavailable;
+        } catch (IOException failure) {
+            throw new IOException("Release recovery could not be completed");
+        }
+    }
+
     private ExportArtifact exportLocked(SessionState session) throws IOException, SQLException {
         var release = sessions.findVersion(session.sessionId(), session.version());
         validateVersionPath(session, release);

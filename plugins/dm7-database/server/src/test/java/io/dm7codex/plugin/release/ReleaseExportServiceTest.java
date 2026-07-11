@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.dm7codex.plugin.release.ReleaseExportService.ExportStage;
 import io.dm7codex.plugin.runtime.RuntimePaths;
@@ -225,6 +226,27 @@ public class ReleaseExportServiceTest {
                         .count(), stage::name);
             }
         }
+    }
+
+    @Test void explicitRecoveryAtomicallyAllowsOneCallerAndRejectsCompleteReplay() throws Exception {
+        try(var fixture=fixture("explicit-recovery-race")){
+            fixture.logs.recordCommitted(fixture.session,"db-a",SqlPurpose.MIGRATION,parsed("CREATE TABLE A(ID INT)"),"CREATE TABLE A(ID INT)");
+            var failing=new ReleaseExportService(fixture.paths,fixture.sessions,fixture.exportRepository,
+                    Duration.ofSeconds(2),CLOCK,stage->{if(stage==ExportStage.AFTER_ARTIFACT_STATE_RECORDED)throw new java.io.IOException("injected");});
+            assertThrows(java.io.IOException.class,()->failing.export(fixture.session));
+            var pool=Executors.newFixedThreadPool(2);try{
+                var first=pool.submit(()->recoverResult(fixture.exports,fixture.session));
+                var second=pool.submit(()->recoverResult(fixture.exports,fixture.session));
+                var outcomes=java.util.List.of(first.get(),second.get());
+                assertEquals(1,outcomes.stream().filter(value->value instanceof ReleaseExportService.ExportArtifact).count());
+                assertEquals(1,outcomes.stream().filter(value->value instanceof ReleaseRecoveryNotAvailable).count());
+                assertThrows(ReleaseRecoveryNotAvailable.class,()->fixture.exports.recover(fixture.session));
+            }finally{pool.shutdownNow();}
+        }
+    }
+
+    private static Object recoverResult(ReleaseExportService service,SessionState session){
+        try{return service.recover(session);}catch(Exception failure){return failure;}
     }
 
     @Test

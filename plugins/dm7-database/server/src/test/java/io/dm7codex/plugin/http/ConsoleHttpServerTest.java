@@ -121,6 +121,7 @@ class ConsoleHttpServerTest {
         assertEquals(422,call("POST","/api/release/recover",Map.of("version","v001","confirm",true,"sessionId","other")).statusCode());
         var response=call("POST","/api/release/recover",Map.of("version","v001","confirm",true));
         assertEquals(200,response.statusCode());assertEquals("v001",backend.lastInput.get("version"));assertEquals(true,backend.lastInput.get("confirm"));
+        var unavailable=call("POST","/api/release/recover",Map.of("version","v404","confirm",true));assertEquals(409,unavailable.statusCode());assertTrue(unavailable.body().contains("RELEASE_RECOVERY_UNAVAILABLE"));assertTrue(unavailable.body().contains("correlationId"));
     }
 
     @Test void secretBearingClassificationFailureIsSafeAndDoesNotEchoSql() throws Exception {
@@ -234,6 +235,7 @@ class ConsoleHttpServerTest {
             seenSessions.add(session.sessionId());
             if(operation.equals("connections.get")&&"missing".equals(input.get("id")))throw ConsoleHttpServer.BackendProblem.notFound();
             if(operation.equals("connections.create")&&"duplicate".equals(input.get("name")))throw ConsoleHttpServer.BackendProblem.conflict();
+            if(operation.equals("release.recover")&&"v404".equals(input.get("version")))throw ConsoleHttpServer.BackendProblem.releaseRecoveryUnavailable();
             return Map.of("operation",operation,"message","中文响应");
         }
         @Override public Optional<ConsoleHttpServer.Download> download(String id, SessionState session) throws Exception {

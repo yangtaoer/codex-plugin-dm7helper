@@ -132,7 +132,7 @@ public final class ExecutionRepository {
         try (var connection = database.openConnection();
              var statement = connection.prepareStatement("""
                      UPDATE execution SET phase = ?, status = ?, completed_at = ?,
-                         sql_state = ?, error_code = ?, error_message = ?
+                         sql_state = ?, error_code = ?, error_message = ?, restart_required = ?
                      WHERE execution_id = ?
                      """)) {
             statement.setString(1, error.map(value -> value.phase().name()).orElse(status.name()));
@@ -141,7 +141,8 @@ public final class ExecutionRepository {
             statement.setString(4, error.map(SafeError::sqlState).orElse(null));
             setNullableInteger(statement, 5, error.map(SafeError::errorCode).orElse(null));
             statement.setString(6, error.map(SafeError::message).orElse(null));
-            statement.setString(7, executionId.toString());
+            statement.setInt(7,error.map(SafeError::restartRequired).orElse(false)?1:0);
+            statement.setString(8, executionId.toString());
             statement.executeUpdate();
         }
     }
@@ -157,7 +158,7 @@ public final class ExecutionRepository {
             connection.setAutoCommit(false);
             try (var statement = connection.prepareStatement("""
                     UPDATE execution SET affected_row_count = ?, recorded = ?, exclusion_reason = ?,
-                        phase = ?, status = ?, completed_at = ?, sql_state = ?, error_code = ?, error_message = ?
+                        phase = ?, status = ?, completed_at = ?, sql_state = ?, error_code = ?, error_message = ?, restart_required = ?
                     WHERE execution_id = ?
                     """)) {
                 statement.setLong(1, affected);
@@ -169,7 +170,8 @@ public final class ExecutionRepository {
                 statement.setString(7, error.map(SafeError::sqlState).orElse(null));
                 setNullableInteger(statement, 8, error.map(SafeError::errorCode).orElse(null));
                 statement.setString(9, error.map(SafeError::message).orElse(null));
-                statement.setString(10, executionId.toString());
+                statement.setInt(10,error.map(SafeError::restartRequired).orElse(false)?1:0);
+                statement.setString(11, executionId.toString());
                 statement.executeUpdate();
                 connection.commit();
             } catch (SQLException failure) {
@@ -273,21 +275,27 @@ public final class ExecutionRepository {
                     int updated;
                     try(var update=connection.prepareStatement("""
                             UPDATE statement_event SET execution_id=?, phase=?, row_count=?, sql_state=?, error_code=?,
-                              exclusion_reason=COALESCE(?,exclusion_reason)
+                              exclusion_reason=COALESCE(?,exclusion_reason), success=?, committed=?, commit_behavior=?,
+                              elapsed_millis=?, error_message=?, restart_required=?
                             WHERE operation_id=? AND session_id=? AND release_version=?
                             """)){
                         update.setString(1,executionId.toString());update.setString(2,result.error().map(e->e.phase().name()).orElse("LOGGING"));update.setLong(3,result.rowCount());
                         update.setString(4,result.error().map(SafeError::sqlState).orElse(null));setNullableInteger(update,5,result.error().map(SafeError::errorCode).orElse(null));
-                        update.setString(6,result.exclusionReason());update.setString(7,operationId);update.setString(8,sessionId);update.setInt(9,releaseVersion);updated=update.executeUpdate();}
+                        update.setString(6,result.exclusionReason());update.setInt(7,result.success()?1:0);update.setInt(8,result.committed()?1:0);update.setString(9,result.commitBehavior());update.setLong(10,result.elapsedMillis());
+                        update.setString(11,result.error().map(SafeError::message).orElse(null));update.setInt(12,result.error().map(SafeError::restartRequired).orElse(false)?1:0);
+                        update.setString(13,operationId);update.setString(14,sessionId);update.setInt(15,releaseVersion);updated=update.executeUpdate();}
                     if(updated==0)try(var insert=connection.prepareStatement("""
                             INSERT INTO statement_event(execution_id,session_id,release_version,statement_index,statement_kind,
-                              status,phase,row_count,sql_state,error_code,recorded,exclusion_reason,raw_sql,replayable_sql,created_at)
-                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?)
+                              status,phase,row_count,sql_state,error_code,recorded,exclusion_reason,raw_sql,replayable_sql,created_at,
+                              success,committed,commit_behavior,elapsed_millis,error_message,restart_required)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,?,?,?,?)
                             """)){
                         insert.setString(1,executionId.toString());insert.setString(2,sessionId);insert.setInt(3,releaseVersion);insert.setInt(4,result.index());insert.setString(5,result.kind().name());
                         insert.setString(6,result.success()?(result.committed()?"SUCCEEDED":"ROLLED_BACK"):"FAILED");insert.setString(7,result.error().map(e->e.phase().name()).orElse("COMMITTED"));insert.setLong(8,result.rowCount());
                         insert.setString(9,result.error().map(SafeError::sqlState).orElse(null));setNullableInteger(insert,10,result.error().map(SafeError::errorCode).orElse(null));insert.setInt(11,result.recorded()?1:0);
-                        insert.setString(12,result.exclusionReason());insert.setString(13,statement.originalSql());insert.setString(14,Instant.now().toString());insert.executeUpdate();}
+                        insert.setString(12,result.exclusionReason());insert.setString(13,statement.originalSql());insert.setString(14,Instant.now().toString());
+                        insert.setInt(15,result.success()?1:0);insert.setInt(16,result.committed()?1:0);insert.setString(17,result.commitBehavior());insert.setLong(18,result.elapsedMillis());
+                        insert.setString(19,result.error().map(SafeError::message).orElse(null));insert.setInt(20,result.error().map(SafeError::restartRequired).orElse(false)?1:0);insert.executeUpdate();}
                 }
                 connection.commit();
             }catch(SQLException|RuntimeException failure){try{connection.rollback();}catch(SQLException rollback){failure.addSuppressed(rollback);}throw failure;}
@@ -308,6 +316,22 @@ public final class ExecutionRepository {
                 }
                 return List.copyOf(events);
             }
+        }
+    }
+
+    public Optional<ExecutionFacts> findExecutionFacts(String executionId)throws SQLException{
+        try(var connection=database.openConnection();var statement=connection.prepareStatement("SELECT * FROM execution WHERE execution_id=?")){
+            statement.setString(1,executionId);try(var rows=statement.executeQuery()){if(!rows.next())return Optional.empty();return Optional.of(new ExecutionFacts(
+                    rows.getString("execution_id"),rows.getString("correlation_id"),rows.getString("phase"),rows.getString("status"),rows.getString("error_message"),rows.getString("sql_state"),nullableInteger(rows,"error_code"),rows.getInt("restart_required")!=0));}
+        }
+    }
+
+    public List<StatementDetailRecord> findStatementDetails(String executionId)throws SQLException{
+        try(var connection=database.openConnection();var statement=connection.prepareStatement("SELECT * FROM statement_event WHERE execution_id=? ORDER BY statement_index")){
+            statement.setString(1,executionId);try(var rows=statement.executeQuery()){var values=new ArrayList<StatementDetailRecord>();while(rows.next())values.add(new StatementDetailRecord(
+                    rows.getInt("statement_index"),rows.getString("statement_kind"),rows.getString("status"),rows.getString("phase"),nullableLong(rows,"row_count"),
+                    rows.getInt("success")!=0,rows.getInt("committed")!=0,rows.getString("commit_behavior"),rows.getLong("elapsed_millis"),rows.getInt("recorded")!=0,
+                    rows.getString("exclusion_reason"),rows.getString("error_message"),rows.getString("sql_state"),nullableInteger(rows,"error_code"),rows.getInt("restart_required")!=0,rows.getString("raw_sql")));return List.copyOf(values);}
         }
     }
 
@@ -466,4 +490,9 @@ public final class ExecutionRepository {
             String rawSql, Instant createdAt) {}
     public record ReleaseView(int recordedCount, int excludedCount, int failedCount,
             List<ReleaseEntryRecord> entries, boolean truncated) {}
+    public record ExecutionFacts(String executionId,String correlationId,String phase,String status,
+            String errorMessage,String sqlState,Integer errorCode,boolean restartRequired){}
+    public record StatementDetailRecord(int index,String kind,String status,String phase,Long rowCount,
+            boolean success,boolean committed,String commitBehavior,long elapsedMillis,boolean recorded,
+            String exclusionReason,String errorMessage,String sqlState,Integer errorCode,boolean restartRequired,String rawSql){}
 }

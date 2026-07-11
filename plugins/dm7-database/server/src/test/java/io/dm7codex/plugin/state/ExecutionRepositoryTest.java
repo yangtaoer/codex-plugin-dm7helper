@@ -1,6 +1,7 @@
 package io.dm7codex.plugin.state;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -181,6 +182,12 @@ class ExecutionRepositoryTest {
             repository.persistStatementFacts(id,session.sessionId(),session.version(),parsed,List.of(result));
             var stored=repository.findStatements(id.toString()).get(0);
             assertEquals("FAILED",stored.status());assertEquals("purpose_test",stored.exclusionReason());assertNull(stored.replayableSql());
+            repository.finish(id,List.of(result),ExecutionStatus.FAILED,java.util.Optional.of(error));
+            var overall=repository.findExecutionFacts(id.toString()).orElseThrow();
+            assertEquals("Database operation failed",overall.errorMessage());assertEquals("42000",overall.sqlState());assertEquals(9,overall.errorCode());assertEquals("EXECUTING",overall.phase());assertFalse(overall.restartRequired());
+            var detail=repository.findStatementDetails(id.toString()).get(0);
+            assertFalse(detail.success());assertFalse(detail.committed());assertEquals("auto_commit",detail.commitBehavior());assertEquals(2,detail.elapsedMillis());
+            assertEquals("Database operation failed",detail.errorMessage());assertEquals("42000",detail.sqlState());assertEquals(9,detail.errorCode());assertEquals("EXECUTING",detail.phase());
         }
     }
 

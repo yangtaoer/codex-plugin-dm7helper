@@ -129,13 +129,12 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
         if(!Boolean.TRUE.equals(input.get("confirm")))throw new IllegalArgumentException("confirmation required");
         String text=required(input,"version");if(!text.matches("v[0-9]{3,9}"))throw new IllegalArgumentException("invalid version");
         int version=Integer.parseInt(text.substring(1));
-        var artifact=exportRepository.findArtifact(session.sessionId(),version).orElseThrow(ConsoleHttpServer.BackendProblem::notFound);
-        if(!Set.of("SEALED","RECOVERY_REQUIRED").contains(artifact.state()))throw ConsoleHttpServer.BackendProblem.conflict();
         var sessions=new SessionRepository(database,session.activeSql().getParent().getParent());
-        var release=sessions.findVersion(session.sessionId(),version);
+        SessionRepository.ReleaseVersion release;try{release=sessions.findVersion(session.sessionId(),version);}catch(java.sql.SQLException missing){throw ConsoleHttpServer.BackendProblem.releaseRecoveryUnavailable();}
         var historical=new SessionState(session.sessionId(),session.externalIdHash(),version,release.databaseFingerprint(),release.activeSql(),session.createdAt());
-        try{var result=export(historical);result.remove("path");result.put("downloadUrl","/api/release/artifacts/"+result.get("id")+"/download");return result;}
+        try{var result=exportResult(exports.recover(historical));result.remove("path");result.put("downloadUrl","/api/release/artifacts/"+result.get("id")+"/download");return result;}
         catch(io.dm7codex.plugin.release.ReleaseExportLockTimeout conflict){throw ConsoleHttpServer.BackendProblem.conflict();}
+        catch(io.dm7codex.plugin.release.ReleaseRecoveryNotAvailable|java.io.IOException unavailable){throw ConsoleHttpServer.BackendProblem.releaseRecoveryUnavailable();}
     }
 
     private Map<String,Object> releasePreview(SessionState session)throws Exception{
@@ -306,12 +305,15 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
         summary.put("affectedRowCount", record.affectedRowCount()); summary.put("returnedRowCount", record.returnedRowCount());
         summary.put("recorded", record.recorded()); summary.put("exclusionReason", record.exclusionReason());
         summary.put("sqlSummary", summaries.summarize(record.sqlText()));
-        var statements = history.findStatements(id).stream().map(statement -> {
+        var facts=history.findExecutionFacts(id).orElseThrow();var overallError=new LinkedHashMap<String,Object>();
+        overallError.put("correlationId",facts.correlationId());overallError.put("phase",facts.phase());overallError.put("message",facts.errorMessage());overallError.put("sqlState",facts.sqlState());overallError.put("errorCode",facts.errorCode());overallError.put("restartRequired",facts.restartRequired());summary.put("error",facts.errorMessage()==null?null:overallError);
+        var statements = history.findStatementDetails(id).stream().map(statement -> {
             var item = new LinkedHashMap<String, Object>();
-            item.put("index", statement.statementIndex()); item.put("kind", statement.statementKind());
+            item.put("index", statement.index()); item.put("kind", statement.kind());
             item.put("status", statement.status()); item.put("phase", statement.phase());
             item.put("rowCount", statement.rowCount()); item.put("recorded", statement.recorded());
-            item.put("exclusionReason", statement.exclusionReason());
+            item.put("success",statement.success());item.put("committed",statement.committed());item.put("commitBehavior",statement.commitBehavior());item.put("elapsedMillis",statement.elapsedMillis());
+            item.put("exclusionReason", statement.exclusionReason());var error=new LinkedHashMap<String,Object>();error.put("phase",statement.phase());error.put("message",statement.errorMessage());error.put("sqlState",statement.sqlState());error.put("errorCode",statement.errorCode());error.put("restartRequired",statement.restartRequired());item.put("error",statement.errorMessage()==null?null:error);
             item.put("sqlSummary", summaries.summarize(statement.rawSql()));
             return Collections.unmodifiableMap(item);
         }).toList();
@@ -327,7 +329,10 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
     }
 
     private Map<String, Object> export(SessionState session) throws Exception {
-        var artifact = exports.export(session);
+        return exportResult(exports.export(session));
+    }
+
+    private Map<String,Object> exportResult(ReleaseExportService.ExportArtifact artifact) {
         var result = new LinkedHashMap<String, Object>();
         result.put("id", artifact.id()); result.put("version", artifact.version());
         result.put("newActiveVersion", artifact.newActiveVersion());

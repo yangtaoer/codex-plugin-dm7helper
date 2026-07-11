@@ -222,7 +222,7 @@ describe('SqlConsolePage', () => {
     rendered.rerender(<SqlConsolePage api={api} events={[{id:'10',executionId:oldId,status:'cancelled',timestamp:new Date().toISOString(),detail:'已取消'}]} streamStatus="connected" theme="light" initialSql="SELECT 1"/>)
     await waitFor(()=>expect((screen.getByRole('button',{name:'执行全部'}) as HTMLButtonElement).disabled).toBe(false));fireEvent.click(screen.getByRole('button',{name:'执行全部'}))
     expect(await screen.findByText('新执行结果')).toBeTruthy();const newId=query.mock.calls[1][0].executionId
-    resolveOldPoll({summary:{status:'FAILED'},statements:[],events:[]});await Promise.resolve()
+    resolveOldPoll({summary:{status:'FAILED'},statements:[],events:[]} as unknown as ExecutionDetail);await Promise.resolve()
     expect(screen.getByText('新执行结果')).toBeTruthy();expect(document.querySelector('.execution-snapshot')?.textContent).toContain(newId)
   })
 })

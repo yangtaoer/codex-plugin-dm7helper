@@ -35,13 +35,26 @@ class StateDatabaseTest {
     @TempDir
     Path tempDir;
 
+    @Test void versionThreeAddsCompleteSafeExecutionFacts() throws Exception {
+        var paths=RuntimePaths.forTest(tempDir.resolve("v3-facts"));try(var database=StateDatabase.open(paths.stateDatabase());var connection=database.openConnection()){
+            assertEquals(3,intPragma(connection,"user_version"));
+            assertTrue(columns(connection,"execution").contains("restart_required"));
+            assertTrue(columns(connection,"statement_event").containsAll(java.util.Set.of(
+                    "success","committed","commit_behavior","elapsed_millis","error_message","restart_required")));
+        }
+    }
+
+    private static java.util.Set<String> columns(java.sql.Connection connection,String table)throws Exception{
+        var names=new java.util.HashSet<String>();try(var statement=connection.createStatement();var rows=statement.executeQuery("PRAGMA table_info("+table+")")){while(rows.next())names.add(rows.getString("name"));}return names;
+    }
+
     @Test
     void migrationV2CreatesRequiredSchemaAndConnectionPragmas() throws Exception {
         var paths = RuntimePaths.forTest(tempDir);
 
         try (var database = StateDatabase.open(paths.stateDatabase());
                 var connection = database.openConnection()) {
-            assertEquals(2, intPragma(connection, "user_version"));
+            assertEquals(3, intPragma(connection, "user_version"));
             assertEquals(1, intPragma(connection, "foreign_keys"));
             assertEquals(5_000, intPragma(connection, "busy_timeout"));
             assertEquals("wal", textPragma(connection, "journal_mode"));
@@ -169,7 +182,7 @@ class StateDatabaseTest {
 
         try (var database = StateDatabase.open(databasePath);
                 var connection = database.openConnection()) {
-            assertEquals(2, intPragma(connection, "user_version"));
+            assertEquals(3, intPragma(connection, "user_version"));
             assertEquals(5, countUserTables(connection));
         }
     }
@@ -181,7 +194,7 @@ class StateDatabaseTest {
 
         try (var database = StateDatabase.open(paths.stateDatabase())) {
             try (var connection = database.openConnection()) {
-                assertEquals(2, intPragma(connection, "user_version"));
+                assertEquals(3, intPragma(connection, "user_version"));
                 assertColumns(connection, "statement_event", Set.of(
                         "operation_id", "pending_fingerprint", "file_offset",
                         "block_sha256", "binding_comment"));
@@ -210,7 +223,7 @@ class StateDatabaseTest {
 
         try (var reopened = StateDatabase.open(paths.stateDatabase());
                 var connection = reopened.openConnection()) {
-            assertEquals(2, intPragma(connection, "user_version"));
+            assertEquals(3, intPragma(connection, "user_version"));
         }
     }
 
@@ -230,6 +243,13 @@ class StateDatabaseTest {
         try (var database = StateDatabase.open(path);
                 var connection = database.openConnection();
                 var statement = connection.createStatement()) {
+            statement.execute("ALTER TABLE statement_event DROP COLUMN restart_required");
+            statement.execute("ALTER TABLE statement_event DROP COLUMN error_message");
+            statement.execute("ALTER TABLE statement_event DROP COLUMN elapsed_millis");
+            statement.execute("ALTER TABLE statement_event DROP COLUMN commit_behavior");
+            statement.execute("ALTER TABLE statement_event DROP COLUMN committed");
+            statement.execute("ALTER TABLE statement_event DROP COLUMN success");
+            statement.execute("ALTER TABLE execution DROP COLUMN restart_required");
             statement.execute("DROP INDEX IF EXISTS statement_event_operation_id");
             statement.execute("ALTER TABLE statement_event DROP COLUMN binding_comment");
             statement.execute("ALTER TABLE statement_event DROP COLUMN block_sha256");

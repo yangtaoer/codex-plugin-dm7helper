@@ -32,4 +32,23 @@ class SqlSummaryRedactorTest {
         assertFalse(value.contains("secret"));
         assertFalse(value.contains("\u0000"));
     }
+
+    @Test void quotedIdentifiersHonorEscapesAndUnterminatedIdentifiersFailClosed() {
+        var redactor=new SqlSummaryRedactor(120,240);
+        assertEquals("SELECT \"A\"\"B\" FROM T",redactor.summarize("SELECT \"A\"\"B\" FROM T"));
+        assertEquals("?",redactor.summarize("SELECT \"NEVER_LEAK_IDENTIFIER"));
+    }
+
+    @Test void markerFuzzNeverLeaksMalformedQuotedContent() {
+        var redactor=new SqlSummaryRedactor(80,160);
+        for(int i=0;i<200;i++){
+            String marker="MARKER_"+i+"_SECRET";
+            for(String sql:new String[]{"SELECT \""+marker,"SELECT '"+marker,"SELECT q'["+marker,
+                    "UPDATE T SET C=N'"+marker+" /* 控\u0000制 -- "+marker}){
+                String summary=redactor.summarize(sql);
+                assertFalse(summary.contains(marker),summary);
+                assertFalse(summary.contains("\u0000"),summary);
+            }
+        }
+    }
 }
