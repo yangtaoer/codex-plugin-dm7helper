@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -19,12 +20,27 @@ TOOLS = [
 ]
 
 
+def resolve_java() -> str:
+    java_home = os.environ.get("JAVA_HOME")
+    if java_home:
+        for executable in ("java.exe", "java"):
+            candidate = Path(java_home) / "bin" / executable
+            if candidate.is_file():
+                return str(candidate)
+    java = shutil.which("java")
+    if java:
+        return java
+    raise RuntimeError("Java was not found; set JAVA_HOME to a JDK 17+ installation or add java to PATH")
+
+
+JAVA = resolve_java()
+
+
 def launch(data: Path) -> subprocess.Popen[str]:
     env = os.environ.copy()
     env.update({"PLUGIN_DATA": str(data), "CODEX_THREAD_ID": "smoke-thread-中文"})
     return subprocess.Popen(
-        [str(Path(os.environ.get("JAVA_HOME", r"C:\tool\jdk21")) / "bin" / "java.exe"),
-         "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
+        [JAVA, "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
         cwd=ROOT, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
 
@@ -173,14 +189,15 @@ def main() -> None:
         malformed_data.mkdir()
         malformed = launch(malformed_data)
         try:
-            stdout, malformed_stderr = malformed.communicate("not-json\n", timeout=5)
+            stdout, malformed_stderr = malformed.communicate("\n   \t  \nnot-json\n", timeout=5)
         except subprocess.TimeoutExpired:
             malformed.kill()
             malformed.communicate(timeout=5)
             raise AssertionError("malformed JSON left the STDIO server hanging")
         assert malformed.returncode == 0, malformed_stderr
         malformed_frames = [json.loads(line) for line in stdout.splitlines()]
-        assert malformed_frames and malformed_frames[0]["error"]["code"] == -32700
+        assert len(malformed_frames) == 3
+        assert all(frame["error"]["code"] == -32700 for frame in malformed_frames)
 
         marker = "password=NEVER_ECHO SQL_SECRET_MARKER"
         invalid_protocol = [
@@ -224,8 +241,7 @@ def main() -> None:
         invalid_utf8_env.update({"PLUGIN_DATA": str(data / "invalid-utf8"),
                                  "CODEX_THREAD_ID": "invalid-utf8"})
         invalid_utf8 = subprocess.Popen(
-            [str(Path(os.environ.get("JAVA_HOME", r"C:\tool\jdk21")) / "bin" / "java.exe"),
-             "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
+            [JAVA, "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
             cwd=ROOT, env=invalid_utf8_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE)
         utf8_stdout, utf8_stderr = invalid_utf8.communicate(
@@ -262,8 +278,7 @@ def main() -> None:
         failed_env = os.environ.copy()
         failed_env.pop("PLUGIN_DATA", None)
         failed = subprocess.run(
-            [str(Path(os.environ.get("JAVA_HOME", r"C:\tool\jdk21")) / "bin" / "java.exe"),
-             "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
+            [JAVA, "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
             cwd=ROOT, env=failed_env, input="", capture_output=True,
             text=True, encoding="utf-8", errors="replace", timeout=30)
         assert failed.returncode != 0 and failed.stdout == ""

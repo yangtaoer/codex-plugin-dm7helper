@@ -45,7 +45,7 @@ The five Important review findings were remediated with additional RED/GREEN cyc
 
 The compatibility regression where legacy command objects reused a generated ID was caught by the full mutation suite. Only explicit caller IDs remain stable; legacy constructors retain per-invocation IDs.
 
-Fresh post-review verification used Maven 3.9.16 with `JAVA_HOME=C:\tool\jdk21`: `clean package` ran 272 tests with zero failures, the enhanced packaged STDIO smoke passed, plugin layout passed, bytecode remained Java 17 (major 61), and `git diff --check` passed.
+Fresh post-review verification used Maven 3.9.16 with JDK 21: `clean package` ran 272 tests with zero failures, the enhanced packaged STDIO smoke passed, plugin layout passed, bytecode remained Java 17 (major 61), and `git diff --check` passed.
 
 Per the approved implementation-plan packaging boundary, the generated `lib/dm7-codex-plugin.jar` is exercised by this task's package and smoke verification but is not committed here. The final packaging task remains responsible for committing the distribution artifact, preventing a stale intermediate binary from entering source control.
 
@@ -67,3 +67,9 @@ Fresh second-review verification on JDK 21 ran 276 tests with zero failures befo
 - Packaged protocol regressions cover `result:null`, scalar/array results, out-of-range error codes, concatenated JSON texts, invalid UTF-8, and marker non-reflection. A dedicated pipeline keeps stdin open while four lightweight tool calls are written back-to-back, then verifies all response IDs before EOF; consecutive runs did not drop or prematurely terminate requests.
 
 Fresh third-review verification used JDK 21 and Maven 3.9.16: `clean package` ran 277 tests with zero failures; the enhanced packaged STDIO smoke passed twice consecutively; plugin layout passed; `AppMain` remained Java 17 bytecode (major 61); and `git diff --check` passed.
+
+## Final Portability Hardening
+
+- Empty and whitespace-only STDIO lines are classified as JSON syntax/empty-input failures and return the constant `-32700 Parse error`; packaged regressions also prove EOF exits without hanging.
+- The packaged smoke launcher no longer embeds a workstation-specific Java path. It resolves `JAVA_HOME/bin/java` first, falls back to `java` on `PATH`, and otherwise reports how to install or select JDK 17+.
+- A clean JDK 21 package run kept all 277 tests green. The packaged STDIO smoke passed twice consecutively, plugin layout passed, and range-wide path, sensitive-data, and diff-hygiene scans were clean.

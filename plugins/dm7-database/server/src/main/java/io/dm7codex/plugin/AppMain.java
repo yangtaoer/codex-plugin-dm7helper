@@ -132,6 +132,10 @@ public final class AppMain {
                         writeError(PARSE_ERROR);
                         continue;
                     }
+                    if (message == null || message.isMissingNode()) {
+                        writeError(PARSE_ERROR);
+                        continue;
+                    }
                     if (!validJsonRpc(message)) {
                         writeError(INVALID_REQUEST);
                         continue;
