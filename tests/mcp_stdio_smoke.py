@@ -33,7 +33,7 @@ def exchange(process: subprocess.Popen[str], requests: list[dict]) -> tuple[list
     assert process.stdin and process.stdout and process.stderr
     process.stdin.write(payload)
     process.stdin.flush()
-    expected_responses = sum(1 for request in requests if "id" in request)
+    expected_responses = sum(1 for request in requests if "method" in request and "id" in request)
     lines = [process.stdout.readline() for _ in range(expected_responses)]
     assert all(lines), lines
     process.stdin.close()
@@ -70,6 +70,7 @@ def main() -> None:
                 "protocolVersion": "2025-06-18", "capabilities": {},
                 "clientInfo": {"name": "dm7-smoke", "version": "1.0.0"}}},
             {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            {"jsonrpc": "2.0", "id": "client-response", "result": {"accepted": True}},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
                 "name": "dm7_get_release_log", "arguments": {}}},
@@ -107,7 +108,31 @@ def main() -> None:
             raise AssertionError("malformed JSON left the STDIO server hanging")
         assert malformed.returncode == 0, malformed_stderr
         malformed_frames = [json.loads(line) for line in stdout.splitlines()]
-        assert malformed_frames and malformed_frames[0]["error"]["code"] < 0
+        assert malformed_frames and malformed_frames[0]["error"]["code"] == -32700
+
+        marker = "password=NEVER_ECHO SQL_SECRET_MARKER"
+        invalid_protocol = [
+            [], None, 7, marker, {},
+            {"method": "tools/list", "id": 21},
+            {"jsonrpc": "1.0", "method": "tools/list", "id": 22},
+            {"jsonrpc": "2.0", "id": 23},
+            {"jsonrpc": "2.0", "method": "tools/list", "id": True},
+            {"jsonrpc": "2.0", "method": "tools/list", "id": 24, "result": marker},
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "result": marker},
+        ]
+        invalid = launch(data / "invalid-protocol")
+        invalid_payload = "".join(json.dumps(value, ensure_ascii=False) + "\n" for value in invalid_protocol)
+        try:
+            invalid_stdout, invalid_stderr = invalid.communicate(invalid_payload, timeout=5)
+        except subprocess.TimeoutExpired:
+            invalid.kill()
+            invalid.communicate(timeout=5)
+            raise AssertionError("invalid JSON-RPC left the STDIO server hanging")
+        assert invalid.returncode == 0, invalid_stderr
+        invalid_frames = [json.loads(line) for line in invalid_stdout.splitlines()]
+        assert len(invalid_frames) == len(invalid_protocol), invalid_frames
+        assert all(frame["error"]["code"] == -32600 for frame in invalid_frames)
+        assert marker not in invalid_stdout and marker not in invalid_stderr
 
         failed_env = os.environ.copy()
         failed_env.pop("PLUGIN_DATA", None)

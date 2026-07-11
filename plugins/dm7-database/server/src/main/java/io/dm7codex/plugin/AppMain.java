@@ -10,6 +10,7 @@ import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
 import io.modelcontextprotocol.spec.McpSchema.ServerCapabilities;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -77,6 +78,8 @@ public final class AppMain {
         private static final ObjectMapper JSON = new ObjectMapper();
         private static final byte[] PARSE_ERROR = ("{\"jsonrpc\":\"2.0\",\"id\":null,"
                 + "\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}\n").getBytes(UTF_8);
+        private static final byte[] INVALID_REQUEST = ("{\"jsonrpc\":\"2.0\",\"id\":null,"
+                + "\"error\":{\"code\":-32600,\"message\":\"Invalid Request\"}}\n").getBytes(UTF_8);
         private final BufferedReader reader;
         private final java.io.OutputStream stdout;
         private final CountDownLatch eof = new CountDownLatch(1);
@@ -94,24 +97,66 @@ public final class AppMain {
         }
 
         @Override public synchronized int read(byte[] bytes, int offset, int length) throws IOException {
-            Objects.checkFromIndexSize(offset, length, bytes.length);
-            if (length == 0) return 0;
-            while (cursor >= pending.length) {
-                String line = reader.readLine();
-                if (line == null) { eof.countDown(); return -1; }
-                try {
-                    JSON.readTree(line);
-                } catch (IOException malformed) {
-                    synchronized (stdout) { stdout.write(PARSE_ERROR); stdout.flush(); }
-                    continue;
+            try {
+                Objects.checkFromIndexSize(offset, length, bytes.length);
+                if (length == 0) return 0;
+                while (cursor >= pending.length) {
+                    String line = reader.readLine();
+                    if (line == null) { eof.countDown(); return -1; }
+                    JsonNode message;
+                    try {
+                        message = JSON.readTree(line);
+                    } catch (IOException malformed) {
+                        writeError(PARSE_ERROR);
+                        continue;
+                    }
+                    if (!validJsonRpc(message)) {
+                        writeError(INVALID_REQUEST);
+                        continue;
+                    }
+                    pending = (line + "\n").getBytes(UTF_8);
+                    cursor = 0;
                 }
-                pending = (line + "\n").getBytes(UTF_8);
-                cursor = 0;
+                int count = Math.min(length, pending.length - cursor);
+                System.arraycopy(pending, cursor, bytes, offset, count);
+                cursor += count;
+                return count;
+            } catch (IOException | RuntimeException failure) {
+                eof.countDown();
+                throw failure;
             }
-            int count = Math.min(length, pending.length - cursor);
-            System.arraycopy(pending, cursor, bytes, offset, count);
-            cursor += count;
-            return count;
+        }
+
+        private void writeError(byte[] error) throws IOException {
+            synchronized (stdout) { stdout.write(error); stdout.flush(); }
+        }
+
+        private static boolean validJsonRpc(JsonNode message) {
+            if (message == null || !message.isObject()
+                    || !message.path("jsonrpc").isTextual()
+                    || !"2.0".equals(message.path("jsonrpc").textValue())) return false;
+            boolean hasMethod = message.has("method");
+            boolean hasResult = message.has("result");
+            boolean hasError = message.has("error");
+            boolean hasId = message.has("id");
+            if (hasMethod) {
+                if (!message.get("method").isTextual() || message.get("method").textValue().isBlank()
+                        || hasResult || hasError || (message.has("params") && !message.get("params").isObject())) {
+                    return false;
+                }
+                return !hasId || validId(message.get("id"));
+            }
+            if (!hasId || !validId(message.get("id")) || hasResult == hasError || message.has("params")) return false;
+            if (hasError) {
+                JsonNode error = message.get("error");
+                return error.isObject() && error.path("code").isIntegralNumber()
+                        && error.path("message").isTextual();
+            }
+            return true;
+        }
+
+        private static boolean validId(JsonNode id) {
+            return id != null && (id.isTextual() || id.isIntegralNumber());
         }
         private void awaitEof() throws InterruptedException { eof.await(); }
     }

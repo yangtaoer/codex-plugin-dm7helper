@@ -100,17 +100,19 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
     }
 
     private Map<String, Object> query(Map<String, Object> arguments, SessionState session) {
+        var typedParameters = parameters(arguments);
         var result = executions.query(session, new QueryCommand(connectionId(arguments), executionId(arguments),
-                required(arguments, "sql"), parameters(arguments), integer(arguments, "maxRows", 1_000),
+                required(arguments, "sql"), typedParameters, integer(arguments, "maxRows", 1_000),
                 longValue(arguments, "maxBytes", 10_485_760), integer(arguments, "timeoutSeconds", 60),
                 ExecutionSource.MCP));
         return queryResult(result);
     }
 
     private Map<String, Object> execute(Map<String, Object> arguments, SessionState session) {
+        var typedParameters = parameters(arguments);
         SqlPurpose purpose = SqlPurpose.valueOf(required(arguments, "purpose").toUpperCase(Locale.ROOT));
         var result = executions.execute(session, new ExecuteCommand(connectionId(arguments), executionId(arguments),
-                required(arguments, "sql"), parameters(arguments), purpose, bool(arguments, "atomic", true),
+                required(arguments, "sql"), typedParameters, purpose, bool(arguments, "atomic", true),
                 bool(arguments, "continueOnError", false), integer(arguments, "timeoutSeconds", 60), ExecutionSource.MCP));
         return executionResult(result);
     }
@@ -239,9 +241,18 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
             if (!(value instanceof Map<?, ?> item) || !(item.get("jdbcType") instanceof Number type)) {
                 throw new IllegalArgumentException("parameter is invalid");
             }
-            int jdbcType = type.intValue();
+            int jdbcType;
+            try { jdbcType = number(type).intValueExact(); }
+            catch (RuntimeException invalid) { throw new IllegalArgumentException("JDBC type is invalid"); }
             if (!item.containsKey("value")) throw new IllegalArgumentException("parameter value is required");
-            result.add(new SqlParameter(parameterValue(item.get("value"), jdbcType), jdbcType));
+            Object parsed;
+            try {
+                parsed = parameterValue(item.get("value"), jdbcType);
+                new DmLiteralRenderer().render(parsed, jdbcType);
+            } catch (RuntimeException unsafe) {
+                throw new IllegalArgumentException("JDBC parameter cannot be represented safely");
+            }
+            result.add(new SqlParameter(parsed, jdbcType));
         }
         return List.copyOf(result);
     }
@@ -252,13 +263,13 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
             case java.sql.Types.CHAR, java.sql.Types.VARCHAR, java.sql.Types.LONGVARCHAR,
                     java.sql.Types.CLOB, java.sql.Types.NCHAR, java.sql.Types.NVARCHAR,
                     java.sql.Types.LONGNVARCHAR, java.sql.Types.NCLOB -> requireValue(value, String.class);
-            case java.sql.Types.TINYINT -> ((Number) requireValue(value, Number.class)).byteValue();
-            case java.sql.Types.SMALLINT -> ((Number) requireValue(value, Number.class)).shortValue();
-            case java.sql.Types.INTEGER -> ((Number) requireValue(value, Number.class)).intValue();
-            case java.sql.Types.BIGINT -> ((Number) requireValue(value, Number.class)).longValue();
-            case java.sql.Types.DECIMAL, java.sql.Types.NUMERIC -> new java.math.BigDecimal(value.toString());
-            case java.sql.Types.REAL -> ((Number) requireValue(value, Number.class)).floatValue();
-            case java.sql.Types.FLOAT, java.sql.Types.DOUBLE -> ((Number) requireValue(value, Number.class)).doubleValue();
+            case java.sql.Types.TINYINT -> integral(value).byteValueExact();
+            case java.sql.Types.SMALLINT -> integral(value).shortValueExact();
+            case java.sql.Types.INTEGER -> integral(value).intValueExact();
+            case java.sql.Types.BIGINT -> integral(value).longValueExact();
+            case java.sql.Types.DECIMAL, java.sql.Types.NUMERIC -> number(value);
+            case java.sql.Types.REAL -> finiteFloat(value);
+            case java.sql.Types.FLOAT, java.sql.Types.DOUBLE -> finiteDouble(value);
             case java.sql.Types.BOOLEAN, java.sql.Types.BIT -> requireValue(value, Boolean.class);
             case java.sql.Types.DATE -> java.time.LocalDate.parse((String) requireValue(value, String.class));
             case java.sql.Types.TIME -> java.time.LocalTime.parse((String) requireValue(value, String.class));
@@ -269,6 +280,40 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
                     java.sql.Types.BLOB -> Base64.getDecoder().decode((String) requireValue(value, String.class));
             default -> throw new IllegalArgumentException("JDBC parameter type is not supported");
         };
+    }
+
+    private static java.math.BigDecimal number(Object value) {
+        if (!(value instanceof Number numeric)) {
+            throw new IllegalArgumentException("JDBC numeric parameter must be a JSON number");
+        }
+        if ((numeric instanceof Double doubleValue && !Double.isFinite(doubleValue))
+                || (numeric instanceof Float floatValue && !Float.isFinite(floatValue))) {
+            throw new IllegalArgumentException("JDBC numeric parameter must be finite");
+        }
+        try { return new java.math.BigDecimal(numeric.toString()); }
+        catch (NumberFormatException invalid) { throw new IllegalArgumentException("JDBC numeric parameter is invalid"); }
+    }
+
+    private static java.math.BigDecimal integral(Object value) {
+        return number(value);
+    }
+
+    private static float finiteFloat(Object value) {
+        var decimal = number(value);
+        float result = decimal.floatValue();
+        if (!Float.isFinite(result) || (result == 0f && decimal.signum() != 0)) {
+            throw new IllegalArgumentException("REAL parameter is outside the finite range");
+        }
+        return result;
+    }
+
+    private static double finiteDouble(Object value) {
+        var decimal = number(value);
+        double result = decimal.doubleValue();
+        if (!Double.isFinite(result) || (result == 0d && decimal.signum() != 0)) {
+            throw new IllegalArgumentException("DOUBLE parameter is outside the finite range");
+        }
+        return result;
     }
 
     private static Object requireValue(Object value, Class<?> type) {

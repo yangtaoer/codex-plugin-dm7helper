@@ -48,3 +48,12 @@ The compatibility regression where legacy command objects reused a generated ID 
 Fresh post-review verification used Maven 3.9.16 with `JAVA_HOME=C:\tool\jdk21`: `clean package` ran 272 tests with zero failures, the enhanced packaged STDIO smoke passed, plugin layout passed, bytecode remained Java 17 (major 61), and `git diff --check` passed.
 
 Per the approved implementation-plan packaging boundary, the generated `lib/dm7-codex-plugin.jar` is exercised by this task's package and smoke verification but is not committed here. The final packaging task remains responsible for committing the distribution artifact, preventing a stale intermediate binary from entering source control.
+
+## Second Review Hardening
+
+- The protocol guard now distinguishes syntax errors (`-32700`) from syntactically valid but invalid JSON-RPC envelopes (`-32600`). It accepts only JSON-RPC 2.0 request/notification shapes with a textual method and object params, or response shapes with a legal string/integral ID and exactly one result/error. Arrays, null/scalars, empty objects, missing/wrong versions, missing methods, illegal IDs, and mixed request/response fields never reach the SDK. Error frames are constant and serialized under the shared stdout lock, so password/SQL markers are not echoed.
+- Guard read, validation, protocol-error write, EOF, and transport exception paths release the lifecycle latch. Black-box invalid-frame matrices and bounded failing-input/failing-output tests prove these paths do not hang. Valid initialize, initialized notification, and client response envelopes remain SDK-compatible.
+- Typed integral values now use exact `BigDecimal` conversion followed by `byteValueExact`, `shortValueExact`, `intValueExact`, or `longValueExact`. Fractions, strings, TINYINT/SMALLINT/INTEGER overflow, and BIGINT overflow are rejected before connection resolution, JDBC, history, or release logging.
+- REAL/FLOAT/DOUBLE reject NaN, infinity, overflow, and non-zero underflow. DECIMAL/NUMERIC require JSON numbers. Every normalized value is preflighted through `DmLiteralRenderer`, keeping MCP acceptance consistent with replayable SQL safety.
+
+Fresh second-review verification on JDK 21 ran 276 tests with zero failures before rebuilding and exercising the enhanced STDIO artifact.

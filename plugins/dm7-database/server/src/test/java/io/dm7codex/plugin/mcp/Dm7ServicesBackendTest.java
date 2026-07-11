@@ -17,6 +17,8 @@ import java.time.Instant;
 import java.util.UUID;
 import io.dm7codex.plugin.execution.ExecutionModels.ExecutionEvent;
 import io.dm7codex.plugin.execution.ExecutionModels.ExecutionStatus;
+import java.math.BigInteger;
+import java.math.BigDecimal;
 
 class Dm7ServicesBackendTest {
     @TempDir Path temporary;
@@ -54,6 +56,45 @@ class Dm7ServicesBackendTest {
         assertEquals("QUEUED", events.get(0).get("status"));
         assertEquals("COMPLETED", events.get(1).get("status"));
         assertEquals("1970-01-01T00:00:01Z", events.get(1).get("timestamp"));
+    }
+
+    @Test void parsesIntegralParametersExactlyAtEveryJdbcBoundary() {
+        assertEquals((byte) -128, parameter(Types.TINYINT, -128));
+        assertEquals((byte) 127, parameter(Types.TINYINT, 127));
+        assertEquals((short) -32768, parameter(Types.SMALLINT, -32768));
+        assertEquals((short) 32767, parameter(Types.SMALLINT, 32767));
+        assertEquals(Integer.MIN_VALUE, parameter(Types.INTEGER, Integer.MIN_VALUE));
+        assertEquals(Integer.MAX_VALUE, parameter(Types.INTEGER, Integer.MAX_VALUE));
+        assertEquals(Long.MIN_VALUE, parameter(Types.BIGINT, BigInteger.valueOf(Long.MIN_VALUE)));
+        assertEquals(Long.MAX_VALUE, parameter(Types.BIGINT, BigInteger.valueOf(Long.MAX_VALUE)));
+
+        for (int type : java.util.List.of(Types.TINYINT, Types.SMALLINT, Types.INTEGER, Types.BIGINT)) {
+            assertThrows(IllegalArgumentException.class, () -> parameter(type, 1.75), "fraction " + type);
+            assertThrows(IllegalArgumentException.class, () -> parameter(type, "1"), "string " + type);
+        }
+        assertThrows(IllegalArgumentException.class, () -> parameter(Types.TINYINT, 300));
+        assertThrows(IllegalArgumentException.class, () -> parameter(Types.TINYINT, -129));
+        assertThrows(IllegalArgumentException.class, () -> parameter(Types.BIGINT,
+                BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE)));
+        assertThrows(IllegalArgumentException.class, () -> parameter(Types.BIGINT,
+                BigInteger.valueOf(Long.MIN_VALUE).subtract(BigInteger.ONE)));
+    }
+
+    @Test void rejectsNonFiniteOrOutOfRangeFloatingAndDecimalParameters() {
+        assertThrows(IllegalArgumentException.class, () -> parameter(Types.REAL, Double.NaN));
+        assertThrows(IllegalArgumentException.class, () -> parameter(Types.FLOAT, Double.POSITIVE_INFINITY));
+        assertThrows(IllegalArgumentException.class, () -> parameter(Types.DOUBLE, Double.NEGATIVE_INFINITY));
+        assertThrows(IllegalArgumentException.class, () -> parameter(Types.REAL, Double.MAX_VALUE));
+        assertThrows(IllegalArgumentException.class, () -> parameter(Types.DOUBLE, new BigDecimal("1e-9999")));
+        assertThrows(IllegalArgumentException.class, () -> parameter(Types.DECIMAL, "NaN"));
+        assertEquals(Float.MAX_VALUE, parameter(Types.REAL, Float.MAX_VALUE));
+        assertEquals(Double.MAX_VALUE, parameter(Types.DOUBLE, Double.MAX_VALUE));
+        assertEquals(new BigDecimal("123.45"), parameter(Types.DECIMAL, new BigDecimal("123.45")));
+    }
+
+    private static Object parameter(int jdbcType, Object value) {
+        return Dm7ServicesBackend.parameters(Map.of("parameters", java.util.List.of(
+                Map.of("jdbcType", jdbcType, "value", value)))).get(0).value();
     }
 
     @Test
