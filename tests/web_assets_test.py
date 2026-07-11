@@ -1,4 +1,6 @@
 import re
+import json
+import struct
 import unittest
 import zipfile
 from pathlib import Path
@@ -8,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "plugins" / "dm7-database" / "web" / "dist"
 JAR = ROOT / "plugins" / "dm7-database" / "lib" / "dm7-codex-plugin.jar"
 STYLES = ROOT / "plugins" / "dm7-database" / "web" / "src" / "styles.css"
+PLUGIN = ROOT / "plugins" / "dm7-database"
 
 
 def luminance(color):
@@ -22,6 +25,17 @@ def contrast(foreground, background):
 
 
 class WebAssetsTest(unittest.TestCase):
+    def test_marketplace_screenshots_are_referenced_1440x900_pngs(self):
+        manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        screenshots = manifest["interface"]["screenshots"]
+        self.assertEqual(screenshots, ["./assets/screenshot-console.png", "./assets/screenshot-release.png"])
+        for reference in screenshots:
+            image = PLUGIN / reference.removeprefix("./")
+            data = image.read_bytes()
+            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(struct.unpack(">II", data[16:24]), (1440, 900))
+            self.assertLess(len(data), 2_000_000)
+
     def test_light_and_dark_tokens_meet_aa_contrast(self):
         styles = STYLES.read_text(encoding="utf-8")
         light = re.search(r":root\s*\{([^}]+)\}", styles, re.S).group(1)
