@@ -120,7 +120,13 @@ public final class ConnectionConfigRepository {
         synchronized (lock) {
             Map<UUID, ConnectionProfile> profiles = readProfiles();
             Map<UUID, ConnectionProfile> original = new LinkedHashMap<>(profiles);
-            Optional<char[]> previous = vault.read(id);
+            Optional<char[]> previous = Optional.empty();
+            RuntimeException readFailure = null;
+            try {
+                previous = vault.read(id);
+            } catch (RuntimeException failure) {
+                readFailure = failure;
+            }
             try {
                 ConnectionProfile removed = profiles.remove(id);
                 if (removed != null) {
@@ -149,13 +155,33 @@ public final class ConnectionConfigRepository {
                 try {
                     vault.delete(id);
                 } catch (RuntimeException failure) {
-                    recoverDeletedConnection(id, original, removed != null, previous, failure);
+                    if (readFailure != null) {
+                        recoverUnreadableDeletedConnection(original, removed != null, readFailure, failure);
+                    } else {
+                        recoverDeletedConnection(id, original, removed != null, previous, failure);
+                    }
                     throw failure;
                 }
             } finally {
-                previous.ifPresent(value -> Arrays.fill(value, '\0'));
+                if (previous.isPresent()) Arrays.fill(previous.get(), '\0');
             }
         }
+    }
+
+    private void recoverUnreadableDeletedConnection(Map<UUID, ConnectionProfile> original,
+            boolean configChanged, RuntimeException readFailure, RuntimeException deleteFailure) {
+        suppress(deleteFailure, readFailure);
+        if (configChanged) {
+            try {
+                writeProfiles(original);
+            } catch (RuntimeException rollbackFailure) {
+                suppress(deleteFailure, rollbackFailure);
+                throw new CredentialStateException(CredentialStateException.State.UNCERTAIN,
+                        "Connection deletion state could not be recovered", deleteFailure);
+            }
+        }
+        throw new CredentialStateException(CredentialStateException.State.RECOVERY_REQUIRED,
+                "Credential could not be read or deleted; retry deletion or save a new credential", deleteFailure);
     }
 
     private void recoverDeletedConnection(UUID id, Map<UUID, ConnectionProfile> original,

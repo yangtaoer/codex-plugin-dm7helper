@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
@@ -323,6 +324,60 @@ class ConnectionConfigRepositoryTest {
         assertEquals(CredentialStateException.State.UNCERTAIN,failure.state());assertTrue(failure.getCause().getSuppressed().length>=1);assertTrue(allZero(secrets.restoreArgument));
     }
 
+    @Test void corruptCredentialCanStillBeDeleted() throws Exception {
+        ScriptedSecretStore secrets = new ScriptedSecretStore();
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(tempDir.resolve("corrupt-delete"), secrets);
+        UUID id = UUID.randomUUID();
+        repository.save(profile(id, "损坏凭据", false), Optional.of("unreadable".toCharArray()));
+        secrets.readFailure = new IllegalStateException("decrypt detail must stay internal");
+
+        repository.delete(id);
+
+        assertTrue(repository.find(id).isEmpty());
+        assertFalse(secrets.contains(id));
+    }
+
+    @Test void corruptCredentialDeleteFailureRestoresConfigAndRequiresNewCredential() throws Exception {
+        ScriptedSecretStore secrets = new ScriptedSecretStore();
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(tempDir.resolve("corrupt-delete-recovery"), secrets);
+        UUID id = UUID.randomUUID();
+        repository.save(profile(id, "损坏凭据恢复", false), Optional.of("unreadable".toCharArray()));
+        secrets.readFailure = new IllegalStateException("decrypt failed");
+        secrets.onDelete = call -> {
+            secrets.values.remove(id);
+            throw new IllegalStateException("delete failed after mutation");
+        };
+
+        CredentialStateException failure = assertThrows(CredentialStateException.class, () -> repository.delete(id));
+
+        assertEquals(CredentialStateException.State.RECOVERY_REQUIRED, failure.state());
+        assertTrue(repository.find(id).isPresent());
+        assertFalse(secrets.contains(id));
+        assertEquals("delete failed after mutation", failure.getCause().getMessage());
+        assertTrue(Arrays.stream(failure.getCause().getSuppressed())
+                .anyMatch(item -> "decrypt failed".equals(item.getMessage())));
+    }
+
+    @Test void corruptCredentialDeleteAndConfigRollbackFailureIsUncertain() throws Exception {
+        ScriptedSecretStore secrets = new ScriptedSecretStore();
+        Path config = tempDir.resolve("corrupt-delete-uncertain");
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(config, secrets);
+        UUID id = UUID.randomUUID();
+        repository.save(profile(id, "损坏凭据不确定", false), Optional.of("unreadable".toCharArray()));
+        secrets.readFailure = new IllegalStateException("decrypt failed");
+        secrets.onDelete = call -> {
+            breakConfiguration(config);
+            secrets.values.remove(id);
+            throw new IllegalStateException("delete failed after mutation");
+        };
+
+        CredentialStateException failure = assertThrows(CredentialStateException.class, () -> repository.delete(id));
+
+        assertEquals(CredentialStateException.State.UNCERTAIN, failure.state());
+        assertEquals("delete failed after mutation", failure.getCause().getMessage());
+        assertTrue(failure.getCause().getSuppressed().length >= 2);
+    }
+
     @Test void deletingDefaultRequiresExplicitReplacementOrExplicitNoDefault() throws Exception {
         RecordingSecretStore secrets = new RecordingSecretStore();
         ConnectionConfigRepository repository = ConnectionConfigRepository.open(tempDir.resolve("explicit-delete"), secrets);
@@ -389,9 +444,9 @@ class ConnectionConfigRepositoryTest {
         interface Action { void accept(int call); }
         final java.util.Map<UUID,char[]> values=new HashMap<>();
         final AtomicInteger puts=new AtomicInteger(),deletes=new AtomicInteger();
-        Action onPut=ignored->{},onDelete=ignored->{}; char[] restoreArgument;
+        Action onPut=ignored->{},onDelete=ignored->{}; char[] restoreArgument; RuntimeException readFailure;
         @Override public void put(UUID id,char[] secret){int call=puts.incrementAndGet();if(call>=2)restoreArgument=secret;onPut.accept(call);values.put(id,secret.clone());}
-        @Override public Optional<char[]> read(UUID id){return Optional.ofNullable(values.get(id)).map(char[]::clone);}
+        @Override public Optional<char[]> read(UUID id){if(readFailure!=null)throw readFailure;return Optional.ofNullable(values.get(id)).map(char[]::clone);}
         @Override public boolean contains(UUID id){return values.containsKey(id);}
         @Override public void delete(UUID id){int call=deletes.incrementAndGet();onDelete.accept(call);values.remove(id);}
     }
