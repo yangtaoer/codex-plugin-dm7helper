@@ -216,6 +216,7 @@ class PluginScriptsTest(unittest.TestCase):
         scripts.mkdir(parents=True)
         shutil.copy2(PLUGIN / "scripts" / "package.ps1", scripts)
         shutil.copy2(PLUGIN / "scripts" / "verify-package-security.py", scripts)
+        shutil.copy2(PLUGIN / "scripts" / "verify-license-inventory.py", scripts)
         for name in ("test.ps1", "build.ps1"):
             (scripts / name).write_text("$ErrorActionPreference = 'Stop'\n", encoding="utf-8")
         (scripts / "verify-extracted.ps1").write_text("$ErrorActionPreference = 'Stop'\n", encoding="utf-8")
@@ -230,7 +231,7 @@ class PluginScriptsTest(unittest.TestCase):
             "README.md": "runtime docs",
             "LICENSE": "license",
             "THIRD_PARTY_NOTICES.md": "notices",
-            "licenses/dependencies.json": '{"schemaVersion":1,"components":[]}',
+            "licenses/dependencies.json": '{"schemaVersion":1,"licenseRefs":{},"components":[{"id":"fixture:one","license":"MIT","licenseFile":"licenses/components/fixture.txt","provenance":"fixture"}]}',
             "licenses/components/fixture.txt": "fixture license",
             "server/target/local.txt": "must not ship",
             "server/src/main/java/Secret.java": "must not ship",
@@ -294,6 +295,14 @@ class PluginScriptsTest(unittest.TestCase):
 
             self.assertNotEqual(0, result.returncode)
             self.assertIn("Package contains forbidden files", result.stderr)
+
+    def test_package_rejects_rogue_unregistered_license_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary); _, plugin = self.make_package_fixture(base)
+            (plugin / "licenses" / "components" / "rogue.txt").write_text("rogue", encoding="utf-8")
+            result = self.run_powershell(plugin / "scripts" / "package.ps1", cwd=base)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("Dependency license inventory validation failed", result.stderr)
 
     def test_package_rejects_env_files_outside_dot_prefix(self):
         with tempfile.TemporaryDirectory() as temporary:

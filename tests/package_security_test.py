@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from io import BytesIO
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,13 @@ SCANNER = ROOT / "plugins" / "dm7-database" / "scripts" / "verify-package-securi
 
 
 class PackageSecurityTest(unittest.TestCase):
+    @staticmethod
+    def zip_bytes(name: str, payload: bytes) -> bytes:
+        output = BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(name, payload)
+        return output.getvalue()
+
     def run_scanner(self, root: Path, secret: str) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
         environment["DM7_IT_PASSWORD"] = secret
@@ -54,6 +62,41 @@ class PackageSecurityTest(unittest.TestCase):
             root = Path(temporary)
             with zipfile.ZipFile(root / "runtime.jar", "w", zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr("bomb.txt", b"A" * 2_000_000)
+            result = self.run_scanner(root, "absent-secret")
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("archive safety limit", result.stderr)
+
+    def test_rejects_prefixed_top_level_and_nested_archive_secrets(self):
+        secret = "prefixed-secret-中文-X9q"
+        compressed_secret = self.zip_bytes("secret.txt", ((secret + "\n") * 10).encode())
+        prefixed = b"MZ-STUB" + compressed_secret
+        self.assertTrue(zipfile.is_zipfile(BytesIO(prefixed)))
+        self.assertNotIn(secret.encode(), prefixed)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "self-extracting.jar").write_bytes(prefixed)
+            result = self.run_scanner(root, secret)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("integration environment value", result.stderr)
+            self.assertNotIn(secret, result.stdout + result.stderr)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with zipfile.ZipFile(root / "runtime.jar", "w", zipfile.ZIP_DEFLATED) as outer:
+                outer.writestr("random.bin", os.urandom(65536))
+                outer.writestr("lib/prefixed.zip", prefixed)
+            result = self.run_scanner(root, secret)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("integration environment value", result.stderr)
+            self.assertNotIn(secret, result.stdout + result.stderr)
+
+    def test_rejects_prefixed_archive_bomb(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prefixed_bomb = b"MZ-STUB" + self.zip_bytes("bomb.txt", b"A" * 2_000_000)
+            self.assertTrue(zipfile.is_zipfile(BytesIO(prefixed_bomb)))
+            (root / "self-extracting.jar").write_bytes(prefixed_bomb)
             result = self.run_scanner(root, "absent-secret")
             self.assertNotEqual(0, result.returncode)
             self.assertIn("archive safety limit", result.stderr)

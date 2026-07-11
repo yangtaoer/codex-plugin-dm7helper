@@ -27,7 +27,7 @@ MAVEN = [
     ("com.fasterxml.jackson.core", "jackson-databind", "2.22.1", "Apache-2.0"),
     ("com.fasterxml.jackson.core", "jackson-core", "2.22.1", "Apache-2.0"),
     ("com.fasterxml.jackson.core", "jackson-annotations", "2.22", "Apache-2.0"),
-    ("org.xerial", "sqlite-jdbc", "3.53.2.0", "Apache-2.0 AND BSD-3-Clause"),
+    ("org.xerial", "sqlite-jdbc", "3.53.2.0", "Apache-2.0 AND BSD-2-Clause"),
     ("org.slf4j", "slf4j-simple", "2.0.17", "MIT"),
 ]
 MCP_LICENSE = """MIT License
@@ -97,7 +97,7 @@ def generate_maven() -> list[dict]:
         identifier = f"maven:{group}:{artifact}:{version}"
         result.append(write_component(identifier, license_id, sections, provenance))
     sqlite_notice = "SQLite is in the Public Domain.\n\nProvenance: https://www.sqlite.org/copyright.html\n"
-    result.append(write_component("embedded:sqlite-engine@3.53.2", "Public-Domain",
+    result.append(write_component("embedded:sqlite-engine@3.53.2", "LicenseRef-SQLite-Public-Domain",
                                   [("SQLite public-domain dedication", sqlite_notice)],
                                   "sqlite-jdbc 3.53.2.0 bundled native SQLite; https://www.sqlite.org/copyright.html"))
     return result
@@ -132,7 +132,8 @@ def generate_npm() -> list[dict]:
             sections = [(path.name, path.read_text("utf-8", errors="replace")) for path in files]
             for version in package["versions"]:
                 identifier = f"npm:{package['name']}@{version}"
-                result.append(write_component(identifier, license_id, sections,
+                effective_license = "ISC AND MIT" if package["name"] == "lucide-react" else license_id
+                result.append(write_component(identifier, effective_license, sections,
                                               "pnpm licenses list --prod and installed package license/notice files"))
     return result
 
@@ -143,7 +144,12 @@ def main() -> None:
             path.unlink()
     COMPONENTS.mkdir(parents=True, exist_ok=True)
     components = sorted(generate_maven() + generate_npm(), key=lambda item: item["id"])
-    inventory = {"schemaVersion": 1, "components": components}
+    inventory = {"schemaVersion": 1, "licenseRefs": {
+        "LicenseRef-SQLite-Public-Domain": {
+            "description": "SQLite engine public-domain dedication",
+            "url": "https://www.sqlite.org/copyright.html"
+        }
+    }, "components": components}
     (OUTPUT / "dependencies.json").write_text(json.dumps(inventory, ensure_ascii=False, indent=2) + "\n",
                                                encoding="utf-8", newline="\n")
     print(f"Generated {len(components)} runtime dependency license records")

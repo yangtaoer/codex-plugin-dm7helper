@@ -80,6 +80,8 @@ try {
   }
   if ($env:SOURCE_DATE_EPOCH -notmatch '^\d+$') { throw 'SOURCE_DATE_EPOCH must be a Unix timestamp' }
   & (Join-Path $PSScriptRoot 'verify-extracted.ps1') -CheckJava17Only
+  $licenseRelativeFiles = @(python (Join-Path $PSScriptRoot 'verify-license-inventory.py') $pluginRoot --list)
+  if ($LASTEXITCODE -ne 0) { throw 'Dependency license inventory validation failed' }
 
   Assert-NoForbiddenRuntimeFiles
   foreach ($scanRoot in @('assets', 'hooks', 'lib', 'skills', 'docs', 'licenses')) {
@@ -117,10 +119,7 @@ try {
   )
   foreach ($relative in $requiredRuntimeFiles) { Copy-RuntimeFile $relative $true }
   foreach ($relative in $optionalRuntimeFiles) { Copy-RuntimeFile $relative $false }
-  $licenseFiles = @(Get-ChildItem -LiteralPath (Join-Path $pluginRoot 'licenses') -Recurse -File | Sort-Object FullName)
-  if (-not ($licenseFiles | Where-Object { $_.Name -eq 'dependencies.json' })) { throw 'Dependency license inventory is missing' }
-  foreach ($licenseFile in $licenseFiles) {
-    $relative = $licenseFile.FullName.Substring($pluginRoot.Length).TrimStart('\', '/')
+  foreach ($relative in $licenseRelativeFiles) {
     Copy-RuntimeFile $relative $true
   }
   Assert-NoIntegrationValues $stagePlugin

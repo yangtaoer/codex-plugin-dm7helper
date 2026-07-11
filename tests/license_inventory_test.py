@@ -30,6 +30,13 @@ class LicenseInventoryTest(unittest.TestCase):
         inventory = json.loads(inventory_path.read_text("utf-8"))
         covered = {item["id"] for item in inventory["components"]}
         self.assertIn("embedded:sqlite-engine@3.53.2", covered)
+        by_id = {item["id"]: item for item in inventory["components"]}
+        self.assertEqual("Apache-2.0 AND BSD-2-Clause", by_id["maven:org.xerial:sqlite-jdbc:3.53.2.0"]["license"])
+        self.assertEqual("ISC AND MIT", by_id["npm:lucide-react@1.24.0"]["license"])
+        self.assertEqual("LicenseRef-SQLite-Public-Domain", by_id["embedded:sqlite-engine@3.53.2"]["license"])
+        self.assertIn("https://www.sqlite.org/copyright.html", by_id["embedded:sqlite-engine@3.53.2"]["provenance"])
+        self.assertEqual("https://www.sqlite.org/copyright.html",
+                         inventory["licenseRefs"]["LicenseRef-SQLite-Public-Domain"]["url"])
         for item in inventory["components"]:
             self.assertTrue(item["license"])
             self.assertTrue((PLUGIN / item["licenseFile"]).is_file(), item)

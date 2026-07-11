@@ -1,9 +1,15 @@
 {
   "schemaVersion": 1,
+  "licenseRefs": {
+    "LicenseRef-SQLite-Public-Domain": {
+      "description": "SQLite engine public-domain dedication",
+      "url": "https://www.sqlite.org/copyright.html"
+    }
+  },
   "components": [
     {
       "id": "embedded:sqlite-engine@3.53.2",
-      "license": "Public-Domain",
+      "license": "LicenseRef-SQLite-Public-Domain",
       "licenseFile": "licenses/components/embedded_sqlite-engine_3.53.2.txt",
       "provenance": "sqlite-jdbc 3.53.2.0 bundled native SQLite; https://www.sqlite.org/copyright.html"
     },
@@ -81,7 +87,7 @@
     },
     {
       "id": "maven:org.xerial:sqlite-jdbc:3.53.2.0",
-      "license": "Apache-2.0 AND BSD-3-Clause",
+      "license": "Apache-2.0 AND BSD-2-Clause",
       "licenseFile": "licenses/components/maven_org.xerial_sqlite-jdbc_3.53.2.0.txt",
       "provenance": "Maven source artifact META-INF/maven/org.xerial/sqlite-jdbc license resources"
     },
@@ -183,7 +189,7 @@
     },
     {
       "id": "npm:lucide-react@1.24.0",
-      "license": "ISC",
+      "license": "ISC AND MIT",
       "licenseFile": "licenses/components/npm_lucide-react_1.24.0.txt",
       "provenance": "pnpm licenses list --prod and installed package license/notice files"
     },

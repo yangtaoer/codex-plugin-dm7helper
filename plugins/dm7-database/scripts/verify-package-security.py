@@ -49,7 +49,7 @@ def assert_secret_free(data: bytes, patterns: tuple[bytes, ...]) -> None:
 
 
 def is_archive(data: bytes) -> bool:
-    return len(data) >= 4 and data[:2] == b"PK" and zipfile.is_zipfile(BytesIO(data))
+    return zipfile.is_zipfile(BytesIO(data))
 
 
 def scan_archive(data: bytes, patterns: tuple[bytes, ...], budget: Budget, depth: int) -> None:
