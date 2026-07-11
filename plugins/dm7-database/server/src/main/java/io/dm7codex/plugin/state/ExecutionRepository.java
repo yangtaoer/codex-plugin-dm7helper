@@ -1,11 +1,15 @@
 package io.dm7codex.plugin.state;
 
+import static io.dm7codex.plugin.execution.ExecutionModels.*;
+
+import io.dm7codex.plugin.sql.SqlPurpose;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 public final class ExecutionRepository {
     private final StateDatabase database;
@@ -55,6 +59,99 @@ public final class ExecutionRepository {
                 return rows.next() ? Optional.of(readExecution(rows)) : Optional.empty();
             }
         }
+    }
+
+    public void started(UUID executionId, String sessionId, String connectionFingerprint,
+                        ExecutionSource source, Optional<SqlPurpose> purpose, String sql) throws SQLException {
+        var now = Instant.now();
+        saveExecution(new ExecutionRecord(executionId.toString(), UUID.randomUUID().toString(),
+                sessionId, connectionFingerprint, source.name(),
+                purpose.map(Enum::name).orElse(null), sql, ExecutionStatus.CONNECTING.name(),
+                "RUNNING", now, null, null, null, null, null, null, false, null));
+    }
+
+    public void progress(UUID executionId, ExecutionStatus phase) throws SQLException {
+        try (var connection = database.openConnection();
+             var statement = connection.prepareStatement(
+                     "UPDATE execution SET phase = ? WHERE execution_id = ? AND status = 'RUNNING'")) {
+            statement.setString(1, phase.name());
+            statement.setString(2, executionId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    public void statementFinished(UUID executionId, StatementResult result) throws SQLException {
+        try (var connection = database.openConnection();
+             var statement = connection.prepareStatement("""
+                     UPDATE execution SET affected_row_count = COALESCE(affected_row_count, 0) + ?,
+                         recorded = CASE WHEN recorded = 1 OR ? = 1 THEN 1 ELSE 0 END,
+                         exclusion_reason = COALESCE(?, exclusion_reason)
+                     WHERE execution_id = ?
+                     """)) {
+            statement.setLong(1, result.rowCount());
+            statement.setInt(2, result.recorded() ? 1 : 0);
+            statement.setString(3, result.exclusionReason());
+            statement.setString(4, executionId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    public void terminal(UUID executionId, ExecutionStatus status, Optional<SafeError> error)
+            throws SQLException {
+        try (var connection = database.openConnection();
+             var statement = connection.prepareStatement("""
+                     UPDATE execution SET phase = ?, status = ?, completed_at = ?,
+                         sql_state = ?, error_code = ?, error_message = ?
+                     WHERE execution_id = ?
+                     """)) {
+            statement.setString(1, status.name());
+            statement.setString(2, status.name());
+            statement.setString(3, Instant.now().toString());
+            statement.setString(4, error.map(SafeError::sqlState).orElse(null));
+            setNullableInteger(statement, 5, error.map(SafeError::errorCode).orElse(null));
+            statement.setString(6, error.map(SafeError::message).orElse(null));
+            statement.setString(7, executionId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    public Page<ExecutionSummary> search(ExecutionFilter filter, int offset, int limit) throws SQLException {
+        if (offset < 0 || limit < 1 || limit > 200) throw new IllegalArgumentException("invalid history page");
+        filter = filter == null ? new ExecutionFilter(null, null, null, null, null, null) : filter;
+        var sql = new StringBuilder("SELECT * FROM execution WHERE 1=1");
+        var values = new ArrayList<Object>();
+        if (filter.sessionId() != null) { sql.append(" AND session_id = ?"); values.add(filter.sessionId()); }
+        if (filter.status() != null) { sql.append(" AND status = ?"); values.add(filter.status().name()); }
+        if (filter.source() != null) { sql.append(" AND source = ?"); values.add(filter.source().name()); }
+        if (filter.purpose() != null) { sql.append(" AND purpose = ?"); values.add(filter.purpose().name()); }
+        if (filter.startedAfter() != null) { sql.append(" AND started_at >= ?"); values.add(filter.startedAfter().toString()); }
+        if (filter.startedBefore() != null) { sql.append(" AND started_at <= ?"); values.add(filter.startedBefore().toString()); }
+        sql.append(" ORDER BY started_at DESC, execution_id LIMIT ? OFFSET ?");
+        values.add(limit + 1); values.add(offset);
+        try (var connection = database.openConnection(); var statement = connection.prepareStatement(sql.toString())) {
+            for (int i = 0; i < values.size(); i++) statement.setObject(i + 1, values.get(i));
+            try (var rows = statement.executeQuery()) {
+                var items = new ArrayList<ExecutionSummary>();
+                while (rows.next() && items.size() <= limit) items.add(summary(rows));
+                boolean more = items.size() > limit;
+                if (more) items.remove(items.size() - 1);
+                return new Page<>(items, offset, limit, more);
+            }
+        }
+    }
+
+    private static ExecutionSummary summary(ResultSet rows) throws SQLException {
+        String purpose = rows.getString("purpose");
+        String completed = rows.getString("completed_at");
+        return new ExecutionSummary(UUID.fromString(rows.getString("execution_id")),
+                UUID.fromString(rows.getString("correlation_id")), rows.getString("session_id"),
+                rows.getString("connection_fingerprint"), ExecutionSource.valueOf(rows.getString("source")),
+                purpose == null ? Optional.empty() : Optional.of(SqlPurpose.valueOf(purpose)),
+                ExecutionStatus.valueOf(rows.getString("status")),
+                Instant.parse(rows.getString("started_at")), completed == null ? null : Instant.parse(completed),
+                Math.max(0, rows.getLong("affected_row_count")),
+                Math.max(0, rows.getLong("returned_row_count")), rows.getInt("recorded") != 0,
+                rows.getString("exclusion_reason"));
     }
 
     public void appendStatement(StatementEventRecord event) throws SQLException {

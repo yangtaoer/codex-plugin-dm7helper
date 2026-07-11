@@ -13,6 +13,16 @@ import java.util.Properties;
 import java.util.UUID;
 
 public final class DmConnectionFactory {
+    @FunctionalInterface
+    public interface ConnectionOpener {
+        ManagedConnection open(UUID profileId) throws SQLException;
+        default ConnectionLimits limits(UUID profileId) throws SQLException {
+            return new ConnectionLimits(ConnectionProfile.MAX_ROWS_LIMIT,
+                    ConnectionProfile.MAX_BYTES_LIMIT, ConnectionProfile.MAX_TIMEOUT_SECONDS);
+        }
+    }
+
+    public record ConnectionLimits(int maxRows, long maxBytes, int queryTimeoutSeconds) {}
     private final ConnectionConfigRepository profiles;
     private final SecretStore vault;
     private final DmDriverLoader driverLoader;
@@ -65,6 +75,12 @@ public final class DmConnectionFactory {
             properties.clear();
             Arrays.fill(password, '\0');
         }
+    }
+
+    public ConnectionLimits limits(UUID profileId) throws SQLException {
+        ConnectionProfile profile = profiles.find(Objects.requireNonNull(profileId, "profileId"))
+                .orElseThrow(() -> new SQLException("Connection profile was not found"));
+        return new ConnectionLimits(profile.maxRows(), profile.maxBytes(), profile.queryTimeoutSeconds());
     }
 
     static int timeoutMilliseconds(int seconds) {
