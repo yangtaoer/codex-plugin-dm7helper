@@ -84,23 +84,27 @@ public final class ReleaseExportService {
     public ExportArtifact recover(SessionState session)
             throws IOException, SQLException, ReleaseRecoveryNotAvailable {
         Objects.requireNonNull(session, "session");
-        SessionFileLock.trustedSessionDirectory(paths, session);
-        try (var ignored = SessionFileLock.acquire(paths, session, lockTimeout)) {
-            var artifact = exports.findArtifact(session.sessionId(), session.version())
-                    .orElseThrow(ReleaseRecoveryNotAvailable::new);
-            if (!java.util.Set.of("SEALED", "RECOVERY_REQUIRED").contains(artifact.state()))
-                throw new ReleaseRecoveryNotAvailable();
-            var release = sessions.findVersion(session.sessionId(), session.version());
-            if (!"sealed".equals(release.status())
-                    || exports.findSealed(session.sessionId(), session.version()).isEmpty())
-                throw new ReleaseRecoveryNotAvailable();
-            return exportLocked(session);
+        try {
+            SessionFileLock.trustedSessionDirectory(paths, session);
+            try (var ignored = SessionFileLock.acquire(paths, session, lockTimeout)) {
+                var artifact = exports.findArtifact(session.sessionId(), session.version())
+                        .orElseThrow(ReleaseRecoveryNotAvailable::new);
+                if (!java.util.Set.of("SEALED", "RECOVERY_REQUIRED").contains(artifact.state()))
+                    throw new ReleaseRecoveryNotAvailable();
+                var release = sessions.findVersion(session.sessionId(), session.version());
+                var sealed = exports.findSealed(session.sessionId(), session.version());
+                if (!"sealed".equals(release.status()) || sealed.isEmpty())
+                    throw new ReleaseRecoveryNotAvailable();
+                validateRecoveryMetadata(release, sealed.orElseThrow(), artifact);
+                return exportLocked(session);
+            }
         } catch (ReleaseExportLockTimeout timeout) {
             throw timeout;
         } catch (ReleaseRecoveryNotAvailable unavailable) {
             throw unavailable;
-        } catch (IOException failure) {
-            throw new IOException("Release recovery could not be completed");
+        } catch (IOException | IllegalStateException | IllegalArgumentException
+                | SecurityException unavailable) {
+            throw new ReleaseRecoveryNotAvailable();
         }
     }
 
@@ -128,6 +132,7 @@ public final class ReleaseExportService {
             sealed = exports.findSealed(session.sessionId(), session.version())
                     .orElseThrow(() -> new SQLException("Sealed release metadata is incomplete"));
             validateSealedPath(sealed, sealedPath);
+            validateSealedMetadata(release, sealed);
         } else {
             throw new SQLException("Release version has an unsupported export state");
         }
@@ -307,6 +312,28 @@ public final class ReleaseExportService {
     private static void validateSealedPath(SealedRelease sealed, Path expected) {
         if (!sealed.sealedSourcePath().equals(expected.toAbsolutePath().normalize())) {
             throw new IllegalStateException("Sealed release path is not trusted");
+        }
+    }
+
+    private static void validateSealedMetadata(ReleaseVersion release, SealedRelease sealed) {
+        if (!release.sessionId().equals(sealed.sessionId())
+                || release.version() != sealed.version()
+                || release.statementCount() != sealed.statementCount()
+                || !Objects.equals(release.firstSequence(), sealed.firstSequence())
+                || !Objects.equals(release.lastSequence(), sealed.lastSequence())) {
+            throw new IllegalStateException("Sealed release metadata is inconsistent");
+        }
+    }
+
+    private static void validateRecoveryMetadata(
+            ReleaseVersion release, SealedRelease sealed, ExportArtifactRecord artifact) {
+        validateSealedMetadata(release, sealed);
+        if (!release.sessionId().equals(artifact.sessionId())
+                || release.version() != artifact.version()
+                || release.statementCount() != artifact.statementCount()
+                || !Objects.equals(release.firstSequence(), artifact.firstSequence())
+                || !Objects.equals(release.lastSequence(), artifact.lastSequence())) {
+            throw new IllegalStateException("Recovery artifact metadata is inconsistent");
         }
     }
 

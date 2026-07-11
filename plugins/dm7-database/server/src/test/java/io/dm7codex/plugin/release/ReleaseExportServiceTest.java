@@ -249,6 +249,61 @@ public class ReleaseExportServiceTest {
         try{return service.recover(session);}catch(Exception failure){return failure;}
     }
 
+    @Test void recoveryNormalizesCorruptPathsMissingTamperedAndMismatchedMetadata() throws Exception {
+        try(var fixture=fixture("recover-corrupt-active")){
+            makeRecoverable(fixture);
+            updateRelease(fixture,"active_sql", "bad\0active");
+            assertRecoveryUnavailable(fixture);
+        }
+        try(var fixture=fixture("recover-traversal")){
+            makeRecoverable(fixture);
+            updateRelease(fixture,"sealed_source_path",tempDir.resolve("outside.sql").toString());
+            assertRecoveryUnavailable(fixture);
+        }
+        try(var fixture=fixture("recover-missing")){
+            makeRecoverable(fixture);Files.delete(fixture.exportRepository.findSealed(fixture.session.sessionId(),1).orElseThrow().sealedSourcePath());
+            assertRecoveryUnavailable(fixture);
+        }
+        try(var fixture=fixture("recover-tampered")){
+            makeRecoverable(fixture);Files.writeString(fixture.exportRepository.findSealed(fixture.session.sessionId(),1).orElseThrow().sealedSourcePath(),"tampered",UTF_8);
+            assertRecoveryUnavailable(fixture);
+        }
+        try(var fixture=fixture("recover-metadata")){
+            makeRecoverable(fixture);updateRelease(fixture,"statement_count",2);
+            assertRecoveryUnavailable(fixture);
+        }
+    }
+
+    @Test void recoveryRejectsSealedSourceLinksAndDoesNotMaskFatalErrors() throws Exception {
+        try(var fixture=fixture("recover-sealed-link")){
+            makeRecoverable(fixture);var source=fixture.exportRepository.findSealed(fixture.session.sessionId(),1).orElseThrow().sealedSourcePath();Files.delete(source);var outside=tempDir.resolve("outside-source.sql");Files.writeString(outside,"outside",UTF_8);assumeSymlink(source,outside);assertRecoveryUnavailable(fixture);
+        }
+        try(var fixture=fixture("recover-fatal")){
+            makeRecoverable(fixture);var fatal=new ReleaseExportService(fixture.paths,fixture.sessions,fixture.exportRepository,Duration.ofSeconds(2),CLOCK,stage->{if(stage==ExportStage.AFTER_EXPORT_TEMP_FORCED)throw new OutOfMemoryError("fatal");});
+            assertThrows(OutOfMemoryError.class,()->fatal.recover(fixture.session));
+        }
+    }
+
+    private static void makeRecoverable(Fixture fixture) throws Exception {
+        fixture.logs.recordCommitted(fixture.session,"db-a",SqlPurpose.MIGRATION,parsed("CREATE TABLE A(ID INT)"),"CREATE TABLE A(ID INT)");
+        var failing=new ReleaseExportService(fixture.paths,fixture.sessions,fixture.exportRepository,Duration.ofSeconds(2),CLOCK,stage->{if(stage==ExportStage.AFTER_ARTIFACT_STATE_RECORDED)throw new java.io.IOException("injected");});
+        assertThrows(java.io.IOException.class,()->failing.export(fixture.session));
+    }
+
+    private static void updateRelease(Fixture fixture,String column,Object value) throws Exception {
+        if(!java.util.Set.of("active_sql","sealed_source_path","statement_count").contains(column))throw new IllegalArgumentException();
+        try(var connection=fixture.database.openConnection();var update=connection.prepareStatement("UPDATE release_version SET "+column+" = ? WHERE session_id = ? AND version = 1")){
+            update.setObject(1,value);update.setString(2,fixture.session.sessionId());update.executeUpdate();
+        }
+    }
+
+    private static void assertRecoveryUnavailable(Fixture fixture) throws Exception {
+        var failure=assertThrows(ReleaseRecoveryNotAvailable.class,()->fixture.exports.recover(fixture.session));
+        assertEquals("Release recovery is not available",failure.getMessage());assertFalse(failure.toString().contains(tempDirText(fixture)));
+    }
+
+    private static String tempDirText(Fixture fixture){return fixture.paths.pluginData().toString();}
+
     @Test
     void finalArtifactHistoryIsImmutableAcrossLaterExports() throws Exception {
         try (var fixture = fixture("history")) {

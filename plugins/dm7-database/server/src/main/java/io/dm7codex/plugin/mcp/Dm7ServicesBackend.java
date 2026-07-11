@@ -129,12 +129,12 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
         if(!Boolean.TRUE.equals(input.get("confirm")))throw new IllegalArgumentException("confirmation required");
         String text=required(input,"version");if(!text.matches("v[0-9]{3,9}"))throw new IllegalArgumentException("invalid version");
         int version=Integer.parseInt(text.substring(1));
-        var sessions=new SessionRepository(database,session.activeSql().getParent().getParent());
-        SessionRepository.ReleaseVersion release;try{release=sessions.findVersion(session.sessionId(),version);}catch(java.sql.SQLException missing){throw ConsoleHttpServer.BackendProblem.releaseRecoveryUnavailable();}
+        try{var sessions=new SessionRepository(database,session.activeSql().getParent().getParent());
+        var release=sessions.findVersion(session.sessionId(),version);
         var historical=new SessionState(session.sessionId(),session.externalIdHash(),version,release.databaseFingerprint(),release.activeSql(),session.createdAt());
-        try{var result=exportResult(exports.recover(historical));result.remove("path");result.put("downloadUrl","/api/release/artifacts/"+result.get("id")+"/download");return result;}
+        var result=exportResult(exports.recover(historical));result.remove("path");result.put("downloadUrl","/api/release/artifacts/"+result.get("id")+"/download");return result;}
         catch(io.dm7codex.plugin.release.ReleaseExportLockTimeout conflict){throw ConsoleHttpServer.BackendProblem.conflict();}
-        catch(io.dm7codex.plugin.release.ReleaseRecoveryNotAvailable|java.io.IOException unavailable){throw ConsoleHttpServer.BackendProblem.releaseRecoveryUnavailable();}
+        catch(io.dm7codex.plugin.release.ReleaseRecoveryNotAvailable|java.io.IOException|java.sql.SQLException|IllegalStateException|IllegalArgumentException|SecurityException unavailable){throw ConsoleHttpServer.BackendProblem.releaseRecoveryUnavailable();}
     }
 
     private Map<String,Object> releasePreview(SessionState session)throws Exception{

@@ -252,6 +252,11 @@ class Dm7ServicesBackendTest {
             var other=backend.initialize(new SessionIdentity("release-ui-b","test","verified"));
             assertEquals(java.util.List.of(),backend.call("release.preview",Map.of(),other).get("artifacts"));
             assertThrows(io.dm7codex.plugin.http.ConsoleHttpServer.BackendProblem.class,()->backend.call("release.recover",Map.of("version","v001","confirm",true),other));
+            try(var database=io.dm7codex.plugin.state.StateDatabase.open(paths.stateDatabase());var connection=database.openConnection();var corrupt=connection.prepareStatement("UPDATE release_version SET active_sql = ? WHERE session_id = ? AND version = 1")){
+                corrupt.setString(1,"bad\0active");corrupt.setString(2,session.sessionId());corrupt.executeUpdate();
+            }
+            var unavailable=assertThrows(io.dm7codex.plugin.http.ConsoleHttpServer.BackendProblem.class,()->backend.call("release.recover",Map.of("version","v001","confirm",true),session));
+            assertEquals("RELEASE_RECOVERY_UNAVAILABLE",unavailable.getMessage());assertFalse(unavailable.toString().contains(temporary.toString()));
         }
     }
 }
