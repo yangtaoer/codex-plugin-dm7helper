@@ -1,0 +1,3 @@
+export function LoadingSkeleton({ label = '正在加载' }: { label?: string }) { return <div className="loading-band" role="status"><span className="pulse" aria-hidden="true" />{label}</div> }
+export function InlineError({ message, correlationId, onRetry }: { message: string; correlationId?: string; onRetry(): void }) { return <div className="inline-error" role="alert"><div><strong>运行状态暂不可用</strong><p>{message}</p>{correlationId && <p className="correlation">关联 ID：{correlationId}</p>}</div><button onClick={onRetry}>重试</button></div> }
+export function ToastRegion({ message }: { message?: string }) { return <div className="sr-only" aria-live="polite" aria-atomic="true">{message}</div> }

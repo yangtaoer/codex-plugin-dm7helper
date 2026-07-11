@@ -115,8 +115,8 @@
             <phase>generate-resources</phase>
             <configuration>
               <target>
-                <mkdir dir="${project.build.outputDirectory}/static"/>
-                <copy todir="${project.build.outputDirectory}/static" overwrite="true">
+                <mkdir dir="${project.build.outputDirectory}/web"/>
+                <copy todir="${project.build.outputDirectory}/web" overwrite="true">
                   <sort>
                     <fileset dir="${project.basedir}/../web/dist" erroronmissingdir="false"/>
                   </sort>
