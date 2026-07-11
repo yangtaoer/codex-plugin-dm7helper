@@ -17,6 +17,7 @@ import java.util.UUID;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
 
 final class TestJdbc {
     private static final java.util.Map<Statement, AtomicInteger> CANCEL_COUNTS =
@@ -199,5 +200,37 @@ final class TestJdbc {
         int maxRows() { return maxRows.get(); }
         int fetchSize() { return fetchSize.get(); }
         @Override public DmConnectionFactory.ConnectionLimits limits(UUID profileId) { return limits; }
+    }
+
+    static final class CancellableOpener implements DmConnectionFactory.ConnectionOpener {
+        final CountDownLatch executing = new CountDownLatch(1);
+        final CountDownLatch allowReturn = new CountDownLatch(1);
+        final AtomicInteger executions = new AtomicInteger();
+        final AtomicBoolean committed = new AtomicBoolean();
+        final AtomicBoolean rolledBack = new AtomicBoolean();
+        @Override public DmConnectionFactory.ManagedConnection open(UUID id) {
+            AtomicBoolean closed = new AtomicBoolean();
+            Statement statement = (Statement) Proxy.newProxyInstance(TestJdbc.class.getClassLoader(),
+                    new Class<?>[]{Statement.class}, (p, m, a) -> switch (m.getName()) {
+                        case "executeUpdate" -> {
+                            executions.incrementAndGet(); executing.countDown();
+                            try { allowReturn.await(); } catch (InterruptedException ignored) { }
+                            yield 1;
+                        }
+                        case "cancel", "close", "setQueryTimeout" -> null;
+                        default -> defaultValue(m.getReturnType());
+                    });
+            Connection connection = (Connection) Proxy.newProxyInstance(TestJdbc.class.getClassLoader(),
+                    new Class<?>[]{Connection.class}, (p, m, a) -> switch (m.getName()) {
+                        case "createStatement" -> statement;
+                        case "setAutoCommit" -> null;
+                        case "commit" -> { committed.set(true); yield null; }
+                        case "rollback" -> { rolledBack.set(true); yield null; }
+                        case "close" -> { closed.set(true); yield null; }
+                        case "isClosed" -> closed.get();
+                        default -> defaultValue(m.getReturnType());
+                    });
+            return new DmConnectionFactory.ManagedConnection(connection, () -> {}, "fp");
+        }
     }
 }

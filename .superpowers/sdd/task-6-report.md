@@ -37,3 +37,11 @@ The follow-up review was addressed in a separate fix commit:
 - Driver isolation restart requirements are discovered recursively through cause and suppressed exception graphs. Event session histories use bounded LRU retention, and low-cost record invariants/defensive copies were added.
 
 Final clean verification after remediation: 226 tests, zero failures, zero errors, Java 17 target.
+
+## Strict cancellation and limit remediation
+
+- Execution now checks cancellation around every connection/statement attachment, loop iteration, driver execution return, release logging boundary, and atomic commit. Atomic cancellation rolls back; non-atomic cancellation retains already-returned committed facts and never starts the next statement.
+- Interrupted callers wait on an independent worker-completion latch rather than `Future.isDone`. Cancellation and force-close use separate daemon executors, so a blocked driver cancel cannot starve forced cleanup. Service and registry shutdown share a single two-second deadline and surface restart-required cleanup timeout.
+- Binary mapping uses `Base64.Encoder.wrap` over a pre-sized bounded StringBuilder sink and 12 KiB fixed input buffer. Metadata labels and scalar/null values are budgeted; oversized metadata returns a safe result-limit error with empty columns/rows.
+- Per-statement errors remain distinct, while terminal restart requirements aggregate recursively. Execution history uses a transactional, idempotent finish update so commit/reservation/close failures persist final committed/recorded/exclusion facts before terminal status.
+- Metadata offsets are long-valued, overflow-checked, and bound with `setLong`. Additional DM types and unmatched-reader-surrogate handling are covered, and model defensive-copy/page/terminal invariants were strengthened.

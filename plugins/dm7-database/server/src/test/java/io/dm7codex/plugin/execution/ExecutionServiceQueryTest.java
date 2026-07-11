@@ -38,6 +38,38 @@ class ExecutionServiceQueryTest {
         }
     }
 
+    @Test void closeFailureHistoryRetainsRowsReadBeforeTerminalFailure() throws Exception {
+        var fixture = historyFixture("query-close-history");
+        try (fixture.database) {
+            var statement = TestJdbc.statement(List.of(List.of("一"), List.of("二")), List.of("V"));
+            var connection = TestJdbc.connection(statement);
+            DmConnectionFactory.ConnectionOpener opener = id -> new DmConnectionFactory.ManagedConnection(
+                    connection, () -> { throw DriverIsolationFixture.restartRequired(); }, "fp");
+            QueryResult result;
+            try (var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                    null, fixture.history, new ExecutionEventBus(20), new ExecutionRegistry())) {
+                result = service.query(fixture.session, new QueryCommand(UUID.randomUUID(),
+                        "SELECT V FROM T", 10, 1000, 30));
+            }
+            var record = fixture.history.findExecution(result.executionId().toString()).orElseThrow();
+            assertEquals(2L, record.returnedRowCount());
+            assertNull(record.affectedRowCount());
+            assertEquals(ExecutionStatus.EXECUTING.name(), record.phase());
+        }
+    }
+
+    @Test void oversizedColumnMetadataReturnsSafeLimitErrorWithoutUnbudgetedColumns() {
+        String label = "超长列名".repeat(20);
+        var opener = new TestJdbc.Opener().queryRows(List.of(List.of("值")), List.of(label));
+        var result = TestJdbc.service(opener).query(TestJdbc.session(),
+                new QueryCommand(UUID.randomUUID(), "SELECT V FROM T", 1, 10, 30));
+        assertFalse(result.success());
+        assertTrue(result.columns().isEmpty());
+        assertTrue(result.rows().isEmpty());
+        assertEquals(0, result.bytes());
+        assertEquals(70003, result.error().orElseThrow().errorCode());
+    }
+
     @Test void businessFailureWithSuppressedIsolationStillRequiresRestart() {
         var connection = TestJdbc.connection(TestJdbc.failingQueryStatement());
         DmConnectionFactory.ConnectionOpener opener = id -> new DmConnectionFactory.ManagedConnection(

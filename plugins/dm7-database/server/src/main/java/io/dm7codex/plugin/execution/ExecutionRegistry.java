@@ -8,11 +8,22 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutorService;
 
 public final class ExecutionRegistry implements AutoCloseable {
     private final ConcurrentHashMap<UUID, Entry> entries = new ConcurrentHashMap<>();
     private final ScheduledExecutorService closer = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "dm7-cancellation-closer");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final ExecutorService cancelCleanup = Executors.newCachedThreadPool(r -> {
+        Thread thread = new Thread(r, "dm7-jdbc-cancel");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final ExecutorService forceCleanup = Executors.newCachedThreadPool(r -> {
+        Thread thread = new Thread(r, "dm7-jdbc-force-close");
         thread.setDaemon(true);
         return thread;
     });
@@ -75,15 +86,12 @@ public final class ExecutionRegistry implements AutoCloseable {
 
     public void complete(UUID executionId) { entries.remove(executionId); }
 
-    private static void issueCancel(Statement statement) {
-        try { statement.cancel(); } catch (Exception ignored) { }
+    private void issueCancel(Statement statement) {
+        cancelCleanup.execute(() -> { try { statement.cancel(); } catch (Exception ignored) { } });
     }
 
     private void scheduleClose(Statement statement, Connection connection) {
-        closer.schedule(() -> {
-            try { statement.close(); } catch (Exception ignored) { }
-            if (connection != null) try { connection.close(); } catch (Exception ignored) { }
-        }, 2, TimeUnit.SECONDS);
+        closer.schedule(() -> submitForceClose(statement, connection), 2, TimeUnit.SECONDS);
     }
 
     public void cancelAll() { entries.keySet().forEach(this::cancel); }
@@ -91,20 +99,50 @@ public final class ExecutionRegistry implements AutoCloseable {
     public void forceCloseAll() {
         for (var entry : entries.values()) {
             synchronized (entry) {
-                if (entry.statement != null) try { entry.statement.close(); } catch (Exception ignored) { }
-                if (entry.connection != null) try { entry.connection.close(); } catch (Exception ignored) { }
+                submitForceClose(entry.statement, entry.connection);
             }
         }
+    }
+
+    public void forceClose(UUID executionId) {
+        var entry = entries.get(executionId);
+        if (entry == null) return;
+        synchronized (entry) { submitForceClose(entry.statement, entry.connection); }
+    }
+
+    private void submitForceClose(Statement statement, Connection connection) {
+        forceCleanup.execute(() -> {
+            if (statement != null) try { statement.close(); } catch (Exception ignored) { }
+            if (connection != null) try { connection.close(); } catch (Exception ignored) { }
+        });
     }
 
     public int activeCount() { return entries.size(); }
 
     @Override public void close() {
+        closeWithin(System.nanoTime() + TimeUnit.SECONDS.toNanos(2));
+    }
+
+    void closeWithin(long deadlineNanos) {
         cancelAll();
         forceCloseAll();
         closer.shutdownNow();
-        try { closer.awaitTermination(2, TimeUnit.SECONDS); }
-        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        cancelCleanup.shutdownNow();
+        forceCleanup.shutdownNow();
+        try {
+            if (!await(closer, deadlineNanos) || !await(cancelCleanup, deadlineNanos)
+                    || !await(forceCleanup, deadlineNanos))
+                throw new ExecutionCleanupTimeoutException();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new ExecutionCleanupTimeoutException();
+        }
+    }
+
+    private static boolean await(java.util.concurrent.ExecutorService executor, long deadline)
+            throws InterruptedException {
+        long remaining = deadline - System.nanoTime();
+        return remaining > 0 && executor.awaitTermination(remaining, TimeUnit.NANOSECONDS);
     }
 
     private static final class Entry {

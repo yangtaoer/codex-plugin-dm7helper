@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.Objects;
 
 public final class ExecutionRepository {
     private final StateDatabase database;
@@ -139,6 +140,39 @@ public final class ExecutionRepository {
             statement.setString(6, error.map(SafeError::message).orElse(null));
             statement.setString(7, executionId.toString());
             statement.executeUpdate();
+        }
+    }
+
+    public void finish(UUID executionId, List<StatementResult> results,
+            ExecutionStatus status, Optional<SafeError> error) throws SQLException {
+        long affected = results.stream().filter(StatementResult::committed)
+                .mapToLong(StatementResult::rowCount).sum();
+        boolean recorded = results.stream().anyMatch(StatementResult::recorded);
+        String exclusion = results.stream().map(StatementResult::exclusionReason)
+                .filter(Objects::nonNull).findFirst().orElse(null);
+        try (var connection = database.openConnection()) {
+            connection.setAutoCommit(false);
+            try (var statement = connection.prepareStatement("""
+                    UPDATE execution SET affected_row_count = ?, recorded = ?, exclusion_reason = ?,
+                        phase = ?, status = ?, completed_at = ?, sql_state = ?, error_code = ?, error_message = ?
+                    WHERE execution_id = ?
+                    """)) {
+                statement.setLong(1, affected);
+                statement.setInt(2, recorded ? 1 : 0);
+                statement.setString(3, exclusion);
+                statement.setString(4, error.map(value -> value.phase().name()).orElse(status.name()));
+                statement.setString(5, status.name());
+                statement.setString(6, Instant.now().toString());
+                statement.setString(7, error.map(SafeError::sqlState).orElse(null));
+                setNullableInteger(statement, 8, error.map(SafeError::errorCode).orElse(null));
+                statement.setString(9, error.map(SafeError::message).orElse(null));
+                statement.setString(10, executionId.toString());
+                statement.executeUpdate();
+                connection.commit();
+            } catch (SQLException failure) {
+                try { connection.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                throw failure;
+            }
         }
     }
 

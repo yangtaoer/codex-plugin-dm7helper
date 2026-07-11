@@ -45,7 +45,7 @@ public final class MetadataService {
             throws SQLException {
         DatabaseMetaData metadata = connection.getMetaData();
         var result = new ArrayList<SchemaObject>();
-        int skipped = 0;
+        long skipped = 0;
         try (ResultSet tables = metadata.getTables(null, request.schemaPattern(),
                 request.objectPattern(), new String[]{"TABLE", "VIEW"})) {
             while (tables.next() && result.size() <= request.limit()) {
@@ -93,8 +93,9 @@ public final class MetadataService {
         try (var statement = connection.prepareStatement(sql)) {
             bindPattern(statement, 1, request.schemaPattern());
             bindPattern(statement, 3, request.objectPattern());
-            statement.setInt(5, request.offset() + request.limit() + 1);
-            statement.setInt(6, request.offset());
+            long upper = Math.addExact(request.offset(), Math.addExact((long) request.limit(), 1L));
+            statement.setLong(5, upper);
+            statement.setLong(6, request.offset());
             try (var rows = statement.executeQuery()) {
                 while (rows.next()) {
                     String schema = rows.getString(1);
@@ -135,12 +136,18 @@ public final class MetadataService {
         if (type.startsWith("CHAR")) return Types.CHAR;
         if (type.startsWith("NVARCHAR")) return Types.NVARCHAR;
         if (type.startsWith("NCHAR")) return Types.NCHAR;
+        if (type.startsWith("NCLOB")) return Types.NCLOB;
+        if (type.startsWith("LONGVARCHAR")) return Types.LONGVARCHAR;
+        if (type.startsWith("LONGVARBINARY") || type.startsWith("IMAGE")) return Types.LONGVARBINARY;
         if (type.startsWith("NUMBER") || type.startsWith("DECIMAL") || type.startsWith("NUMERIC")) return Types.NUMERIC;
         if (type.startsWith("BIGINT")) return Types.BIGINT;
         if (type.startsWith("INT") || type.startsWith("INTEGER")) return Types.INTEGER;
         if (type.startsWith("SMALLINT")) return Types.SMALLINT;
         if (type.startsWith("DOUBLE")) return Types.DOUBLE;
+        if (type.startsWith("REAL")) return Types.REAL;
         if (type.startsWith("FLOAT")) return Types.FLOAT;
+        if (type.startsWith("TINYINT")) return Types.TINYINT;
+        if (type.startsWith("DATETIME")) return Types.TIMESTAMP;
         if (type.startsWith("DATE")) return Types.DATE;
         if (type.startsWith("TIMESTAMP")) return Types.TIMESTAMP;
         if (type.startsWith("TIME")) return Types.TIME;
@@ -166,10 +173,11 @@ public final class MetadataService {
         MetadataAccessException(Throwable cause) { super("Database metadata could not be read", cause); }
     }
 
-    public record MetadataRequest(String schemaPattern, String objectPattern, int offset, int limit) {
+    public record MetadataRequest(String schemaPattern, String objectPattern, long offset, int limit) {
         public MetadataRequest {
             if (offset < 0) throw new IllegalArgumentException("offset must not be negative");
             if (limit < 1 || limit > 200) throw new IllegalArgumentException("limit must be between 1 and 200");
+            if (offset > Long.MAX_VALUE - limit - 1L) throw new IllegalArgumentException("offset is too large");
             schemaPattern = pattern(schemaPattern, "schemaPattern");
             objectPattern = pattern(objectPattern, "objectPattern");
         }
@@ -193,7 +201,7 @@ public final class MetadataService {
             if (ordinal < 1) throw new IllegalArgumentException("ordinal must be positive");
         }
     }
-    public record SchemaPage(List<SchemaObject> items, int offset, int limit, boolean hasMore) {
+    public record SchemaPage(List<SchemaObject> items, long offset, int limit, boolean hasMore) {
         public SchemaPage {
             items = List.copyOf(items);
             if (offset < 0 || limit < 1 || limit > 200) throw new IllegalArgumentException("invalid schema page");

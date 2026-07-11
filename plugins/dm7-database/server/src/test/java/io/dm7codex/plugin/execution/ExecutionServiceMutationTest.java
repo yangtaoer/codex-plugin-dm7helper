@@ -9,6 +9,7 @@ import io.dm7codex.plugin.sql.SqlSecurityPolicy;
 import java.util.UUID;
 import java.nio.file.Path;
 import java.util.Optional;
+import java.util.List;
 import io.dm7codex.plugin.runtime.*;
 import io.dm7codex.plugin.state.*;
 import org.junit.jupiter.api.io.TempDir;
@@ -16,6 +17,7 @@ import io.dm7codex.plugin.release.ReleaseLogService;
 import java.time.Duration;
 import io.dm7codex.plugin.connection.DmConnectionFactory;
 import io.dm7codex.plugin.connection.DriverIsolationFixture;
+import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.api.Test;
 
 class ExecutionServiceMutationTest {
@@ -27,6 +29,68 @@ class ExecutionServiceMutationTest {
                 SqlPurpose.MIGRATION, true, false, 60, ExecutionSource.MCP);
         assertThrows(AtomicDdlNotSupported.class, () -> service.execute(TestJdbc.session(), command));
         assertEquals(0, opener.openCount());
+    }
+
+    @Test void historyFinishAggregatesOnlyCommittedRows() throws Exception {
+        var paths = RuntimePaths.forTest(tempDir.resolve("committed-aggregate"));
+        try (var database = StateDatabase.open(paths.stateDatabase())) {
+            var session = new SessionInitializer(paths,
+                    new SessionRepository(database, paths.sessionsDirectory())).initialize(
+                    new SessionIdentity("aggregate-thread", "codex_thread", "verified"));
+            var history = new ExecutionRepository(database);
+            UUID id = UUID.randomUUID(); UUID correlation = UUID.randomUUID();
+            history.started(id, correlation, session.sessionId(), "fp", ExecutionSource.MCP,
+                    Optional.of(SqlPurpose.MIGRATION), "UPDATE A; UPDATE B");
+            var pending = new StatementResult(0, io.dm7codex.plugin.sql.SqlKind.DML, true, false,
+                    5, false, "rolled_back", "plugin_transaction", 1, Optional.empty());
+            var committed = new StatementResult(1, io.dm7codex.plugin.sql.SqlKind.DML, true, true,
+                    2, false, "release_logging_failed", "auto_commit", 1, Optional.empty());
+            var error = new SafeError(correlation, ExecutionStatus.LOGGING,
+                    "Database operation failed", "HY000", 1, false);
+            history.finish(id, List.of(pending, committed), ExecutionStatus.FAILED, Optional.of(error));
+            var record = history.findExecution(id.toString()).orElseThrow();
+            assertEquals(2L, record.affectedRowCount());
+            assertEquals(ExecutionStatus.LOGGING.name(), record.phase());
+        }
+    }
+
+    @Test void atomicCancellationAfterExecuteReturnRollsBackAndStops() throws Exception {
+        var opener = new TestJdbc.CancellableOpener();
+        try (var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                null, null, new ExecutionEventBus(20), new ExecutionRegistry())) {
+            var future = CompletableFuture.supplyAsync(() -> service.execute(TestJdbc.session(),
+                    new ExecuteCommand(UUID.randomUUID(), "UPDATE A SET C=1; UPDATE B SET C=2",
+                            SqlPurpose.TEST, true, false, 30)));
+            opener.executing.await();
+            UUID id = service.events("session", 0).get(0).executionId();
+            assertTrue(service.cancel(id));
+            opener.allowReturn.countDown();
+            var result = future.join();
+            assertEquals(ExecutionStatus.CANCELLED, result.status());
+            assertTrue(opener.rolledBack.get());
+            assertFalse(opener.committed.get());
+            assertEquals(1, opener.executions.get());
+        }
+    }
+
+    @Test void nonAtomicCancellationPreservesReturnedCommitAndNeverExecutesNextStatement() throws Exception {
+        var opener = new TestJdbc.CancellableOpener();
+        try (var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                null, null, new ExecutionEventBus(20), new ExecutionRegistry())) {
+            var future = CompletableFuture.supplyAsync(() -> service.execute(TestJdbc.session(),
+                    new ExecuteCommand(UUID.randomUUID(), "UPDATE A SET C=1; UPDATE B SET C=2",
+                            SqlPurpose.TEST, false, false, 30)));
+            opener.executing.await();
+            UUID id = service.events("session", 0).get(0).executionId();
+            service.cancel(id);
+            opener.allowReturn.countDown();
+            var result = future.join();
+            assertEquals(ExecutionStatus.CANCELLED, result.status());
+            assertEquals(1, result.statements().size());
+            assertTrue(result.statements().get(0).success());
+            assertTrue(result.statements().get(0).committed());
+            assertEquals(1, opener.executions.get());
+        }
     }
 
     @Test void mutationBusinessFailureWithSuppressedIsolationStillRequiresRestart() {

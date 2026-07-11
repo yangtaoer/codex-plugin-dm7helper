@@ -61,7 +61,9 @@ public final class ExecutionModels {
         public ColumnValue {
             label = text(label, "label", 1024);
             typeName = typeName == null ? "" : typeName;
+            if (value instanceof byte[] bytes) value = bytes.clone();
         }
+        @Override public Object value() { return value instanceof byte[] bytes ? bytes.clone() : value; }
     }
 
     public record QueryColumn(String outputLabel, String originalLabel, String originalName,
@@ -154,6 +156,8 @@ public final class ExecutionModels {
             purpose = purpose == null ? Optional.empty() : purpose;
             Objects.requireNonNull(status); Objects.requireNonNull(startedAt);
             if (affectedRows < 0 || returnedRows < 0) throw new IllegalArgumentException("row counts must not be negative");
+            if (isTerminal(status) && completedAt == null)
+                throw new IllegalArgumentException("terminal summary requires completedAt");
         }
     }
 
@@ -170,6 +174,7 @@ public final class ExecutionModels {
         public Page {
             items = List.copyOf(items);
             if (offset < 0 || limit < 1 || limit > 200) throw new IllegalArgumentException("invalid page");
+            if (items.size() > limit) throw new IllegalArgumentException("page contains more than limit");
         }
     }
 
@@ -182,5 +187,9 @@ public final class ExecutionModels {
 
     private static void range(int value, int min, int max, String name) {
         if (value < min || value > max) throw new IllegalArgumentException(name + " is outside the allowed range");
+    }
+    private static boolean isTerminal(ExecutionStatus status) {
+        return status == ExecutionStatus.COMPLETED || status == ExecutionStatus.FAILED
+                || status == ExecutionStatus.CANCELLED || status == ExecutionStatus.REJECTED;
     }
 }

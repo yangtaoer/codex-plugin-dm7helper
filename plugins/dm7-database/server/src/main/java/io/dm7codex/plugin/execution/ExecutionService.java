@@ -115,8 +115,10 @@ public final class ExecutionService implements AutoCloseable {
         String fingerprint = "unknown";
         boolean historyStarted = history != null;
         ExecutionStatus currentPhase = ExecutionStatus.CONNECTING;
+        QueryResult successful = null;
         try {
             publish(session, executionId, ExecutionStatus.CONNECTING);
+            checkCancelled(executionId);
             managed = connections.open(command.profileId());
             fingerprint = managed.databaseFingerprint();
             currentPhase = ExecutionStatus.PARSING;
@@ -132,9 +134,10 @@ public final class ExecutionService implements AutoCloseable {
             publish(session, executionId, ExecutionStatus.EXECUTING);
             currentPhase = ExecutionStatus.EXECUTING;
             if (history != null) history.progress(executionId, ExecutionStatus.EXECUTING);
-            QueryResult successful;
             try (Statement statement = managed.connection().createStatement()) {
+                checkCancelled(executionId);
                 registry.attach(executionId, managed.connection(), statement);
+                checkCancelled(executionId);
                 statement.setQueryTimeout(timeout);
                 statement.setMaxRows(maxRows == Integer.MAX_VALUE ? maxRows : maxRows + 1);
                 statement.setFetchSize(Math.min(maxRows + 1, 500));
@@ -147,10 +150,10 @@ public final class ExecutionService implements AutoCloseable {
                     try {
                         for (var column : columns) budget.requireMetadata(column.outputLabel());
                     } catch (BudgetExceeded exceeded) {
-                        budget.used = 0;
-                        truncated = true;
+                        throw new ResultLimitException();
                     }
                     while (!budget.exhausted && rows.next()) {
+                        checkCancelled(executionId);
                         if (output.size() >= maxRows) { truncated = true; break; }
                         var row = new LinkedHashMap<String, Object>();
                         long checkpoint = budget.used;
@@ -190,6 +193,7 @@ public final class ExecutionService implements AutoCloseable {
             }
             var error = safe(correlationId, currentPhase, failure);
             if (history != null && historyStarted) try {
+                if (successful != null) history.queryFinished(executionId, successful.returnedRows());
                 history.terminal(executionId, terminal, Optional.of(error));
             } catch (SQLException persistenceFailure) { failure.addSuppressed(persistenceFailure); }
             return new QueryResult(executionId, List.of(), List.of(), false, 0, 0,
@@ -267,14 +271,19 @@ public final class ExecutionService implements AutoCloseable {
                 boolean failed = false;
                 Exception atomicFailure = null;
                 for (var parsed : statements) {
+                    checkCancelled(executionId);
                     long statementStarted = System.nanoTime();
                     try (Statement statement = managed.connection().createStatement()) {
+                        checkCancelled(executionId);
                         registry.attach(executionId, managed.connection(), statement);
+                        checkCancelled(executionId);
                         statement.setQueryTimeout(command.timeoutSeconds());
                         long count = Math.max(0, statement.executeUpdate(parsed.originalSql()));
                         results.add(statementResult(parsed, true, false, count, false,
                                 exclusion(command, parsed), "plugin_transaction", elapsed(statementStarted), Optional.empty()));
+                        checkCancelled(executionId);
                     } catch (Exception failure) {
+                        if (registry.isCancelled(executionId)) throw failure;
                         results.add(statementResult(parsed, false, false, 0, false,
                                 exclusion(command, parsed), "plugin_transaction", elapsed(statementStarted),
                                 Optional.of(safe(correlationId, ExecutionStatus.EXECUTING, asException(failure)))));
@@ -291,11 +300,7 @@ public final class ExecutionService implements AutoCloseable {
                     var error = safe(correlationId, ExecutionStatus.EXECUTING, atomicFailure);
                     results.set(results.size() - 1, withError(results.get(results.size() - 1), error));
                     publish(session, executionId, ExecutionStatus.FAILED);
-                    if (history != null) {
-                        for (var result : results) history.statementFinished(executionId, result);
-                        history.terminal(executionId, ExecutionStatus.FAILED,
-                                Optional.of(error));
-                    }
+                    persistTerminal(executionId, results, ExecutionStatus.FAILED, Optional.of(error));
                     return new ExecutionResult(executionId, false, ExecutionStatus.FAILED,
                             results, elapsed(started), fingerprint,
                             Optional.of(error));
@@ -303,6 +308,7 @@ public final class ExecutionService implements AutoCloseable {
                 publish(session, executionId, ExecutionStatus.COMMITTING);
                 currentPhase = ExecutionStatus.COMMITTING;
                 if (history != null) history.progress(executionId, ExecutionStatus.COMMITTING);
+                checkCancelled(executionId);
                 managed.connection().commit();
                 databaseCommitted = true;
                 results = markCommitted(results);
@@ -334,9 +340,12 @@ public final class ExecutionService implements AutoCloseable {
                 boolean anyFailure = false;
                 Exception terminalFailure = null;
                 for (var parsed : statements) {
+                    checkCancelled(executionId);
                     long statementStarted = System.nanoTime();
                     try (Statement statement = managed.connection().createStatement()) {
+                        checkCancelled(executionId);
                         registry.attach(executionId, managed.connection(), statement);
+                        checkCancelled(executionId);
                         statement.setQueryTimeout(command.timeoutSeconds());
                         long count = Math.max(0, statement.executeUpdate(parsed.originalSql()));
                         boolean track = command.purpose().isReleaseEligible() && parsed.releaseEligibleKind();
@@ -357,7 +366,9 @@ public final class ExecutionService implements AutoCloseable {
                                 if (!command.continueOnError()) break;
                             }
                         }
+                        checkCancelled(executionId);
                     } catch (Exception failure) {
+                        if (registry.isCancelled(executionId)) throw failure;
                         anyFailure = true;
                         terminalFailure = failure;
                         results.add(statementResult(parsed, false, false, 0, false,
@@ -385,11 +396,8 @@ public final class ExecutionService implements AutoCloseable {
                         }
                     }
                     publish(session, executionId, ExecutionStatus.FAILED);
-                    if (history != null) {
-                        for (var result : results) history.statementFinished(executionId, result);
-                        history.terminal(executionId, ExecutionStatus.FAILED,
-                                Optional.of(terminalSafeError));
-                    }
+                    persistTerminal(executionId, results, ExecutionStatus.FAILED,
+                            Optional.of(terminalSafeError));
                     return new ExecutionResult(executionId, false, ExecutionStatus.FAILED,
                             results, elapsed(started), fingerprint,
                             Optional.of(terminalSafeError));
@@ -423,7 +431,7 @@ public final class ExecutionService implements AutoCloseable {
             publish(session, executionId, status);
             var error = safe(correlationId, currentPhase, asException(failure));
             if (history != null && historyStarted) try {
-                history.terminal(executionId, status, Optional.of(error));
+                history.finish(executionId, results, status, Optional.of(error));
             } catch (SQLException persistenceFailure) { failure.addSuppressed(persistenceFailure); }
             return new ExecutionResult(executionId, false, status, results, elapsed(started),
                     fingerprint, Optional.of(error));
@@ -441,8 +449,12 @@ public final class ExecutionService implements AutoCloseable {
 
     private <T> T bounded(UUID executionId, Callable<T> work) {
         java.util.concurrent.Future<T> future;
+        var workerCompletion = new java.util.concurrent.CountDownLatch(1);
         try {
-            future = executor.submit(work);
+            future = executor.submit(() -> {
+                try { return work.call(); }
+                finally { workerCompletion.countDown(); }
+            });
         } catch (RejectedExecutionException rejected) {
             throw new ExecutionQueueFullException();
         }
@@ -451,11 +463,11 @@ public final class ExecutionService implements AutoCloseable {
         } catch (InterruptedException interrupted) {
             registry.cancel(executionId);
             future.cancel(true);
-            Thread.interrupted();
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (!future.isDone() && System.nanoTime() < deadline) {
-                java.util.concurrent.locks.LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
-            }
+            Thread.interrupted(); // bounded await below, interrupt restored before returning
+            boolean completed = false;
+            try { completed = workerCompletion.await(2, TimeUnit.SECONDS); }
+            catch (InterruptedException ignored) { }
+            if (!completed) registry.forceClose(executionId);
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Execution wait was interrupted");
         } catch (ExecutionException failed) {
@@ -466,19 +478,25 @@ public final class ExecutionService implements AutoCloseable {
 
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
         executor.shutdown();
         registry.cancelAll();
-        try { executor.awaitTermination(2, TimeUnit.SECONDS); }
+        try { executor.awaitTermination(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS); }
         catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
         registry.forceCloseAll();
         executor.shutdownNow();
-        try { executor.awaitTermination(2, TimeUnit.SECONDS); }
+        try { executor.awaitTermination(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS); }
         catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
-        registry.close();
+        registry.closeWithin(deadline);
     }
 
     private void ensureOpen() {
         if (closed.get()) throw new IllegalStateException("Execution service is closed");
+    }
+
+    private void checkCancelled(UUID executionId) {
+        if (registry.isCancelled(executionId)) throw new java.util.concurrent.CancellationException(
+                "Execution was cancelled");
     }
 
     private void publish(SessionState session, UUID executionId, ExecutionStatus status) {
@@ -572,6 +590,11 @@ public final class ExecutionService implements AutoCloseable {
             return new SafeError(correlation, phase, "Release database fingerprint does not match",
                     "DM7APP", 70001, restart);
         }
+        if (find(failure, ResultLimitException.class,
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>())) != null) {
+            return new SafeError(correlation, phase, "Result metadata exceeds the byte limit",
+                    "DM7APP", 70003, restart);
+        }
         return new SafeError(correlation, phase,
                 sql == null ? "Database operation failed" : "Database operation failed",
                 sql == null ? null : sql.getSQLState(), sql == null ? null : sql.getErrorCode(), restart);
@@ -639,8 +662,7 @@ public final class ExecutionService implements AutoCloseable {
     private void persistTerminal(UUID executionId, List<StatementResult> results,
             ExecutionStatus status, Optional<SafeError> error) throws SQLException {
         if (history == null) return;
-        for (var result : results) history.statementFinished(executionId, result);
-        history.terminal(executionId, status, error);
+        history.finish(executionId, results, status, error);
     }
 
     private static void closeForTerminal(ReleaseWriteReservation reservation,
@@ -679,8 +701,10 @@ public final class ExecutionService implements AutoCloseable {
         }
         private String text(Reader reader) throws Exception {
             var result = new StringBuilder();
+            int pending = -1;
             int first;
-            while (!exhausted && (first = reader.read()) >= 0) {
+            while (!exhausted && ((first = pending >= 0 ? pending : reader.read()) >= 0)) {
+                pending = -1;
                 String chunk;
                 if (Character.isHighSurrogate((char) first)) {
                     int second = reader.read();
@@ -688,6 +712,7 @@ public final class ExecutionService implements AutoCloseable {
                         chunk = new String(new char[]{(char) first, (char) second});
                     } else {
                         chunk = "\uFFFD";
+                        pending = second;
                     }
                 } else if (Character.isLowSurrogate((char) first)) {
                     chunk = "\uFFFD";
@@ -707,40 +732,40 @@ public final class ExecutionService implements AutoCloseable {
             requireMetadata(marker);
             long remaining = limit - used;
             long rawMax = (remaining / 4) * 3;
-            var result = new StringBuilder(marker);
-            byte[] buffer = new byte[4096];
-            byte[] group = new byte[3];
-            int groupSize = 0;
+            int encodedCapacity = Math.toIntExact(Math.min(Integer.MAX_VALUE - marker.length(),
+                    (rawMax / 3) * 4));
+            var result = new StringBuilder(marker.length() + encodedCapacity).append(marker);
+            var sink = new AsciiBuilderOutputStream(result);
+            var encoder = Base64.getEncoder().wrap(sink);
+            byte[] buffer = new byte[12 * 1024];
             long readRaw = 0;
-            boolean more = false;
-            while (readRaw <= rawMax) {
-                int request = (int) Math.min(buffer.length, rawMax + 1 - readRaw);
+            while (readRaw < rawMax) {
+                int request = (int) Math.min(buffer.length, rawMax - readRaw);
                 if (request <= 0) break;
                 int read = input.read(buffer, 0, request);
                 if (read < 0) break;
-                for (int i = 0; i < read; i++) {
-                    if (readRaw >= rawMax) { more = true; break; }
-                    group[groupSize++] = buffer[i];
-                    readRaw++;
-                    if (groupSize == 3) {
-                        result.append(Base64.getEncoder().encodeToString(group));
-                        used += 4;
-                        groupSize = 0;
-                    }
-                }
-                if (more) break;
+                encoder.write(buffer, 0, read);
+                readRaw += read;
             }
-            if (groupSize > 0) {
-                byte[] tail = groupSize == 1 ? new byte[]{group[0]} : new byte[]{group[0], group[1]};
-                String encoded = Base64.getEncoder().encodeToString(tail);
-                if (used > limit - encoded.length()) { exhausted = true; }
-                else { result.append(encoded); used += encoded.length(); }
-            }
-            if (!more) more = input.read() >= 0;
+            encoder.close();
+            used += sink.written;
+            boolean more = input.read() >= 0;
             if (more) exhausted = true;
             return result.toString();
         }
     }
 
+    private static final class AsciiBuilderOutputStream extends java.io.OutputStream {
+        private final StringBuilder target;
+        private long written;
+        private AsciiBuilderOutputStream(StringBuilder target) { this.target = target; }
+        @Override public void write(int value) { target.append((char) (value & 0x7f)); written++; }
+        @Override public void write(byte[] bytes, int offset, int length) {
+            for (int i = offset; i < offset + length; i++) target.append((char) (bytes[i] & 0x7f));
+            written += length;
+        }
+    }
+
     private static final class BudgetExceeded extends RuntimeException { }
+    private static final class ResultLimitException extends RuntimeException { }
 }
