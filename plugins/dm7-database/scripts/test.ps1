@@ -60,7 +60,7 @@ $validator = Join-Path $env:USERPROFILE '.codex\skills\.system\plugin-creator\sc
 
 Push-Location $repoRoot
 try {
-  python -m unittest tests.plugin_layout_test tests.plugin_scripts_test tests.package_security_test tests.license_inventory_test tests.license_inventory_validation_test -v
+  python -m unittest tests.plugin_layout_test tests.plugin_scripts_test tests.package_security_test tests.license_inventory_test tests.license_inventory_validation_test tests.integration_acceptance_contract_test -v
   if ($LASTEXITCODE -ne 0) { throw 'Repository regression tests failed' }
   python $validator $pluginRoot
   if ($LASTEXITCODE -ne 0) { throw 'Plugin validation failed' }

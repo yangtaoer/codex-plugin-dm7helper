@@ -8,6 +8,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.net.URLConnection;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -32,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class DmDriverLoader {
+    static { URLConnection.setDefaultUseCaches("jar",false); }
     private static final String CLEANER_CLASS = "io.dm7codex.plugin.connection.ChildDriverRegistryCleaner";
     private static final String IDENTITY_FILE = ".driver-cache-identity";
     private static final Map<Path, Object> IDENTITY_LOCKS = new ConcurrentHashMap<>();

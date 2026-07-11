@@ -85,6 +85,11 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.6</version>
+        <configuration>
+          <excludes><exclude>**/integration/**</exclude></excludes>
+          <redirectTestOutputToFile>true</redirectTestOutputToFile>
+          <systemPropertyVariables><java.util.logging.SimpleFormatter.format>%5$s%n</java.util.logging.SimpleFormatter.format></systemPropertyVariables>
+        </configuration>
       </plugin>
       <plugin>
         <groupId>org.jacoco</groupId>
@@ -164,4 +169,41 @@
       </plugin>
     </plugins>
   </build>
+  <profiles>
+    <profile>
+      <id>integration</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-enforcer-plugin</artifactId>
+            <version>3.6.2</version>
+            <executions><execution><id>require-dm7-integration-environment</id><phase>validate</phase><goals><goal>enforce</goal></goals>
+              <configuration><rules>
+                <requireEnvironmentVariable><variableName>DM7_IT_JDBC_URL</variableName><message>Integration environment is incomplete</message></requireEnvironmentVariable>
+                <requireEnvironmentVariable><variableName>DM7_IT_USERNAME</variableName><message>Integration environment is incomplete</message></requireEnvironmentVariable>
+                <requireEnvironmentVariable><variableName>DM7_IT_PASSWORD</variableName><message>Integration environment is incomplete</message></requireEnvironmentVariable>
+                <requireEnvironmentVariable><variableName>DM7_IT_DRIVER_JAR</variableName><message>Integration environment is incomplete</message></requireEnvironmentVariable>
+              </rules></configuration>
+            </execution></executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <version>3.5.6</version>
+            <configuration>
+              <includes>
+                <include>**/Dm7IntegrationTest.java</include>
+                <include>**/ZzDm7CleanupVerificationTest.java</include>
+              </includes>
+              <runOrder>alphabetical</runOrder>
+              <redirectTestOutputToFile>true</redirectTestOutputToFile>
+              <summaryFile>${project.build.directory}/failsafe-reports/failsafe-summary.xml</summaryFile>
+            </configuration>
+            <executions><execution><goals><goal>integration-test</goal><goal>verify</goal></goals></execution></executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

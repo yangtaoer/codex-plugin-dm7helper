@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["passed", "driverSha256", "driverVersion", "serverVersion", "targetFingerprint", "cases", "cleanupConfirmed"],
+  "properties": {
+    "passed": {"const": true},
+    "driverSha256": {"type": "string", "pattern": "^[A-F0-9]{64}$"},
+    "driverVersion": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[^\\r\\n\\t]+$"},
+    "serverVersion": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[^\\r\\n\\t]+$"},
+    "targetFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "cases": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["name", "passed", "durationMs"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+          "passed": {"const": true},
+          "durationMs": {"type": "integer", "minimum": 0},
+          "supported": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "cleanupConfirmed": {"const": true}
+  },
+  "additionalProperties": false
+}

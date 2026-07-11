@@ -148,6 +148,10 @@ class DmDriverLoaderTest {
         assertEquals(0, runProbe("factory-service"));
     }
 
+    @Test void freshJvmDisablesOnlyJarCachingAndConcurrentLoadsLeaveNoStagedFiles() throws Exception {
+        assertEquals(0,runProbe("jar-cache"));
+    }
+
     @Test void closeIsolationFailureLatchesAndBlocksExistingHandleInIndependentJvm() throws Exception {
         assertEquals(0, runProbe("close"));
     }

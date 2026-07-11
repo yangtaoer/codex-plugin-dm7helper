@@ -10,6 +10,7 @@ public final class DmDriverLoaderProcessProbe {
     private DmDriverLoaderProcessProbe() {}
 
     public static void main(String[] args) throws Exception {
+        if("jar-cache".equals(args[2])){runJarCacheProbe(args);return;}
         if ("close".equals(args[2])) {
             runCloseProbe(args);
             return;
@@ -47,6 +48,36 @@ public final class DmDriverLoaderProcessProbe {
             if (!expected.restartRequired()) System.exit(6);
         }
         System.exit(0);
+    }
+
+    private static void runJarCacheProbe(String[] args)throws Exception{
+        boolean httpBefore=java.net.URLConnection.getDefaultUseCaches("http");
+        FakeDriverJar.Fixture fixture=FakeDriverJar.create(Path.of(args[1]));
+        byte[] resourceBefore=readJarResource(fixture.jar(),"fixture/FakeDmDriver.class");
+        Class.forName(DmDriverLoader.class.getName(),true,DmDriverLoader.class.getClassLoader());
+        if(java.net.URLConnection.getDefaultUseCaches("jar"))System.exit(30);
+        if(java.net.URLConnection.getDefaultUseCaches("http")!=httpBefore)System.exit(31);
+        byte[] resourceAfter=readJarResource(fixture.jar(),"fixture/FakeDmDriver.class");
+        if(!java.util.Arrays.equals(resourceBefore,resourceAfter)||resourceAfter.length==0)System.exit(33);
+        RuntimePaths paths=RuntimePaths.forTest(Path.of(args[0]));
+        DmDriverLoader loader=new DmDriverLoader(paths);
+        var executor=java.util.concurrent.Executors.newFixedThreadPool(4);
+        try{
+            var tasks=new java.util.ArrayList<java.util.concurrent.Callable<Void>>();
+            for(int i=0;i<8;i++)tasks.add(()->{try(var handle=loader.load(DmDriverLoaderTest.profile(fixture))){handle.connect("jdbc:dm7://fixture.invalid:5236",new Properties()).close();}return null;});
+            for(var result:executor.invokeAll(tasks))result.get();
+        }finally{executor.shutdownNow();}
+        try(var files=java.nio.file.Files.list(paths.driverCacheDirectory())){
+            if(files.anyMatch(path->path.getFileName().toString().startsWith("dm-driver-")))System.exit(32);
+        }
+        System.exit(0);
+    }
+
+    private static byte[] readJarResource(Path jar,String name)throws Exception{
+        try(var loader=new java.net.URLClassLoader(new java.net.URL[]{jar.toUri().toURL()},ClassLoader.getPlatformClassLoader());
+            var input=loader.getResourceAsStream(name)){
+            if(input==null)throw new IllegalStateException("fixture resource was not found");return input.readAllBytes();
+        }
     }
 
     private static void runCloseProbe(String[] args) throws Exception {

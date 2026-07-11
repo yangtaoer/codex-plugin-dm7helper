@@ -1,5 +1,7 @@
 # Security
 
+The plugin runs in a dedicated MCP JVM. During `DmDriverLoader` class initialization it disables the JVM-wide default cache for the `jar:` URL protocol. Legacy DM7 JDBC drivers otherwise leave a process-global `JarFile` handle open on Windows after their isolated classloader closes, preventing secure staged-driver deletion. This process-lifetime invariant trades a small amount of repeated JAR resource lookup performance for deterministic driver cleanup; it does not change non-`jar:` protocol cache defaults. A fresh-child-JVM regression verifies ordinary JAR resources remain readable before and after initialization, concurrent driver loads leave no staged files, and the HTTP cache default is unchanged.
+
 The plugin listens only on loopback and opens the console through a short-lived local token. Credentials are encrypted in the user-scoped plugin data directory and are never accepted as MCP arguments. Session identifiers are SHA-256 hashed before a private, atomically replaced context file is written.
 
 Use least-privilege database accounts. Review every `dm7_execute` mutation and every release export. Exported SQL can contain business data and should be handled as sensitive. The logger rejects secret-bearing statements and excludes purposes `TEST`, `MOCK`, `SEED`, and `SAMPLE`, including Chinese 测试SQL. A comment or filename never changes classification; the caller must select the truthful purpose.

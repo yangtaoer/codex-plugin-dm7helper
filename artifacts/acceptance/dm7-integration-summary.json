@@ -1,0 +1,50 @@
+{
+  "passed" : true,
+  "driverSha256" : "2A659C17395D16CF765CD3598370B6F3E1EFFFFAA095444316C41B852AF7064B",
+  "driverVersion" : "dm7.jdbc.driver.DmDriver 3.0.7.1.3.32 (Build 2014.01.21)",
+  "serverVersion" : "DM DBMS 7.1.6.95",
+  "targetFingerprint" : "804da0b0f701264df2556b45a80e820bdfd25a848d57864f93dfbd2f04566d79",
+  "cases" : [ {
+    "name" : "url-diagnostics-and-connection",
+    "passed" : true,
+    "durationMs" : 7
+  }, {
+    "name" : "driver-isolation-and-versions",
+    "passed" : true,
+    "durationMs" : 299
+  }, {
+    "name" : "chinese-round-trip-and-metadata",
+    "passed" : true,
+    "durationMs" : 1349
+  }, {
+    "name" : "parameterized-update-delete",
+    "passed" : true,
+    "durationMs" : 1689
+  }, {
+    "name" : "limits-and-timeouts",
+    "passed" : true,
+    "durationMs" : 920
+  }, {
+    "name" : "atomic-ddl-preflight",
+    "passed" : true,
+    "durationMs" : 329
+  }, {
+    "name" : "non-atomic-mixed-failure",
+    "passed" : true,
+    "durationMs" : 877
+  }, {
+    "name" : "cancellation-capability",
+    "passed" : true,
+    "durationMs" : 12252,
+    "supported" : false
+  }, {
+    "name" : "test-purpose-release-exclusion",
+    "passed" : true,
+    "durationMs" : 1362
+  }, {
+    "name" : "cleanup-and-zero-release",
+    "passed" : true,
+    "durationMs" : 437
+  } ],
+  "cleanupConfirmed" : true
+}
