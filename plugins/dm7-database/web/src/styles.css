@@ -316,6 +316,18 @@ th { color: var(--muted); font-size: 11px; }
   .connection-grid { grid-template-columns: 1fr; }
 }
 
+@media (min-width: 721px) and (max-height: 920px) {
+  main { padding-top: 18px; padding-bottom: 36px; }
+  .page-header { margin: 8px 0 16px; padding-bottom: 14px; }
+  .page-header p { margin-top: 8px; }
+  .sql-editor { height: 220px; }
+  .sql-actions { padding-block: 7px; }
+  .sql-output { margin-top: 10px; }
+  .ops-section { margin-block: 10px; padding: 14px; }
+  .release-hero { padding: 14px 18px; }
+  .release-preview { max-height: 150px; padding-block: 8px; }
+}
+
 @media (max-width: 720px) {
   :root { --sidebar: 0px; }
   .app-sidebar { position: static; width: 100%; height: auto; border: 0; border-bottom: 1px solid var(--border-strong); }
