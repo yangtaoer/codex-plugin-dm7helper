@@ -123,6 +123,17 @@ class Dm7McpServerTest {
     }
 
     @Test
+    void preciseWireNumbersReachTheBackendWithoutSchemaCoercion() {
+        var events = new ArrayList<String>();
+        var precise = new java.math.BigDecimal("1e-9999");
+        var result = server(events).call("dm7_query", Map.of(
+                "sql", "select ?", "parameters", List.of(Map.of("jdbcType", 8, "value", precise))));
+
+        assertEquals(false, result.isError());
+        assertEquals(List.of("initialize:trusted-thread", "business:dm7_query"), events);
+    }
+
+    @Test
     void openConsoleReportsUnavailableUntilTaskEightBackendIsInjected() {
         CallToolResult result = server(new ArrayList<>()).call("dm7_open_console", Map.of());
         assertEquals(true, result.isError());

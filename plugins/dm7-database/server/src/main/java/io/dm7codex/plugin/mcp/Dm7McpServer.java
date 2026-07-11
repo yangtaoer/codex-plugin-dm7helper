@@ -62,6 +62,9 @@ public final class Dm7McpServer {
             return success(output, summary(name, output), failed);
         } catch (ConsoleUnavailable unavailable) {
             return error("CONSOLE_NOT_AVAILABLE", "控制台后端将在后续任务中提供。", correlationId);
+        } catch (UnsafeNumericInputException unsafeNumeric) {
+            return error("INVALID_ARGUMENT", "数值参数无法安全表示。", correlationId,
+                    "UNSAFE_NUMERIC_INPUT");
         } catch (IllegalArgumentException invalid) {
             return error("INVALID_ARGUMENT", "工具参数无效。", correlationId);
         } catch (Exception failure) {
@@ -75,9 +78,14 @@ public final class Dm7McpServer {
     }
 
     private static CallToolResult error(String code, String message, String correlationId) {
+        return error(code, message, correlationId, null);
+    }
+
+    private static CallToolResult error(String code, String message, String correlationId, String reason) {
         var safe = new LinkedHashMap<String, Object>();
         safe.put("ok", false); safe.put("code", code); safe.put("message", message);
         safe.put("correlationId", correlationId);
+        if (reason != null) safe.put("reason", reason);
         return success(safe, message + " 关联 ID：" + correlationId, true);
     }
 

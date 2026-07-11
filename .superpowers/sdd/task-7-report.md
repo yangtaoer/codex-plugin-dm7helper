@@ -57,3 +57,13 @@ Per the approved implementation-plan packaging boundary, the generated `lib/dm7-
 - REAL/FLOAT/DOUBLE reject NaN, infinity, overflow, and non-zero underflow. DECIMAL/NUMERIC require JSON numbers. Every normalized value is preflighted through `DmLiteralRenderer`, keeping MCP acceptance consistent with replayable SQL safety.
 
 Fresh second-review verification on JDK 21 ran 276 tests with zero failures before rebuilding and exercising the enhanced STDIO artifact.
+
+## Third Review Hardening
+
+- STDIO decoding now uses a reporting UTF-8 decoder, rejects trailing JSON values, and permits only SDK-safe JSON-RPC envelopes. Response results must be non-null objects, error codes must fit signed 32-bit integers, and numeric IDs must fit signed 64-bit integers. Constant parse/invalid-request frames never reflect inbound payloads, and malformed UTF-8, transport failures, protocol write failures, and EOF all release lifecycle waiting.
+- The SDK transport and server share a copied Jackson MCP mapper with `USE_BIG_DECIMAL_FOR_FLOATS`. Raw wire numbers therefore retain their decimal precision through tool dispatch instead of underflowing or overflowing during JSON decoding.
+- Integer parameters use exact target-width conversion. REAL/FLOAT/DOUBLE reject non-finite values, overflow, and non-zero underflow before connection resolution, JDBC, execution history, or release logging. Unsafe numeric inputs receive the stable structured reason `UNSAFE_NUMERIC_INPUT` from the tool handler.
+- The packaged raw-wire `1e-9999` regression verifies that the handler returns the numeric reason and that `SessionInitializer` already created exactly one BOM-free `v001` active log. ProtocolGuard does not manufacture tool/business errors or bypass initializer-first semantics.
+- Packaged protocol regressions cover `result:null`, scalar/array results, out-of-range error codes, concatenated JSON texts, invalid UTF-8, and marker non-reflection. A dedicated pipeline keeps stdin open while four lightweight tool calls are written back-to-back, then verifies all response IDs before EOF; consecutive runs did not drop or prematurely terminate requests.
+
+Fresh third-review verification used JDK 21 and Maven 3.9.16: `clean package` ran 277 tests with zero failures; the enhanced packaged STDIO smoke passed twice consecutively; plugin layout passed; `AppMain` remained Java 17 bytecode (major 61); and `git diff --check` passed.

@@ -249,7 +249,10 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
             try {
                 parsed = parameterValue(item.get("value"), jdbcType);
                 new DmLiteralRenderer().render(parsed, jdbcType);
+            } catch (UnsafeNumericInputException unsafeNumeric) {
+                throw unsafeNumeric;
             } catch (RuntimeException unsafe) {
+                if (item.get("value") instanceof Number) throw new UnsafeNumericInputException();
                 throw new IllegalArgumentException("JDBC parameter cannot be represented safely");
             }
             result.add(new SqlParameter(parsed, jdbcType));
@@ -263,10 +266,10 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
             case java.sql.Types.CHAR, java.sql.Types.VARCHAR, java.sql.Types.LONGVARCHAR,
                     java.sql.Types.CLOB, java.sql.Types.NCHAR, java.sql.Types.NVARCHAR,
                     java.sql.Types.LONGNVARCHAR, java.sql.Types.NCLOB -> requireValue(value, String.class);
-            case java.sql.Types.TINYINT -> integral(value).byteValueExact();
-            case java.sql.Types.SMALLINT -> integral(value).shortValueExact();
-            case java.sql.Types.INTEGER -> integral(value).intValueExact();
-            case java.sql.Types.BIGINT -> integral(value).longValueExact();
+            case java.sql.Types.TINYINT -> exactTinyInt(value);
+            case java.sql.Types.SMALLINT -> exactSmallInt(value);
+            case java.sql.Types.INTEGER -> exactInteger(value);
+            case java.sql.Types.BIGINT -> exactBigInt(value);
             case java.sql.Types.DECIMAL, java.sql.Types.NUMERIC -> number(value);
             case java.sql.Types.REAL -> finiteFloat(value);
             case java.sql.Types.FLOAT, java.sql.Types.DOUBLE -> finiteDouble(value);
@@ -288,21 +291,34 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
         }
         if ((numeric instanceof Double doubleValue && !Double.isFinite(doubleValue))
                 || (numeric instanceof Float floatValue && !Float.isFinite(floatValue))) {
-            throw new IllegalArgumentException("JDBC numeric parameter must be finite");
+            throw new UnsafeNumericInputException();
         }
         try { return new java.math.BigDecimal(numeric.toString()); }
         catch (NumberFormatException invalid) { throw new IllegalArgumentException("JDBC numeric parameter is invalid"); }
     }
 
-    private static java.math.BigDecimal integral(Object value) {
-        return number(value);
+    private static byte exactTinyInt(Object value) {
+        try { return number(value).byteValueExact(); }
+        catch (ArithmeticException invalid) { throw new UnsafeNumericInputException(); }
+    }
+    private static short exactSmallInt(Object value) {
+        try { return number(value).shortValueExact(); }
+        catch (ArithmeticException invalid) { throw new UnsafeNumericInputException(); }
+    }
+    private static int exactInteger(Object value) {
+        try { return number(value).intValueExact(); }
+        catch (ArithmeticException invalid) { throw new UnsafeNumericInputException(); }
+    }
+    private static long exactBigInt(Object value) {
+        try { return number(value).longValueExact(); }
+        catch (ArithmeticException invalid) { throw new UnsafeNumericInputException(); }
     }
 
     private static float finiteFloat(Object value) {
         var decimal = number(value);
         float result = decimal.floatValue();
         if (!Float.isFinite(result) || (result == 0f && decimal.signum() != 0)) {
-            throw new IllegalArgumentException("REAL parameter is outside the finite range");
+            throw new UnsafeNumericInputException();
         }
         return result;
     }
@@ -311,7 +327,7 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
         var decimal = number(value);
         double result = decimal.doubleValue();
         if (!Double.isFinite(result) || (result == 0d && decimal.signum() != 0)) {
-            throw new IllegalArgumentException("DOUBLE parameter is outside the finite range");
+            throw new UnsafeNumericInputException();
         }
         return result;
     }

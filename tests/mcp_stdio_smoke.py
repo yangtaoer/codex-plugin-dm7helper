@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,23 +30,72 @@ def launch(data: Path) -> subprocess.Popen[str]:
 
 
 def exchange(process: subprocess.Popen[str], requests: list[dict]) -> tuple[list[dict], str]:
-    payload = "".join(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n" for item in requests)
+    lines = [(json.dumps(item, ensure_ascii=False, separators=(",", ":")),
+              "method" in item and "id" in item) for item in requests]
+    return exchange_lines(process, lines)
+
+
+def exchange_lines(process: subprocess.Popen[str], requests: list[tuple[str, bool]]) -> tuple[list[dict], str]:
     assert process.stdin and process.stdout and process.stderr
-    process.stdin.write(payload)
-    process.stdin.flush()
-    expected_responses = sum(1 for request in requests if "method" in request and "id" in request)
-    lines = [process.stdout.readline() for _ in range(expected_responses)]
-    assert all(lines), lines
+    responses: list[str] = []
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        for payload, expects_response in requests:
+            process.stdin.write(payload + "\n")
+            process.stdin.flush()
+            if not expects_response:
+                continue
+            pending = executor.submit(process.stdout.readline)
+            try:
+                response = pending.result(timeout=30)
+            except FutureTimeout:
+                process.kill()
+                pending.result(timeout=5)
+                raise AssertionError(f"timed out awaiting MCP responses: {responses!r}")
+            assert response, responses
+            responses.append(response)
     process.stdin.close()
     process.wait(timeout=30)
-    stdout = "".join(lines) + process.stdout.read()
+    stdout = "".join(responses) + process.stdout.read()
     stderr = process.stderr.read()
     assert process.returncode == 0, (process.returncode, stderr)
     frames = []
     for line in stdout.splitlines():
         assert line.strip(), "stdout contains a blank/non-protocol frame"
         frames.append(json.loads(line))
+    assert len(frames) == sum(expected for _, expected in requests), frames
     return frames, stderr
+
+
+def exchange_pipeline(process: subprocess.Popen[str], initialize: dict,
+                      calls: list[dict]) -> tuple[list[dict], str]:
+    assert process.stdin and process.stdout and process.stderr
+    process.stdin.write(json.dumps(initialize, separators=(",", ":")) + "\n")
+    process.stdin.flush()
+    first = process.stdout.readline()
+    assert first, "pipeline initialize response missing"
+    process.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n')
+    process.stdin.write("".join(json.dumps(call, separators=(",", ":")) + "\n" for call in calls))
+    process.stdin.flush()
+    responses: list[str] = []
+
+    def read_pipeline() -> None:
+        for _ in calls:
+            responses.append(process.stdout.readline())
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(read_pipeline)
+        try:
+            pending.result(timeout=30)
+        except FutureTimeout:
+            process.kill()
+            pending.result(timeout=5)
+            raise AssertionError(f"pipelined MCP responses timed out: {responses!r}")
+    assert all(responses), responses
+    process.stdin.close()
+    process.wait(timeout=30)
+    stderr = process.stderr.read()
+    assert process.returncode == 0, (process.returncode, stderr)
+    return [json.loads(line) for line in [first, *responses]], stderr
 
 
 def main() -> None:
@@ -70,7 +120,6 @@ def main() -> None:
                 "protocolVersion": "2025-06-18", "capabilities": {},
                 "clientInfo": {"name": "dm7-smoke", "version": "1.0.0"}}},
             {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-            {"jsonrpc": "2.0", "id": "client-response", "result": {"accepted": True}},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
                 "name": "dm7_get_release_log", "arguments": {}}},
@@ -97,6 +146,29 @@ def main() -> None:
         for secret in ("password", "master.key", "jdbc:dm7://"):
             assert secret not in lowered, (secret, stderr)
 
+        response_process = launch(data / "valid-response")
+        response_frames, response_stderr = exchange(response_process, [
+            {"jsonrpc": "2.0", "id": 20, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "response-smoke", "version": "1.0"}}},
+            {"jsonrpc": "2.0", "id": "client-response", "result": {"accepted": True}},
+        ])
+        assert len(response_frames) == 1 and response_frames[0]["id"] == 20
+        assert '"code":-32600' not in response_stderr
+
+        pipeline = launch(data / "pipeline")
+        pipeline_calls = [{"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+                           "params": {"name": "dm7_get_release_log", "arguments": {}}}
+                          for request_id in range(31, 35)]
+        pipeline_frames, pipeline_stderr = exchange_pipeline(pipeline, {
+            "jsonrpc": "2.0", "id": 30, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "pipeline-smoke", "version": "1.0"}}}, pipeline_calls)
+        pipeline_by_id = {frame.get("id"): frame for frame in pipeline_frames}
+        assert set(range(30, 35)) == set(pipeline_by_id), pipeline_frames
+        assert all(pipeline_by_id[i]["result"]["isError"] is False for i in range(31, 35))
+        assert "exception" not in pipeline_stderr.lower(), pipeline_stderr
+
         malformed_data = data / "malformed"
         malformed_data.mkdir()
         malformed = launch(malformed_data)
@@ -119,9 +191,14 @@ def main() -> None:
             {"jsonrpc": "2.0", "method": "tools/list", "id": True},
             {"jsonrpc": "2.0", "method": "tools/list", "id": 24, "result": marker},
             {"jsonrpc": "2.0", "method": "notifications/initialized", "result": marker},
+            {"jsonrpc": "2.0", "id": "response-null", "result": None},
+            {"jsonrpc": "2.0", "id": "response-array", "result": []},
+            {"jsonrpc": "2.0", "id": "response-error", "error": {
+                "code": 2147483648, "message": marker}},
         ]
         invalid = launch(data / "invalid-protocol")
-        invalid_payload = "".join(json.dumps(value, ensure_ascii=False) + "\n" for value in invalid_protocol)
+        invalid_payload = "".join(json.dumps(value, ensure_ascii=False) + "\n"
+                                  for value in invalid_protocol)
         try:
             invalid_stdout, invalid_stderr = invalid.communicate(invalid_payload, timeout=5)
         except subprocess.TimeoutExpired:
@@ -133,6 +210,54 @@ def main() -> None:
         assert len(invalid_frames) == len(invalid_protocol), invalid_frames
         assert all(frame["error"]["code"] == -32600 for frame in invalid_frames)
         assert marker not in invalid_stdout and marker not in invalid_stderr
+
+        trailing = launch(data / "trailing-json")
+        trailing_values = ('{"jsonrpc":"2.0","method":"first"}'
+                           '{"jsonrpc":"2.0","method":"second"}\n')
+        trailing_stdout, trailing_stderr = trailing.communicate(trailing_values, timeout=5)
+        assert trailing.returncode == 0, trailing_stderr
+        trailing_frames = [json.loads(line) for line in trailing_stdout.splitlines()]
+        assert len(trailing_frames) == 1
+        assert trailing_frames[0]["error"]["code"] == -32700
+
+        invalid_utf8_env = os.environ.copy()
+        invalid_utf8_env.update({"PLUGIN_DATA": str(data / "invalid-utf8"),
+                                 "CODEX_THREAD_ID": "invalid-utf8"})
+        invalid_utf8 = subprocess.Popen(
+            [str(Path(os.environ.get("JAVA_HOME", r"C:\tool\jdk21")) / "bin" / "java.exe"),
+             "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
+            cwd=ROOT, env=invalid_utf8_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        utf8_stdout, utf8_stderr = invalid_utf8.communicate(
+            b'{"jsonrpc":"2.0","id":31,"method":"bad-\xff-password"}\n', timeout=5)
+        assert invalid_utf8.returncode == 0, utf8_stderr
+        utf8_frames = [json.loads(line) for line in utf8_stdout.decode("utf-8").splitlines()]
+        assert len(utf8_frames) == 1 and utf8_frames[0]["error"]["code"] == -32700
+        assert b"password" not in utf8_stdout and b"password" not in utf8_stderr
+
+        numeric = launch(data / "wire-numeric")
+        numeric_requests = [
+            {"jsonrpc": "2.0", "id": 40, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "numeric-smoke", "version": "1.0"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        ]
+        numeric_lines = [(json.dumps(numeric_requests[0], separators=(",", ":")), True),
+                         (json.dumps(numeric_requests[1], separators=(",", ":")), False),
+                         ('{"jsonrpc":"2.0","id":41,"method":"tools/call",'
+                          '"params":{"name":"dm7_query","arguments":{"sql":"select ?",'
+                          '"parameters":[{"jdbcType":8,"value":1e-9999}]}}}', True)]
+        numeric_frames, numeric_stderr = exchange_lines(numeric, numeric_lines)
+        numeric_by_id = {frame.get("id"): frame for frame in numeric_frames if "id" in frame}
+        numeric_error = numeric_by_id[41]["result"]
+        assert numeric_error["isError"] is True
+        assert numeric_error["structuredContent"]["code"] == "INVALID_ARGUMENT"
+        assert numeric_error["structuredContent"]["reason"] == "UNSAFE_NUMERIC_INPUT"
+        assert "1e-9999" not in numeric_stderr.lower()
+        numeric_active = list((data / "wire-numeric" / "sessions").glob("*/active.sql"))
+        assert len(numeric_active) == 1
+        assert not numeric_active[0].read_bytes().startswith(b"\xef\xbb\xbf")
+        assert "version: v001" in numeric_active[0].read_text(encoding="utf-8")
 
         failed_env = os.environ.copy()
         failed_env.pop("PLUGIN_DATA", None)

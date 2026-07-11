@@ -11,12 +11,16 @@ import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
 import io.modelcontextprotocol.spec.McpSchema.ServerCapabilities;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import io.modelcontextprotocol.json.jackson2.JacksonMcpJsonMapper;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.CharacterCodingException;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
@@ -48,12 +52,19 @@ public final class AppMain {
                     () -> SessionIdentityResolver.resolve(environment), backend::initialize,
                     backend, Dm7McpServer.ConsoleLauncher.unavailable());
             var input = new ProtocolGuardInputStream(stdin, stdout);
-            var transport = new StdioServerTransportProvider(McpJsonDefaults.getMapper(), input, stdout);
+            var defaults = McpJsonDefaults.getMapper();
+            if (!(defaults instanceof JacksonMcpJsonMapper jacksonDefaults)) {
+                throw new IllegalStateException("The configured MCP JSON mapper cannot preserve numeric precision");
+            }
+            var preciseJson = new JacksonMcpJsonMapper(jacksonDefaults.getObjectMapper().copy()
+                    .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS));
+            var transport = new StdioServerTransportProvider(preciseJson, input, stdout);
             McpSyncServer server = McpServer.sync(transport)
                     .serverInfo("dm7-database", "0.1.0")
                     .capabilities(ServerCapabilities.builder().tools(false).build())
                     // Validation belongs in handlers so session initialization always runs first.
                     .validateToolInputs(false)
+                    .jsonMapper(preciseJson)
                     .tools(adapter.toolSpecifications())
                     .build();
             try {
@@ -75,7 +86,9 @@ public final class AppMain {
     }
 
     private static final class ProtocolGuardInputStream extends InputStream {
-        private static final ObjectMapper JSON = new ObjectMapper();
+        private static final ObjectMapper JSON = new ObjectMapper()
+                .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
         private static final byte[] PARSE_ERROR = ("{\"jsonrpc\":\"2.0\",\"id\":null,"
                 + "\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}\n").getBytes(UTF_8);
         private static final byte[] INVALID_REQUEST = ("{\"jsonrpc\":\"2.0\",\"id\":null,"
@@ -87,7 +100,9 @@ public final class AppMain {
         private int cursor;
 
         private ProtocolGuardInputStream(InputStream input, java.io.OutputStream stdout) {
-            this.reader = new BufferedReader(new InputStreamReader(input, UTF_8));
+            this.reader = new BufferedReader(new InputStreamReader(input, UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)));
             this.stdout = stdout;
         }
 
@@ -101,7 +116,14 @@ public final class AppMain {
                 Objects.checkFromIndexSize(offset, length, bytes.length);
                 if (length == 0) return 0;
                 while (cursor >= pending.length) {
-                    String line = reader.readLine();
+                    String line;
+                    try {
+                        line = reader.readLine();
+                    } catch (CharacterCodingException malformedUtf8) {
+                        writeError(PARSE_ERROR);
+                        eof.countDown();
+                        return -1;
+                    }
                     if (line == null) { eof.countDown(); return -1; }
                     JsonNode message;
                     try {
@@ -150,13 +172,15 @@ public final class AppMain {
             if (hasError) {
                 JsonNode error = message.get("error");
                 return error.isObject() && error.path("code").isIntegralNumber()
+                        && error.path("code").canConvertToInt()
                         && error.path("message").isTextual();
             }
-            return true;
+            return message.get("result") != null && message.get("result").isObject();
         }
 
         private static boolean validId(JsonNode id) {
-            return id != null && (id.isTextual() || id.isIntegralNumber());
+            return id != null && (id.isTextual()
+                    || (id.isIntegralNumber() && id.canConvertToLong()));
         }
         private void awaitEof() throws InterruptedException { eof.await(); }
     }
