@@ -240,17 +240,19 @@ public class ReleaseExportServiceTest {
                 var outcomes=java.util.List.of(first.get(),second.get());
                 assertEquals(1,outcomes.stream().filter(value->value instanceof ReleaseExportService.ExportArtifact).count());
                 assertEquals(1,outcomes.stream().filter(value->value instanceof ReleaseRecoveryNotAvailable).count());
-                assertThrows(ReleaseRecoveryNotAvailable.class,()->fixture.exports.recover(fixture.session));
+                assertThrows(ReleaseRecoveryNotAvailable.class,()->fixture.exports.recover(fixture.session,1));
             }finally{pool.shutdownNow();}
         }
     }
 
     private static Object recoverResult(ReleaseExportService service,SessionState session){
-        try{return service.recover(session);}catch(Exception failure){return failure;}
+        try{return service.recover(session,session.version());}catch(Exception failure){return failure;}
     }
 
     @Test void recoveryNormalizesCorruptPathsMissingTamperedAndMismatchedMetadata() throws Exception {
         try(var fixture=fixture("recover-corrupt-active")){
+            assertThrows(io.dm7codex.plugin.state.ReleaseVersionNotFoundException.class,
+                    () -> fixture.sessions.findVersion(fixture.session.sessionId(), 999));
             makeRecoverable(fixture);
             updateRelease(fixture,"active_sql", "bad\0active");
             assertRecoveryUnavailable(fixture);
@@ -280,7 +282,24 @@ public class ReleaseExportServiceTest {
         }
         try(var fixture=fixture("recover-fatal")){
             makeRecoverable(fixture);var fatal=new ReleaseExportService(fixture.paths,fixture.sessions,fixture.exportRepository,Duration.ofSeconds(2),CLOCK,stage->{if(stage==ExportStage.AFTER_EXPORT_TEMP_FORCED)throw new OutOfMemoryError("fatal");});
-            assertThrows(OutOfMemoryError.class,()->fatal.recover(fixture.session));
+            assertThrows(OutOfMemoryError.class,()->fatal.recover(fixture.session,1));
+        }
+    }
+
+    @Test void recoveryPreservesDatabaseFailuresAndUnexpectedRuntimeBugs() throws Exception {
+        try(var fixture=fixture("recover-db-query")){
+            makeRecoverable(fixture);Files.delete(fixture.paths.stateDatabase());
+            assertThrows(java.sql.SQLException.class,()->fixture.exports.recover(fixture.session,1));
+        }
+        try(var fixture=fixture("recover-db-save")){
+            makeRecoverable(fixture);try(var connection=fixture.database.openConnection();var trigger=connection.createStatement()){
+                trigger.execute("CREATE TRIGGER fail_recovery_save BEFORE UPDATE ON export_artifact BEGIN SELECT RAISE(ABORT, 'db-save-fault'); END");
+            }
+            assertThrows(java.sql.SQLException.class,()->fixture.exports.recover(fixture.session,1));
+        }
+        try(var fixture=fixture("recover-unexpected-runtime")){
+            makeRecoverable(fixture);var buggy=new ReleaseExportService(fixture.paths,fixture.sessions,fixture.exportRepository,Duration.ofSeconds(2),CLOCK,stage->{if(stage==ExportStage.AFTER_EXPORT_TEMP_FORCED)throw new IllegalStateException("unexpected bug");});
+            var failure=assertThrows(IllegalStateException.class,()->buggy.recover(fixture.session,1));assertEquals("unexpected bug",failure.getMessage());
         }
     }
 
@@ -298,7 +317,7 @@ public class ReleaseExportServiceTest {
     }
 
     private static void assertRecoveryUnavailable(Fixture fixture) throws Exception {
-        var failure=assertThrows(ReleaseRecoveryNotAvailable.class,()->fixture.exports.recover(fixture.session));
+        var failure=assertThrows(ReleaseRecoveryNotAvailable.class,()->fixture.exports.recover(fixture.session,1));
         assertEquals("Release recovery is not available",failure.getMessage());assertFalse(failure.toString().contains(tempDirText(fixture)));
     }
 

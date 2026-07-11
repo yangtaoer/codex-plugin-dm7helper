@@ -122,6 +122,7 @@ class ConsoleHttpServerTest {
         var response=call("POST","/api/release/recover",Map.of("version","v001","confirm",true));
         assertEquals(200,response.statusCode());assertEquals("v001",backend.lastInput.get("version"));assertEquals(true,backend.lastInput.get("confirm"));
         var unavailable=call("POST","/api/release/recover",Map.of("version","v404","confirm",true));assertEquals(409,unavailable.statusCode());assertTrue(unavailable.body().contains("RELEASE_RECOVERY_UNAVAILABLE"));assertTrue(unavailable.body().contains("correlationId"));
+        var databaseFailure=call("POST","/api/release/recover",Map.of("version","v500","confirm",true));assertEquals(500,databaseFailure.statusCode());assertTrue(databaseFailure.body().contains("INTERNAL_ERROR"));assertTrue(databaseFailure.body().contains("correlationId"));assertFalse(databaseFailure.body().contains("C:\\private\\state.db"));
     }
 
     @Test void secretBearingClassificationFailureIsSafeAndDoesNotEchoSql() throws Exception {
@@ -227,7 +228,7 @@ class ConsoleHttpServerTest {
         final java.util.concurrent.CountDownLatch downloadEntered=new java.util.concurrent.CountDownLatch(1);
         final java.util.concurrent.CountDownLatch releaseDownload=new java.util.concurrent.CountDownLatch(1);
         volatile Map<String,Object> lastInput=Map.of();
-        @Override public Map<String,Object> call(String operation, Map<String,Object> input, SessionState session) {
+        @Override public Map<String,Object> call(String operation, Map<String,Object> input, SessionState session) throws Exception {
             lastInput=input;
             if(operation.equals("sql.classify")&&String.valueOf(input.get("sql")).contains("never-echo-this"))throw new io.dm7codex.plugin.sql.SqlClassificationService.ClassificationRejected("EMBEDDED_CREDENTIALS");
             if(operation.equals("connections.delete")&&"recovery".equals(input.get("replacementDefaultId")))throw ConsoleHttpServer.BackendProblem.credentialRecoveryRequired();
@@ -236,6 +237,7 @@ class ConsoleHttpServerTest {
             if(operation.equals("connections.get")&&"missing".equals(input.get("id")))throw ConsoleHttpServer.BackendProblem.notFound();
             if(operation.equals("connections.create")&&"duplicate".equals(input.get("name")))throw ConsoleHttpServer.BackendProblem.conflict();
             if(operation.equals("release.recover")&&"v404".equals(input.get("version")))throw ConsoleHttpServer.BackendProblem.releaseRecoveryUnavailable();
+            if(operation.equals("release.recover")&&"v500".equals(input.get("version")))throw new java.sql.SQLException("C:\\private\\state.db unavailable");
             return Map.of("operation",operation,"message","中文响应");
         }
         @Override public Optional<ConsoleHttpServer.Download> download(String id, SessionState session) throws Exception {

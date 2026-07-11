@@ -369,8 +369,13 @@ public final class SessionRepository {
             statement.setString(1, sessionId);
             statement.setInt(2, version);
             try (var rows = statement.executeQuery()) {
-                if (!rows.next()) throw new SQLException("Release version does not exist");
-                return readReleaseVersion(rows);
+                if (!rows.next()) throw new ReleaseVersionNotFoundException();
+                try {
+                    return readReleaseVersion(rows);
+                } catch (java.nio.file.InvalidPathException
+                        | java.time.format.DateTimeParseException corrupt) {
+                    throw new ReleaseMetadataCorruptException(corrupt);
+                }
             }
         }
     }

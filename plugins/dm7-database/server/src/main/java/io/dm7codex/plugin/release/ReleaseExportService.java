@@ -7,6 +7,8 @@ import io.dm7codex.plugin.runtime.SessionState;
 import io.dm7codex.plugin.state.ExportRepository;
 import io.dm7codex.plugin.state.ExportRepository.ExportArtifactRecord;
 import io.dm7codex.plugin.state.ExportRepository.SealedRelease;
+import io.dm7codex.plugin.state.ReleaseMetadataCorruptException;
+import io.dm7codex.plugin.state.ReleaseVersionNotFoundException;
 import io.dm7codex.plugin.state.SessionRepository;
 import io.dm7codex.plugin.state.SessionRepository.ReleaseVersion;
 import java.io.IOException;
@@ -81,31 +83,53 @@ public final class ReleaseExportService {
         }
     }
 
-    public ExportArtifact recover(SessionState session)
+    public ExportArtifact recover(SessionState current, int targetVersion)
             throws IOException, SQLException, ReleaseRecoveryNotAvailable {
-        Objects.requireNonNull(session, "session");
-        try {
-            SessionFileLock.trustedSessionDirectory(paths, session);
-            try (var ignored = SessionFileLock.acquire(paths, session, lockTimeout)) {
-                var artifact = exports.findArtifact(session.sessionId(), session.version())
-                        .orElseThrow(ReleaseRecoveryNotAvailable::new);
-                if (!java.util.Set.of("SEALED", "RECOVERY_REQUIRED").contains(artifact.state()))
-                    throw new ReleaseRecoveryNotAvailable();
-                var release = sessions.findVersion(session.sessionId(), session.version());
-                var sealed = exports.findSealed(session.sessionId(), session.version());
-                if (!"sealed".equals(release.status()) || sealed.isEmpty())
-                    throw new ReleaseRecoveryNotAvailable();
-                validateRecoveryMetadata(release, sealed.orElseThrow(), artifact);
-                return exportLocked(session);
-            }
+        Objects.requireNonNull(current, "current");
+        try (var ignored = SessionFileLock.acquire(paths, current, lockTimeout)) {
+            return recoverLocked(current, targetVersion);
         } catch (ReleaseExportLockTimeout timeout) {
             throw timeout;
-        } catch (ReleaseRecoveryNotAvailable unavailable) {
-            throw unavailable;
-        } catch (IOException | IllegalStateException | IllegalArgumentException
-                | SecurityException unavailable) {
+        } catch (ReleaseVersionNotFoundException | ReleaseMetadataCorruptException
+                | ReleaseRecoveryIntegrityException unavailable) {
+            throw new ReleaseRecoveryNotAvailable();
+        } catch (IOException unavailable) {
             throw new ReleaseRecoveryNotAvailable();
         }
+    }
+
+    private ExportArtifact recoverLocked(SessionState current, int targetVersion)
+            throws IOException, SQLException, ReleaseRecoveryNotAvailable {
+        var artifact = exports.findArtifact(current.sessionId(), targetVersion)
+                .orElseThrow(ReleaseRecoveryNotAvailable::new);
+        if (!java.util.Set.of("SEALED", "RECOVERY_REQUIRED").contains(artifact.state())) {
+            throw new ReleaseRecoveryNotAvailable();
+        }
+        var release = sessions.findVersion(current.sessionId(), targetVersion);
+        var sealed = exports.findSealed(current.sessionId(), targetVersion)
+                .orElseThrow(ReleaseRecoveryNotAvailable::new);
+        if (!"sealed".equals(release.status())) throw new ReleaseRecoveryNotAvailable();
+        var historical = new SessionState(
+                current.sessionId(), current.externalIdHash(), targetVersion,
+                release.databaseFingerprint(), release.activeSql(), current.createdAt());
+        var sessionDirectory = trustedRecoverySessionDirectory(historical);
+        var sealedDirectory = sessionDirectory.resolve("sealed");
+        var exportDirectory = trustedRecoveryExportDirectory(historical);
+        secureContainedDirectory(sealedDirectory);
+        secureContainedDirectory(exportDirectory);
+        var sealedPath = sealedDirectory.resolve(
+                ReleaseLogService.versionText(targetVersion) + ".sql");
+        validateRecoverySealedPath(sealed, sealedPath);
+        validateRecoveryMetadata(release, sealed, artifact);
+        validateRecoverySource(sealed);
+        var finalPath = artifact.artifactPath() == null
+                ? exportDirectory.resolve(filename(historical, sealed.sealedAt()))
+                : artifact.artifactPath();
+        validateRecoveryArtifactPath(finalPath, exportDirectory, historical, sealed.sealedAt());
+        var completed = completeArtifact(
+                historical, release, sealed, Optional.of(artifact), finalPath);
+        ensureNextActive(historical, targetVersion + 1);
+        return completed;
     }
 
     private ExportArtifact exportLocked(SessionState session) throws IOException, SQLException {
@@ -326,14 +350,68 @@ public final class ReleaseExportService {
     }
 
     private static void validateRecoveryMetadata(
-            ReleaseVersion release, SealedRelease sealed, ExportArtifactRecord artifact) {
-        validateSealedMetadata(release, sealed);
+            ReleaseVersion release, SealedRelease sealed, ExportArtifactRecord artifact)
+            throws ReleaseRecoveryIntegrityException {
         if (!release.sessionId().equals(artifact.sessionId())
                 || release.version() != artifact.version()
                 || release.statementCount() != artifact.statementCount()
                 || !Objects.equals(release.firstSequence(), artifact.firstSequence())
-                || !Objects.equals(release.lastSequence(), artifact.lastSequence())) {
-            throw new IllegalStateException("Recovery artifact metadata is inconsistent");
+                || !Objects.equals(release.lastSequence(), artifact.lastSequence())
+                || !release.sessionId().equals(sealed.sessionId())
+                || release.version() != sealed.version()
+                || release.statementCount() != sealed.statementCount()
+                || !Objects.equals(release.firstSequence(), sealed.firstSequence())
+                || !Objects.equals(release.lastSequence(), sealed.lastSequence())
+                || !sealed.sealedAt().equals(artifact.createdAt())) {
+            throw new ReleaseRecoveryIntegrityException();
+        }
+    }
+
+    private Path trustedRecoverySessionDirectory(SessionState historical)
+            throws ReleaseRecoveryIntegrityException {
+        try {
+            return SessionFileLock.trustedSessionDirectory(paths, historical);
+        } catch (UntrustedReleasePathException invalid) {
+            throw new ReleaseRecoveryIntegrityException();
+        }
+    }
+
+    private Path trustedRecoveryExportDirectory(SessionState historical)
+            throws ReleaseRecoveryIntegrityException {
+        var root = paths.exportsDirectory().toAbsolutePath().normalize();
+        var directory = root.resolve(historical.externalIdHash()).normalize();
+        if (!directory.startsWith(root) || directory.getParent() == null
+                || !directory.getParent().equals(root) || Files.isSymbolicLink(directory)) {
+            throw new ReleaseRecoveryIntegrityException();
+        }
+        return directory;
+    }
+
+    private static void validateRecoverySealedPath(SealedRelease sealed, Path expected)
+            throws ReleaseRecoveryIntegrityException {
+        if (!sealed.sealedSourcePath().equals(expected.toAbsolutePath().normalize())) {
+            throw new ReleaseRecoveryIntegrityException();
+        }
+    }
+
+    private static void validateRecoveryArtifactPath(
+            Path artifactPath, Path exportDirectory, SessionState historical, Instant sealedAt)
+            throws ReleaseRecoveryIntegrityException {
+        if (artifactPath == null
+                || !artifactPath.toAbsolutePath().normalize()
+                        .equals(exportDirectory.resolve(filename(historical, sealedAt)))) {
+            throw new ReleaseRecoveryIntegrityException();
+        }
+    }
+
+    private static void validateRecoverySource(SealedRelease sealed)
+            throws IOException, ReleaseRecoveryIntegrityException {
+        if (!Files.exists(sealed.sealedSourcePath(), LinkOption.NOFOLLOW_LINKS)) {
+            throw new ReleaseRecoveryIntegrityException();
+        }
+        requireRegularNonLink(sealed.sealedSourcePath());
+        if (!sha256(sealed.sealedSourcePath()).equals(sealed.sealedSourceSha256())) {
+            throw new ReleaseRecoveryIntegrityException();
         }
     }
 

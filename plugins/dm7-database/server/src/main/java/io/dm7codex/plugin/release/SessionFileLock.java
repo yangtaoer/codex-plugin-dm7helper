@@ -55,7 +55,7 @@ public final class SessionFileLock implements AutoCloseable {
             requireRegularComponent(lockPath, sessionDirectory.toRealPath().resolve("active.lock"));
         }
         if (Files.isSymbolicLink(lockPath)) {
-            throw new IllegalStateException("Session release lock path is not trusted");
+            throw new UntrustedReleasePathException();
         }
         final FileChannel channel;
         try {
@@ -108,7 +108,7 @@ public final class SessionFileLock implements AutoCloseable {
                 || !expectedDirectory.getParent().equals(sessionsRoot)
                 || Files.isSymbolicLink(expectedDirectory)
                 || Files.isSymbolicLink(expectedActive)) {
-            throw new IllegalStateException("Session release path is not trusted");
+            throw new UntrustedReleasePathException();
         }
         try {
             requireDirectoryComponent(sessionsRoot);
@@ -121,13 +121,13 @@ public final class SessionFileLock implements AutoCloseable {
             var realSessionDirectory = expectedDirectory.toRealPath();
             if (!realSessionsRoot.equals(expectedSessionsReal)
                     || !realSessionDirectory.equals(expectedSessionReal)) {
-                throw new IllegalStateException("Session release path is not trusted");
+                throw new UntrustedReleasePathException();
             }
             if (Files.exists(expectedActive, LinkOption.NOFOLLOW_LINKS)) {
                 requireRegularComponent(expectedActive, expectedSessionReal.resolve("active.sql"));
             }
         } catch (IOException invalidRealPath) {
-            throw new IllegalStateException("Session release path is not trusted");
+            throw new UntrustedReleasePathException();
         }
         return expectedDirectory;
     }

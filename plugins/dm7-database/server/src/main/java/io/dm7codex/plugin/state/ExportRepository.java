@@ -53,7 +53,13 @@ public final class ExportRepository {
             statement.setString(1, sessionId);
             statement.setInt(2, version);
             try (var rows = statement.executeQuery()) {
-                return rows.next() ? Optional.of(readSealed(rows)) : Optional.empty();
+                if (!rows.next()) return Optional.empty();
+                try {
+                    return Optional.of(readSealed(rows));
+                } catch (java.nio.file.InvalidPathException
+                        | java.time.format.DateTimeParseException corrupt) {
+                    throw new ReleaseMetadataCorruptException(corrupt);
+                }
             }
         }
     }
@@ -99,7 +105,13 @@ public final class ExportRepository {
             statement.setString(1, sessionId);
             statement.setInt(2, version);
             try (var rows = statement.executeQuery()) {
-                return rows.next() ? Optional.of(readArtifact(rows)) : Optional.empty();
+                if (!rows.next()) return Optional.empty();
+                try {
+                    return Optional.of(readArtifact(rows));
+                } catch (java.nio.file.InvalidPathException
+                        | java.time.format.DateTimeParseException corrupt) {
+                    throw new ReleaseMetadataCorruptException(corrupt);
+                }
             }
         }
     }

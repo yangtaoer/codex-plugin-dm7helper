@@ -252,8 +252,17 @@ class Dm7ServicesBackendTest {
             var other=backend.initialize(new SessionIdentity("release-ui-b","test","verified"));
             assertEquals(java.util.List.of(),backend.call("release.preview",Map.of(),other).get("artifacts"));
             assertThrows(io.dm7codex.plugin.http.ConsoleHttpServer.BackendProblem.class,()->backend.call("release.recover",Map.of("version","v001","confirm",true),other));
+            try(var database=io.dm7codex.plugin.state.StateDatabase.open(paths.stateDatabase());var connection=database.openConnection();var statement=connection.createStatement()){
+                statement.executeUpdate("UPDATE export_artifact SET state = 'RECOVERY_REQUIRED' WHERE session_id = '"+session.sessionId()+"' AND version = 1");
+                statement.execute("CREATE TRIGGER fail_backend_recovery_save BEFORE UPDATE ON export_artifact BEGIN SELECT RAISE(ABORT, 'db-save-fault'); END");
+            }
+            assertThrows(java.sql.SQLException.class,()->backend.call("release.recover",Map.of("version","v001","confirm",true),session));
+            try(var database=io.dm7codex.plugin.state.StateDatabase.open(paths.stateDatabase());var connection=database.openConnection();var statement=connection.createStatement()){
+                statement.execute("DROP TRIGGER fail_backend_recovery_save");statement.executeUpdate("UPDATE export_artifact SET state = 'COMPLETE' WHERE session_id = '"+session.sessionId()+"' AND version = 1");
+            }
             try(var database=io.dm7codex.plugin.state.StateDatabase.open(paths.stateDatabase());var connection=database.openConnection();var corrupt=connection.prepareStatement("UPDATE release_version SET active_sql = ? WHERE session_id = ? AND version = 1")){
                 corrupt.setString(1,"bad\0active");corrupt.setString(2,session.sessionId());corrupt.executeUpdate();
+                try(var recoverable=connection.prepareStatement("UPDATE export_artifact SET state = 'RECOVERY_REQUIRED' WHERE session_id = ? AND version = 1")){recoverable.setString(1,session.sessionId());recoverable.executeUpdate();}
             }
             var unavailable=assertThrows(io.dm7codex.plugin.http.ConsoleHttpServer.BackendProblem.class,()->backend.call("release.recover",Map.of("version","v001","confirm",true),session));
             assertEquals("RELEASE_RECOVERY_UNAVAILABLE",unavailable.getMessage());assertFalse(unavailable.toString().contains(temporary.toString()));
