@@ -8,7 +8,7 @@ Delivered a deterministic Playwright browser harness for the complete local DM7 
 
 The fixture serves the production Vite build and intercepts same-origin `/api/**` with an explicit state machine. Safe connection responses are constructed field-by-field; request-only `password`, `clearPassword`, and `driverJar` are never spread into state or responses. Every JSON response is recursively checked for forbidden secret keys. Every journey also fails on unexpected page errors, console errors, failed requests, or external network traffic.
 
-The final Chromium suite contains 28 journeys across the five acceptance specs plus `design-evidence.spec.ts`. The complete mapping is recorded in `.gstack/qa-reports/task-13/qa-report.md`; it includes six routes/four viewports, long/selected SQL, 250-row results, explicit queued/executing/completed/cancelled named-event transitions, cancellation race, full connection CRUD/password/default/error states, history field semantics plus pagination/deduplication, exact release bytes/SHA/recovery failures, keyboard/a11y, and visual evidence.
+The final Chromium suite contains 28 journeys across the five acceptance specs plus `design-evidence.spec.ts`. The complete mapping is recorded in `.gstack/qa-reports/task-13/qa-report.md`; it includes six routes/four viewports, long/selected SQL, 250-row results, explicit queued/executing/completed/cancelled named-event transitions, cancellation race, full connection CRUD/password/default/error states, history field semantics plus UUID validation and pagination/deduplication, exact release bytes/SHA/recovery failures, keyboard/a11y, and visual evidence.
 
 ## Rendered audit
 

@@ -118,7 +118,7 @@ export async function installFixture(page: Page, initial?: Partial<FixtureState>
     version: 'v001', connections: [{ ...connection }], exported: false, runtimeMode: 'ready',
     connectionWriteMode: 'ready', releaseMode: 'ready', queryMode: 'ready', knownExecutions: new Set(), cancelRequested: new Set(), pendingQueries: new Map(), networkResponses: [], expectedHttpStatuses: new Set(),
     history: [{
-      executionId: '11111111-1111-4111-8111-111111111111', correlationId: 'corr-demo-001',
+      executionId: '11111111-1111-4111-8111-111111111111', correlationId: '11111111-1111-4111-8111-111111111111',
       connectionFingerprint: 'd'.repeat(64), source: 'CONSOLE', purpose: 'PRODUCTION_CHANGE',
       status: 'COMPLETED', startedAt: now, completedAt: '2026-07-11T12:00:01Z',
       affectedRows: 1, returnedRows: 0, recorded: true, exclusionReason: null,
@@ -219,7 +219,11 @@ export async function installFixture(page: Page, initial?: Partial<FixtureState>
       const body = request.postDataJSON() as { executionId: string }; state.knownExecutions.add(body.executionId)
       return json(route, state, { executionId: body.executionId, success: true, status: 'COMPLETED', statements: [{ index: 1, kind: 'DML', success: true, committed: true, rowCount: 1, recorded: true, exclusionReason: null, commitBehavior: 'COMMITTED', elapsedMillis: 24, error: null }], elapsedMillis: 31, databaseFingerprint: 'd'.repeat(64), error: null })
     }
-    if (path === '/api/history') return json(route, state, historyPage(state, url.searchParams))
+    if (path === '/api/history') {
+      const correlationId = url.searchParams.get('correlationId')
+      if (correlationId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(correlationId)) return json(route, state, { code: 'VALIDATION', message: '关联 ID 必须是 UUID。', correlationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }, 422)
+      return json(route, state, historyPage(state, url.searchParams))
+    }
     const execution = path.match(/^\/api\/executions\/([^/]+)(?:\/cancel)?$/)
     if (execution) {
       const id = execution[1]; const item = state.history.find((entry) => entry.executionId === id)

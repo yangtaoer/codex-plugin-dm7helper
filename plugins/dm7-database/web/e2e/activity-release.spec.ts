@@ -7,7 +7,7 @@ test('activity filters and accessible detail', async ({ page }) => {
   await page.getByRole('button', { name: '查看执行详情' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
-  await expect(dialog.getByText('corr-demo-001')).toBeVisible()
+  await expect(dialog.getByText('11111111-1111-4111-8111-111111111111')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(dialog).toBeHidden()
 })
@@ -54,7 +54,7 @@ test('history filters, pagination, dedupe and detail use authoritative query par
   fixtureState.history = Array.from({ length: 51 }, (_, index) => ({
     ...base,
     executionId: `${String(index).padStart(8, '0')}-1111-4111-8111-111111111111`,
-    correlationId: index === 50 ? 'corr-mcp-only' : `corr-page-${index}`,
+    correlationId: index === 50 ? 'ffffffff-ffff-4fff-8fff-ffffffffffff' : `dddddddd-dddd-4ddd-8ddd-${index.toString(16).padStart(12, '0')}`,
     source: index === 50 ? 'MCP' as const : 'CONSOLE' as const,
     sqlSummary: index === 50 ? 'QUERY SELECT NAME FROM CUSTOMER_PROFILE' : `DML UPDATE CUSTOMER_PROFILE SET DISPLAY_NAME = ? WHERE ID = ${index}`,
   }))
@@ -67,18 +67,18 @@ test('history filters, pagination, dedupe and detail use authoritative query par
   await page.getByLabel('来源').selectOption('MCP')
   await page.getByRole('button', { name: '应用筛选' }).click()
   await expect(page.locator('.execution-row')).toHaveCount(1)
-  await expect(page.getByText('corr-mcp-only')).toBeHidden()
+  await expect(page.getByText('ffffffff-ffff-4fff-8fff-ffffffffffff')).toBeHidden()
   await page.getByRole('button', { name: '查看执行详情' }).click()
-  await expect(page.getByRole('dialog')).toContainText('corr-mcp-only')
+  await expect(page.getByRole('dialog')).toContainText('ffffffff-ffff-4fff-8fff-ffffffffffff')
   expect(fixtureState.networkResponses.some((item) => item.path.includes('/api/history?') && item.path.includes('source=MCP') && item.path.includes('offset=0') && item.path.includes('limit=50'))).toBe(true)
 })
 
 test('history applies status, purpose, recorded, success, kind, correlation and date semantics independently', async ({ page, fixtureState }) => {
   const base = fixtureState.history[0]
   fixtureState.history = [
-    { ...base, executionId: 'aaaaaaaa-1111-4111-8111-111111111111', correlationId: 'corr-a', status: 'COMPLETED', purpose: 'MIGRATION', recorded: true, startedAt: '2026-07-10T09:00:00Z', kind: 'DDL', success: true, sqlSummary: 'ALTER TABLE CUSTOMER_PROFILE ADD VERIFIED_AT TIMESTAMP' },
-    { ...base, executionId: 'bbbbbbbb-1111-4111-8111-111111111111', correlationId: 'corr-b', status: 'FAILED', purpose: 'TEST', recorded: false, startedAt: '2026-07-11T10:00:00Z', kind: 'DML', success: false, sqlSummary: 'UPDATE CUSTOMER_PROFILE SET DISPLAY_NAME = ?' },
-    { ...base, executionId: 'cccccccc-1111-4111-8111-111111111111', correlationId: 'corr-c', status: 'CANCELLED', purpose: null, recorded: false, startedAt: '2026-07-12T11:00:00Z', kind: 'QUERY', success: false, sqlSummary: 'SELECT DISPLAY_NAME FROM CUSTOMER_PROFILE' },
+    { ...base, executionId: 'aaaaaaaa-1111-4111-8111-111111111111', correlationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'COMPLETED', purpose: 'MIGRATION', recorded: true, startedAt: '2026-07-10T09:00:00Z', kind: 'DDL', success: true, sqlSummary: 'ALTER TABLE CUSTOMER_PROFILE ADD VERIFIED_AT TIMESTAMP' },
+    { ...base, executionId: 'bbbbbbbb-1111-4111-8111-111111111111', correlationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', status: 'FAILED', purpose: 'TEST', recorded: false, startedAt: '2026-07-11T10:00:00Z', kind: 'DML', success: false, sqlSummary: 'UPDATE CUSTOMER_PROFILE SET DISPLAY_NAME = ?' },
+    { ...base, executionId: 'cccccccc-1111-4111-8111-111111111111', correlationId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'CANCELLED', purpose: null, recorded: false, startedAt: '2026-07-12T11:00:00Z', kind: 'QUERY', success: false, sqlSummary: 'SELECT DISPLAY_NAME FROM CUSTOMER_PROFILE' },
   ]
   await page.goto('/app/activity')
   const apply = async (label: string, value: string, expected: string[]) => {
@@ -94,15 +94,23 @@ test('history applies status, purpose, recorded, success, kind, correlation and 
   await apply('结果', 'false', ['bbbbbbbb', 'cccccccc'])
   await apply('类型', 'QUERY', ['cccccccc'])
   await page.getByRole('button', { name: '重置' }).click()
-  await page.locator('.filter-grid label').filter({ hasText: /^关联 ID/ }).locator('input').fill('corr-b')
+  const validCorrelation = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  await page.locator('.filter-grid label').filter({ hasText: /^关联 ID/ }).locator('input').fill(validCorrelation)
   await page.getByRole('button', { name: '应用筛选' }).click()
   await expect(page.locator('.execution-row code').first()).toHaveText('bbbbbbbb')
+  expect(fixtureState.networkResponses.some((item) => item.path.includes(`correlationId=${validCorrelation}`))).toBe(true)
   await page.getByRole('button', { name: '重置' }).click()
   await page.locator('.filter-grid label').filter({ hasText: /^开始日期起/ }).locator('input').fill('2026-07-11T00:00')
   await page.locator('.filter-grid label').filter({ hasText: /^开始日期止/ }).locator('input').fill('2026-07-11T23:59')
   await page.getByRole('button', { name: '应用筛选' }).click()
   await expect(page.locator('.execution-row')).toHaveCount(1)
   await expect(page.locator('.execution-row code').first()).toHaveText('bbbbbbbb')
+  await page.getByRole('button', { name: '重置' }).click()
+  fixtureState.expectedHttpStatuses.add(422)
+  await page.locator('.filter-grid label').filter({ hasText: /^关联 ID/ }).locator('input').fill('not-a-uuid')
+  await page.getByRole('button', { name: '应用筛选' }).click()
+  await expect(page.getByRole('alert')).toContainText('关联 ID 必须是 UUID')
+  expect(fixtureState.networkResponses.some((item) => item.status === 422 && item.path.includes('correlationId=not-a-uuid'))).toBe(true)
 })
 
 function requireHash(bytes: Buffer) {

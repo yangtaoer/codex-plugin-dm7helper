@@ -32,7 +32,7 @@ No Critical, High, or Medium findings remain open.
 | Shell, six routes, back/forward/reload, 4 viewports | `console.spec.ts` — route journey and 24 route/viewport assertions |
 | Query, mutation, selection, long SQL/result, CSV/JSON, queued/executing/completed/cancelled events, cancel race | `console.spec.ts` — SQL journeys |
 | Connection CRUD/default/delete, password three-state, diagnostics, 409/422 | `connections.spec.ts` |
-| History status/purpose/recorded/success/kind/correlation/date semantics, 51-row pagination/dedupe, detail, cancellation | `activity-release.spec.ts` |
+| History status/purpose/recorded/success/kind/correlation/date semantics, UUID validation with 422, 51-row pagination/dedupe, detail, cancellation | `activity-release.spec.ts` |
 | Release counts/entries, exact bytes/SHA, rotation, recovery/conflict/tampered/missing | `activity-release.spec.ts` |
 | Keyboard, tabs, focus loop/return, reduced motion, light/dark Axe | `accessibility.spec.ts` |
 | Marketplace assets and before/after finding evidence | `visual-assets.spec.ts`, `design-evidence.spec.ts` |
