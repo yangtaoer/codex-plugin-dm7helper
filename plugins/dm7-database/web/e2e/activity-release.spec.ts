@@ -73,6 +73,38 @@ test('history filters, pagination, dedupe and detail use authoritative query par
   expect(fixtureState.networkResponses.some((item) => item.path.includes('/api/history?') && item.path.includes('source=MCP') && item.path.includes('offset=0') && item.path.includes('limit=50'))).toBe(true)
 })
 
+test('history applies status, purpose, recorded, success, kind, correlation and date semantics independently', async ({ page, fixtureState }) => {
+  const base = fixtureState.history[0]
+  fixtureState.history = [
+    { ...base, executionId: 'aaaaaaaa-1111-4111-8111-111111111111', correlationId: 'corr-a', status: 'COMPLETED', purpose: 'MIGRATION', recorded: true, startedAt: '2026-07-10T09:00:00Z', kind: 'DDL', success: true, sqlSummary: 'ALTER TABLE CUSTOMER_PROFILE ADD VERIFIED_AT TIMESTAMP' },
+    { ...base, executionId: 'bbbbbbbb-1111-4111-8111-111111111111', correlationId: 'corr-b', status: 'FAILED', purpose: 'TEST', recorded: false, startedAt: '2026-07-11T10:00:00Z', kind: 'DML', success: false, sqlSummary: 'UPDATE CUSTOMER_PROFILE SET DISPLAY_NAME = ?' },
+    { ...base, executionId: 'cccccccc-1111-4111-8111-111111111111', correlationId: 'corr-c', status: 'CANCELLED', purpose: null, recorded: false, startedAt: '2026-07-12T11:00:00Z', kind: 'QUERY', success: false, sqlSummary: 'SELECT DISPLAY_NAME FROM CUSTOMER_PROFILE' },
+  ]
+  await page.goto('/app/activity')
+  const apply = async (label: string, value: string, expected: string[]) => {
+    await page.getByRole('button', { name: '重置' }).click()
+    await page.locator('.filter-grid label').filter({ hasText: new RegExp(`^${label}`) }).locator('select').selectOption(value)
+    await page.getByRole('button', { name: '应用筛选' }).click()
+    await expect(page.locator('.execution-row')).toHaveCount(expected.length)
+    expect(await page.locator('.execution-row .execution-meta code').allTextContents()).toEqual(expected)
+  }
+  await apply('状态', 'FAILED', ['bbbbbbbb'])
+  await apply('用途', 'MIGRATION', ['aaaaaaaa'])
+  await apply('记录状态', 'false', ['bbbbbbbb', 'cccccccc'])
+  await apply('结果', 'false', ['bbbbbbbb', 'cccccccc'])
+  await apply('类型', 'QUERY', ['cccccccc'])
+  await page.getByRole('button', { name: '重置' }).click()
+  await page.locator('.filter-grid label').filter({ hasText: /^关联 ID/ }).locator('input').fill('corr-b')
+  await page.getByRole('button', { name: '应用筛选' }).click()
+  await expect(page.locator('.execution-row code').first()).toHaveText('bbbbbbbb')
+  await page.getByRole('button', { name: '重置' }).click()
+  await page.locator('.filter-grid label').filter({ hasText: /^开始日期起/ }).locator('input').fill('2026-07-11T00:00')
+  await page.locator('.filter-grid label').filter({ hasText: /^开始日期止/ }).locator('input').fill('2026-07-11T23:59')
+  await page.getByRole('button', { name: '应用筛选' }).click()
+  await expect(page.locator('.execution-row')).toHaveCount(1)
+  await expect(page.locator('.execution-row code').first()).toHaveText('bbbbbbbb')
+})
+
 function requireHash(bytes: Buffer) {
   return createHash('sha256').update(bytes).digest('hex')
 }
@@ -90,13 +122,24 @@ test('release recovery and export conflicts stay safely actionable', async ({ pa
   await expect(page.getByRole('alert')).toContainText('发版状态已变化')
 })
 
-test('tampered recovery and missing release stay bounded and correlated', async ({ page, fixtureState }) => {
-  fixtureState.releaseMode = 'tampered'; fixtureState.expectedHttpStatuses.add(409)
+test('initial tampered artifact is non-recoverable', async ({ page, fixtureState }) => {
+  fixtureState.releaseMode = 'tampered'
+  await page.goto('/app/release')
+  await expect(page.getByText('TAMPERED')).toBeVisible()
+  await expect(page.getByRole('button', { name: '恢复导出' })).toHaveCount(0)
+})
+
+test('recoverable confirmation rejects a TOCTOU tamper before recovery', async ({ page, fixtureState }) => {
+  fixtureState.releaseMode = 'recoverable'; fixtureState.expectedHttpStatuses.add(409)
   await page.goto('/app/release')
   await page.getByRole('button', { name: '恢复导出' }).click()
+  fixtureState.releaseMode = 'tampered'
   await page.getByRole('dialog').getByRole('button', { name: '确认恢复' }).click()
   await expect(page.getByRole('alert')).toContainText('该密封导出当前不可恢复')
+})
+
+test('missing release stays bounded and correlated', async ({ page, fixtureState }) => {
   fixtureState.releaseMode = 'missing'; fixtureState.expectedHttpStatuses.add(404)
-  await page.reload()
+  await page.goto('/app/release')
   await expect(page.getByRole('alert')).toContainText('发版状态不存在')
 })

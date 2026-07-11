@@ -30,9 +30,9 @@ No Critical, High, or Medium findings remain open.
 | Evidence area | Playwright evidence |
 |---|---|
 | Shell, six routes, back/forward/reload, 4 viewports | `console.spec.ts` — route journey and 24 route/viewport assertions |
-| Query, mutation, selection, long SQL/result, CSV/JSON, named phases, cancel race | `console.spec.ts` — SQL journeys |
+| Query, mutation, selection, long SQL/result, CSV/JSON, queued/executing/completed/cancelled events, cancel race | `console.spec.ts` — SQL journeys |
 | Connection CRUD/default/delete, password three-state, diagnostics, 409/422 | `connections.spec.ts` |
-| History filters, 51-row pagination/dedupe, detail, cancellation | `activity-release.spec.ts` |
+| History status/purpose/recorded/success/kind/correlation/date semantics, 51-row pagination/dedupe, detail, cancellation | `activity-release.spec.ts` |
 | Release counts/entries, exact bytes/SHA, rotation, recovery/conflict/tampered/missing | `activity-release.spec.ts` |
 | Keyboard, tabs, focus loop/return, reduced motion, light/dark Axe | `accessibility.spec.ts` |
 | Marketplace assets and before/after finding evidence | `visual-assets.spec.ts`, `design-evidence.spec.ts` |
@@ -50,7 +50,7 @@ No Critical, High, or Medium findings remain open.
 
 Two browser-hygiene points remain unavailable because this host exposed no in-app browser; the pinned Playwright Chromium is authoritative for repository E2E but is not represented as in-app-browser evidence.
 
-- E2E: 25 deterministic Chromium journeys, including evidence capture, must pass in two consecutive full runs.
+- E2E: 28 deterministic Chromium journeys, including evidence capture, must pass in two consecutive full runs.
 - Automated WCAG A/AA: zero violations on representative light and dark connection views.
 - Document overflow: zero failures across 24 route/viewport combinations.
 

@@ -14,6 +14,8 @@ type HistoryRecord = {
   purpose: string | null; status: string; startedAt: string; completedAt: string | null
   affectedRows: number; returnedRows: number; recorded: boolean; exclusionReason: string | null
   sqlSummary: string
+  kind: 'QUERY' | 'EXPLAIN' | 'DDL' | 'DML'
+  success: boolean
 }
 
 export type FixtureState = {
@@ -98,7 +100,7 @@ function safeConnectionFromInput(existing: SafeConnectionRecord | undefined, bod
 export async function emitExecutionEvent(page: Page, state: FixtureState, status: typeof phases[number], executionId = '22222222-2222-4222-8222-222222222222') {
   const item = state.history.find((entry) => entry.executionId === executionId)
   if (item && ['completed', 'failed', 'cancelled', 'rejected'].includes(status)) {
-    item.status = status.toUpperCase(); item.completedAt = now
+    item.status = status.toUpperCase(); item.completedAt = now; item.success = status === 'completed'
   }
   await page.evaluate(({ status, executionId }) => {
     const emit = (window as unknown as { __dm7EmitEvent(status: string, executionId: string): void }).__dm7EmitEvent
@@ -121,6 +123,7 @@ export async function installFixture(page: Page, initial?: Partial<FixtureState>
       status: 'COMPLETED', startedAt: now, completedAt: '2026-07-11T12:00:01Z',
       affectedRows: 1, returnedRows: 0, recorded: true, exclusionReason: null,
       sqlSummary: 'UPDATE CUSTOMER_PROFILE SET DISPLAY_NAME = ? WHERE ID = 42',
+      kind: 'DML', success: true,
     }], ...initial,
   }
 
@@ -237,17 +240,24 @@ function historyPage(state: FixtureState, search: URLSearchParams) {
   const matches = state.history.filter((item) => {
     for (const key of ['status', 'source', 'purpose', 'correlationId'] as const) if (search.has(key) && String(item[key]) !== search.get(key)) return false
     if (search.has('recorded') && String(item.recorded) !== search.get('recorded')) return false
-    if (search.has('success') && String(item.status === 'COMPLETED') !== search.get('success')) return false
-    if (search.has('kind') && !item.sqlSummary.startsWith(String(search.get('kind')))) return false
+    if (search.has('success') && String(item.success) !== search.get('success')) return false
+    if (search.has('kind') && item.kind !== search.get('kind')) return false
+    if (search.has('startedAfter') && Date.parse(item.startedAt) < Date.parse(String(search.get('startedAfter')))) return false
+    if (search.has('startedBefore') && Date.parse(item.startedAt) > Date.parse(String(search.get('startedBefore')))) return false
     return true
   })
   const offset = Math.max(0, Number(search.get('offset') ?? 0)); const limit = Math.min(100, Math.max(1, Number(search.get('limit') ?? 50)))
   const unique = [...new Map(matches.map((item) => [item.executionId, item])).values()]
-  return { items: unique.slice(offset, offset + limit), offset, limit, hasMore: offset + limit < unique.length }
+  return { items: unique.slice(offset, offset + limit).map(publicHistory), offset, limit, hasMore: offset + limit < unique.length }
+}
+
+function publicHistory(item: HistoryRecord) {
+  const { kind: _kind, success: _success, ...contract } = item
+  return contract
 }
 
 function executionDetail(item: HistoryRecord) {
-  return { summary: { ...item, phase: item.status, error: null }, statements: [{ index: 1, kind: 'DML', status: item.status === 'COMPLETED' ? 'SUCCEEDED' : item.status, phase: item.status, rowCount: item.affectedRows, success: item.status === 'COMPLETED', committed: item.status === 'COMPLETED', commitBehavior: item.status === 'COMPLETED' ? 'COMMITTED' : 'NONE', elapsedMillis: 24, recorded: item.recorded, exclusionReason: item.exclusionReason, sqlSummary: item.sqlSummary, error: null }], events: [{ sequence: 1, status: item.status, timestamp: now, detail: `阶段 ${item.status}` }] }
+  return { summary: { ...publicHistory(item), phase: item.status, error: null }, statements: [{ index: 1, kind: item.kind, status: item.success ? 'SUCCEEDED' : item.status, phase: item.status, rowCount: item.affectedRows, success: item.success, committed: item.success, commitBehavior: item.success ? 'COMMITTED' : 'NONE', elapsedMillis: 24, recorded: item.recorded, exclusionReason: item.exclusionReason, sqlSummary: item.sqlSummary, error: null }], events: [{ sequence: 1, status: item.status, timestamp: now, detail: `阶段 ${item.status}` }] }
 }
 
 function artifact(version: string, next: string) { return { id: 'artifact-v001', version, newActiveVersion: next, filename: 'dm7-demo-v001.sql', byteLength: exportBytes.length, sha256: exportSha, sealedSourceSha256: 'b'.repeat(64), statementCount: 2, firstSequence: 12, lastSequence: 13, createdAt: now, downloadUrl: '/api/release/artifacts/artifact-v001/download' } }
@@ -256,7 +266,9 @@ function releaseSnapshot(state: FixtureState) {
   const empty = state.version === 'v002'
   const complete = { id: 'artifact-v001', state: 'COMPLETE', version: 'v001', filename: 'dm7-demo-v001.sql', sha256: exportSha, byteLength: exportBytes.length, statementCount: 2, firstSequence: 12, lastSequence: 13, createdAt: now, completedAt: now, downloadAvailable: true, downloadUrl: '/api/release/artifacts/artifact-v001/download', integrityState: 'VERIFIED' }
   const recoverable = { ...complete, id: 'artifact-v000', state: 'RECOVERY_REQUIRED', version: 'v000', filename: null, sha256: null, byteLength: null, completedAt: null, downloadAvailable: false, downloadUrl: null, integrityState: 'RECOVERABLE' }
-  return { sessionShortId: '7fa2c9e1', currentVersion: state.version, databaseFingerprint: 'd'.repeat(64), bindingState: 'MATCH', statementCount: empty ? 0 : 2, excludedCount: empty ? 0 : 1, failedCount: empty ? 0 : 1, sqlPreview: empty ? '' : "ALTER TABLE CUSTOMER_PROFILE ADD VERIFIED_AT TIMESTAMP;\nUPDATE CUSTOMER_PROFILE SET DISPLAY_NAME = '演示数据' WHERE ID = 42;", previewTruncated: false, firstSequence: empty ? null : 12, lastSequence: empty ? null : 13, runningCount: 0, entriesTruncated: false, entries: empty ? [] : [{ sequence: 12, index: 1, kind: 'DDL', status: 'SUCCEEDED', source: 'CONSOLE', purpose: 'MIGRATION', recorded: true, exclusionReason: null, createdAt: now, sqlSummary: 'ALTER TABLE CUSTOMER_PROFILE ADD VERIFIED_AT TIMESTAMP' }, { sequence: null, index: 2, kind: 'DML', status: 'SUCCEEDED', source: 'CONSOLE', purpose: 'TEST', recorded: false, exclusionReason: 'TEST', createdAt: now, sqlSummary: 'UPDATE CUSTOMER_PROFILE SET DISPLAY_NAME = ? WHERE ID = 42' }, { sequence: null, index: 3, kind: 'DML', status: 'FAILED', source: 'MCP', purpose: 'MIGRATION', recorded: false, exclusionReason: null, createdAt: now, sqlSummary: 'UPDATE CUSTOMER_PROFILE SET DISPLAY_NAME = ? WHERE ID = 999' }], artifacts: state.releaseMode === 'recoverable' || state.releaseMode === 'tampered' ? [recoverable] : state.exported ? [complete] : [] }
+  const tampered = { ...recoverable, integrityState: 'TAMPERED' }
+  const artifacts = state.releaseMode === 'recoverable' ? [recoverable] : state.releaseMode === 'tampered' ? [tampered] : state.exported ? [complete] : []
+  return { sessionShortId: '7fa2c9e1', currentVersion: state.version, databaseFingerprint: 'd'.repeat(64), bindingState: 'MATCH', statementCount: empty ? 0 : 2, excludedCount: empty ? 0 : 1, failedCount: empty ? 0 : 1, sqlPreview: empty ? '' : "ALTER TABLE CUSTOMER_PROFILE ADD VERIFIED_AT TIMESTAMP;\nUPDATE CUSTOMER_PROFILE SET DISPLAY_NAME = '演示数据' WHERE ID = 42;", previewTruncated: false, firstSequence: empty ? null : 12, lastSequence: empty ? null : 13, runningCount: 0, entriesTruncated: false, entries: empty ? [] : [{ sequence: 12, index: 1, kind: 'DDL', status: 'SUCCEEDED', source: 'CONSOLE', purpose: 'MIGRATION', recorded: true, exclusionReason: null, createdAt: now, sqlSummary: 'ALTER TABLE CUSTOMER_PROFILE ADD VERIFIED_AT TIMESTAMP' }, { sequence: null, index: 2, kind: 'DML', status: 'SUCCEEDED', source: 'CONSOLE', purpose: 'TEST', recorded: false, exclusionReason: 'TEST', createdAt: now, sqlSummary: 'UPDATE CUSTOMER_PROFILE SET DISPLAY_NAME = ? WHERE ID = 42' }, { sequence: null, index: 3, kind: 'DML', status: 'FAILED', source: 'MCP', purpose: 'MIGRATION', recorded: false, exclusionReason: null, createdAt: now, sqlSummary: 'UPDATE CUSTOMER_PROFILE SET DISPLAY_NAME = ? WHERE ID = 999' }], artifacts }
 }
 
 export const test = base.extend<{ fixtureState: FixtureState }>({

@@ -8,7 +8,7 @@ Delivered a deterministic Playwright browser harness for the complete local DM7 
 
 The fixture serves the production Vite build and intercepts same-origin `/api/**` with an explicit state machine. Safe connection responses are constructed field-by-field; request-only `password`, `clearPassword`, and `driverJar` are never spread into state or responses. Every JSON response is recursively checked for forbidden secret keys. Every journey also fails on unexpected page errors, console errors, failed requests, or external network traffic.
 
-The final Chromium suite contains 25 journeys across the five acceptance specs plus `design-evidence.spec.ts`. The complete mapping is recorded in `.gstack/qa-reports/task-13/qa-report.md`; it includes six routes/four viewports, long/selected SQL, 250-row results, all named execution phases, cancellation race, full connection CRUD/password/default/error states, 51-row history filtering/pagination/deduplication, exact release bytes/SHA/recovery failures, keyboard/a11y, and visual evidence.
+The final Chromium suite contains 28 journeys across the five acceptance specs plus `design-evidence.spec.ts`. The complete mapping is recorded in `.gstack/qa-reports/task-13/qa-report.md`; it includes six routes/four viewports, long/selected SQL, 250-row results, explicit queued/executing/completed/cancelled named-event transitions, cancellation race, full connection CRUD/password/default/error states, history field semantics plus pagination/deduplication, exact release bytes/SHA/recovery failures, keyboard/a11y, and visual evidence.
 
 ## Rendered audit
 
@@ -39,7 +39,7 @@ Both are deterministic demonstration-state PNGs without browser chrome, debug ov
 ## Verification
 
 - Frontend check: TypeScript clean; 11 Vitest files, 103/103 tests.
-- Browser: standard `pnpm e2e` owns `tsc -b && vite build`; from a deleted `dist` it rebuilt production assets and passed 25/25, followed by another clean 25/25 run. An intentional TypeScript probe proved build failure stops E2E before Playwright starts.
+- Browser: standard `pnpm e2e` owns `tsc -b && vite build`; from a deleted `dist` it rebuilt production assets and passed 28/28, followed by another clean 28/28 run. An intentional TypeScript probe proved build failure stops E2E before Playwright starts.
 - Backend: JDK 21 clean package targeting Java 17, 342/342 tests.
 - Python: web assets 4/4, plugin layout 1/1; MCP STDIO smoke passed under JDK 21.
 - Plugin validator and `git diff --check`: passed.
