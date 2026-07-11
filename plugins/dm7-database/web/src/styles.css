@@ -238,6 +238,56 @@ th { color: var(--muted); font-size: 11px; }
 .delete-default-choice { display: grid; gap: 7px; margin-top: 14px; font-size: 11px; font-weight: 650; }
 .delete-default-choice select { min-height: 42px; padding: 0 10px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); }
 
+.sql-workbench, .sql-output { min-width: 0; border: 1px solid var(--border-strong); background: var(--surface); }
+.sql-toolbar { display: grid; grid-template-columns: minmax(190px, 1.5fr) repeat(3, minmax(120px, .65fr)); gap: 1px; border-bottom: 1px solid var(--border-strong); background: var(--border); }
+.sql-toolbar label { display: grid; gap: 5px; padding: 10px 12px; background: var(--surface-2); color: var(--faint); font-size: 8px; letter-spacing: .1em; }
+.sql-toolbar input, .sql-toolbar select, .mutation-confirm select { min-width: 0; height: 34px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: 11px ui-monospace, monospace; }
+.editor-help { margin: 0; padding: 9px 13px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
+.sql-editor { height: 330px; min-width: 0; overflow: hidden; background: var(--bg); font-size: 12px; }
+.sql-editor .cm-editor { height: 100%; }
+.sql-editor .cm-gutters { border-right: 1px solid var(--border); background: var(--surface-2); color: var(--faint); }
+.sql-editor .cm-activeLine, .sql-editor .cm-activeLineGutter { background: var(--accent-quiet); }
+.sql-editor .cm-cursor { border-left-color: var(--accent); }
+.sql-actions { display: flex; flex-wrap: wrap; gap: 7px; padding: 10px 12px; border-top: 1px solid var(--border-strong); background: var(--surface-2); }
+.sql-actions button { min-height: 38px; }
+.sql-actions button:disabled { cursor: not-allowed; opacity: .45; }
+.field-error { margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--danger); background: var(--danger-quiet); color: var(--danger); font-size: 10px; }
+.sql-safe-error { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; margin: 12px 0; padding: 12px; border: 1px solid var(--danger); background: var(--danger-quiet); font-size: 11px; }
+.sql-output { margin-top: 14px; }
+.output-tabs { display: flex; gap: 1px; border-bottom: 1px solid var(--border-strong); background: var(--border); }
+.output-tabs button { min-height: 42px; flex: 0 1 160px; border: 0; background: var(--surface-2); color: var(--muted); cursor: pointer; }
+.output-tabs button[aria-selected="true"] { box-shadow: inset 0 -3px var(--accent); background: var(--surface); color: var(--text); font-weight: 700; }
+.quiet-copy { margin: 0; padding: 40px 20px; color: var(--muted); text-align: center; }
+.result-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-height: 44px; padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font: 10px ui-monospace, monospace; }
+.result-summary strong { color: var(--warning); }
+.result-summary button { min-height: 30px; margin-left: auto; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+.result-summary button + button { margin-left: 0; }
+.result-error { display: grid; gap: 4px; padding: 11px 13px; border-bottom: 1px solid var(--danger); background: var(--danger-quiet); color: var(--danger); font-size: 10px; }
+.result-scroll { min-width: 0; overflow: auto; }
+.result-scroll table { table-layout: fixed; }
+.result-scroll thead { position: sticky; top: 0; z-index: 2; }
+.result-scroll th { position: relative; padding: 0; background: var(--surface-2); }
+.result-scroll th button { width: calc(100% - 8px); min-height: 38px; padding: 0 10px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.result-scroll th [role="separator"] { position: absolute; inset: 0 0 0 auto; width: 8px; cursor: col-resize; }
+.result-scroll td { max-width: 420px; overflow: hidden; font: 11px ui-monospace, monospace; text-overflow: ellipsis; white-space: pre-wrap; }
+.result-scroll td:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cell-copy { float: right; border: 0; background: transparent; color: var(--faint); font-size: 9px; cursor: pointer; }
+.cell-copy:hover, .row-copy:hover { color: var(--accent); }
+.row-copy { min-height: 28px; border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); font-size: 9px; cursor: pointer; }
+.execution-timeline { min-height: 180px; padding: 16px; }
+.execution-timeline .section-heading strong { color: var(--muted); font-size: 10px; }
+.execution-timeline ol, .mutation-messages ol { margin: 12px 0 0; padding: 0; list-style: none; }
+.execution-timeline li { display: grid; grid-template-columns: 100px 90px 1fr; gap: 12px; min-height: 42px; align-items: center; border-top: 1px solid var(--border); font-size: 11px; }
+.execution-timeline li code { color: var(--accent); }
+.execution-timeline li time { color: var(--faint); }
+.mutation-confirm { display: grid; gap: 12px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.mutation-confirm label { display: flex; align-items: center; gap: 8px; }
+.mutation-confirm label:first-child { display: grid; }
+.mutation-confirm input { accent-color: var(--accent); }
+.mutation-messages ol { padding: 0 14px 14px; }
+.mutation-messages li { display: grid; gap: 5px; padding: 13px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+.mutation-messages li span, .mutation-messages li small { color: var(--muted); }
+
 @keyframes stage-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes pulse { 50% { opacity: .25; } }
 
@@ -286,6 +336,10 @@ th { color: var(--muted); font-size: 11px; }
   .field-row, .numeric-grid { grid-template-columns: 1fr; gap: 0; }
   .drawer-actions { flex-wrap: wrap; }
   .drawer-actions button { flex: 1 1 130px; }
+  .sql-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sql-editor { height: 270px; }
+  .execution-timeline li { grid-template-columns: 88px 1fr; }
+  .execution-timeline li span { grid-column: 1 / -1; padding-bottom: 9px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

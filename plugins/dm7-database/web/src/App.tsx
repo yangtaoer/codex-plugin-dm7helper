@@ -9,6 +9,7 @@ import { useEventStream, type StreamStatus } from './hooks/useEventStream'
 import { usePathname } from './hooks/usePathname'
 import { useTheme } from './hooks/useTheme'
 import { ConnectionsPage } from './pages/ConnectionsPage'
+import { SqlConsolePage } from './pages/SqlConsolePage'
 
 type RuntimeState =
   | { kind: 'loading' }
@@ -105,7 +106,7 @@ export function App({ api }: { api: ApiClient }) {
       </header>
       <main id="main-content" tabIndex={-1}>
         <RuntimeFeedback state={runtime} streamStatus={stream.status} onRetry={() => void refreshSnapshot('loading')} />
-        <RouteContent active={active} runtime={runtimeValue} runtimeStatus={runtime.kind} theme={theme} onThemeToggle={toggle} navigate={navigate} api={api} />
+        <RouteContent active={active} runtime={runtimeValue} runtimeStatus={runtime.kind} theme={theme} onThemeToggle={toggle} navigate={navigate} api={api} events={stream.events} streamStatus={stream.status} />
       </main>
     </div>
     <ToastRegion />
@@ -123,13 +124,13 @@ function RuntimeFeedback({ state, streamStatus, onRetry }: { state: RuntimeState
   return <button className="refresh-runtime" aria-label="刷新运行状态" onClick={onRetry}><RefreshCw size={14} aria-hidden="true" />状态已同步</button>
 }
 
-function RouteContent({ active, runtime, runtimeStatus, theme, onThemeToggle, navigate, api }: { active: Route | 'not-found'; runtime?: RuntimeSummary; runtimeStatus: RuntimeState['kind']; theme: string; onThemeToggle(): void; navigate: Navigate; api: ApiClient }) {
+function RouteContent({ active, runtime, runtimeStatus, theme, onThemeToggle, navigate, api, events, streamStatus }: { active: Route | 'not-found'; runtime?: RuntimeSummary; runtimeStatus: RuntimeState['kind']; theme: string; onThemeToggle(): void; navigate: Navigate; api: ApiClient; events: import('./api/types').EventRecord[]; streamStatus: StreamStatus }) {
   if (active === 'overview') return <OverviewPage runtime={runtime} runtimeStatus={runtimeStatus} navigate={navigate} />
   if (active === 'settings') return <SettingsPage theme={theme} onThemeToggle={onThemeToggle} />
   if (active === 'connections') return <ConnectionsPage api={api} />
+  if (active === 'sql') return <SqlConsolePage api={api} events={events} streamStatus={streamStatus} theme={theme} />
   if (active === 'not-found') return <EmptyState title="页面未找到" description="该控制台路由不存在。请从左侧导航继续。" action={<InternalLink className="button-primary" to="/app/overview" navigate={navigate}>返回概览</InternalLink>} />
   const content = {
-    sql: ['SQL 控制台', '编辑、审核并执行 DM7 SQL', TerminalSquare, '完整编辑器与结果表格将在下一阶段接入。'],
     activity: ['实时执行', '跟踪每个执行阶段与取消状态', Activity, '实时事件通道已就绪，此处将展示任务时间线。'],
     release: ['发版日志', '检查每个会话的 DDL / DML 发版记录', FileClock, '版本预览与安全导出操作即将接入。'],
   }[active]!

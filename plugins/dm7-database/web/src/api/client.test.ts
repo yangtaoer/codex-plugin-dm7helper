@@ -55,6 +55,14 @@ describe('same-origin API client', () => {
     await expect(createApiClient({ fetcher, timeoutMs: 1 }).runtime()).rejects.toMatchObject({ code: 'TIMEOUT' })
   })
 
+  it('lets blocking SQL requests honor their declared database timeout', async () => {
+    const fetcher=vi.fn((_path:RequestInfo|URL,init?:RequestInit)=>new Promise<Response>((resolve,reject)=>{
+      const timer=setTimeout(()=>resolve(response({executionId:'x',success:true,columns:[],rows:[]})),15)
+      init?.signal?.addEventListener('abort',()=>{clearTimeout(timer);reject(new DOMException('deadline','TimeoutError'))})
+    }))
+    await expect(createApiClient({fetcher,timeoutMs:1}).query({sql:'SELECT 1',timeoutSeconds:1})).resolves.toMatchObject({executionId:'x'})
+  })
+
   it('rejects arbitrary origins and never logs sensitive response content', async () => {
     expect(() => createApiClient({ baseUrl: 'https://example.invalid' } as never)).toThrow()
     const logger = vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -69,20 +77,21 @@ describe('same-origin API client', () => {
     await client.createConnection({ name: '本地库', driverJar: 'driver.jar', jdbcUrl: 'jdbc:dm7://host', username: 'user', password: 'secret' })
     await client.setDefaultConnection('connection-1')
     await client.testConnection('connection-1')
+    await client.classifySql('SELECT 1')
     await client.query({ sql: 'SELECT 1' })
     await client.execute({ sql: 'UPDATE T SET A=1', purpose: 'PRODUCTION_CHANGE', atomic: true })
     await client.cancelExecution('execution-1')
     await client.releaseExport(true)
     expect(fetcher.mock.calls.map(([path]) => path)).toEqual([
       '/api/connections', '/api/connections/connection-1/default', '/api/connections/connection-1/test',
-      '/api/query', '/api/execute', '/api/executions/execution-1/cancel', '/api/release/export',
+      '/api/sql/classify', '/api/query', '/api/execute', '/api/executions/execution-1/cancel', '/api/release/export',
     ])
     for (const [, init] of fetcher.mock.calls) {
       expect(init).toEqual(expect.objectContaining({ credentials: 'same-origin' }))
       expect(init.headers).toEqual(expect.objectContaining({ 'Content-Type': 'application/json' }))
     }
     expect(JSON.parse(fetcher.mock.calls[0][1].body)).toMatchObject({ name: '本地库', password: 'secret' })
-    expect(JSON.parse(fetcher.mock.calls[6][1].body)).toEqual({ confirm: true })
+    expect(JSON.parse(fetcher.mock.calls[7][1].body)).toEqual({ confirm: true })
   })
 
   it('preserves safe download error envelopes and classifies actionable statuses', async () => {

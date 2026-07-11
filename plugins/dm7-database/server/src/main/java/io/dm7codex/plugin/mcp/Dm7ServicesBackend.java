@@ -30,6 +30,7 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
     private final ExportRepository exportRepository;
     private final ExecutionEventBus eventBus;
     private final ExecutionRegistry registry;
+    private final SqlClassificationService classifier;
     private final java.nio.file.Path exportsRoot;
 
     private Dm7ServicesBackend(StateDatabase database, SessionInitializer initializer,
@@ -41,6 +42,7 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
         this.connectionTests = connectionTests; this.executions = executions; this.metadata = metadata;
         this.history = history; this.releaseLog = releaseLog; this.exports = exports;
         this.exportRepository=exportRepository;this.eventBus=eventBus;this.registry=registry;this.exportsRoot=exportsRoot.toAbsolutePath().normalize();
+        this.classifier=new SqlClassificationService(new DmSqlParser(),new SqlSecurityPolicy(),ConsoleHttpServer.MAX_BODY_BYTES);
     }
 
     public static Dm7ServicesBackend open(RuntimePaths paths) throws Exception {
@@ -86,6 +88,7 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
             case "connections.default" -> {var profile=findProfile(input);yield connection(profiles.setDefault(profile.id()));}
             case "connections.test" -> {var profile=findProfile(input);yield testConnection(Map.of("connectionId",profile.id().toString()));}
             case "connections.diagnostics" -> diagnostics(required(input,"jdbcUrl"));
+            case "sql.classify" -> classification(required(input,"sql"));
             case "query" -> query(input,session,ExecutionSource.CONSOLE);
             case "execute" -> execute(input,session,ExecutionSource.CONSOLE);
             case "metadata" -> describe(input);
@@ -163,6 +166,11 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
     }
     private Map<String,Object> connection(ConnectionProfile p){var m=new LinkedHashMap<String,Object>();m.put("id",p.id().toString());m.put("name",p.name());m.put("driverFileName",p.driverJar().getFileName().toString());m.put("driverSha256",p.driverSha256());m.put("configured",true);m.put("connected",false);m.put("hasPassword",profiles.hasPassword(p.id()));m.put("driverClass",p.driverClass());m.put("jdbcUrl",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("urlSummary",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("username",p.username());m.put("schema",p.schema());m.put("connectTimeoutSeconds",p.connectTimeoutSeconds());m.put("socketTimeoutSeconds",p.socketTimeoutSeconds());m.put("queryTimeoutSeconds",p.queryTimeoutSeconds());m.put("maxRows",p.maxRows());m.put("maxBytes",p.maxBytes());m.put("isDefault",p.isDefault());return m;}
     private static Map<String,Object> diagnostics(String url){var inspected=JdbcUrlDiagnostics.inspect(url);return Map.of("urlSummary",JdbcUrlDiagnostics.redact(url),"warnings",inspected.warnings());}
+    private Map<String,Object> classification(String sql){
+        var value=classifier.classify(sql);var result=new LinkedHashMap<String,Object>();
+        result.put("statementCount",value.statementCount());result.put("kinds",value.kinds().stream().map(Enum::name).toList());
+        result.put("queryOnly",value.queryOnly());result.put("requiresPurpose",value.requiresPurpose());result.put("atomicAllowed",value.atomicAllowed());return result;
+    }
     private static String sha256(java.nio.file.Path path)throws Exception{var digest=java.security.MessageDigest.getInstance("SHA-256");try(var in=java.nio.file.Files.newInputStream(path)){byte[] b=new byte[8192];for(int n;(n=in.read(b))>=0;)digest.update(b,0,n);}return java.util.HexFormat.of().formatHex(digest.digest());}
     private static String text(Map<String,Object> m,String k,String fallback){Object v=m.get(k);if(v==null){if(fallback==null)throw new IllegalArgumentException(k+" required");return fallback;}if(!(v instanceof String s)||s.isBlank())throw new IllegalArgumentException(k+" invalid");return s;}
     private static String nullableText(Map<String,Object>m,String k){Object v=m.get(k);if(v==null)return null;if(!(v instanceof String s))throw new IllegalArgumentException(k+" invalid");return s;}

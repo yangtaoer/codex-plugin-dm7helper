@@ -96,6 +96,7 @@ class ConsoleHttpServerTest {
                 call("POST", "/api/connections/id-a/default", Map.of()),
                 call("POST", "/api/connections/id-a/test", Map.of()),
                 call("GET", "/api/connections/diagnostics?jdbcUrl=jdbc%3Adm7%3Aexample", null),
+                call("POST", "/api/sql/classify", Map.of("sql", "select 1")),
                 call("POST", "/api/query", Map.of("sql", "select '达梦'")),
                 call("POST", "/api/execute", Map.of("sql", "update t set n=1", "purpose", "test")),
                 call("GET", "/api/metadata?limit=10", null),
@@ -111,6 +112,15 @@ class ConsoleHttpServerTest {
     @Test void deleteAcceptsExplicitDefaultDispositionInJsonBody() throws Exception {
         assertEquals(200,call("DELETE","/api/connections/id-a",Map.of("replacementDefaultId","id-b")).statusCode());
         assertEquals("id-b",backend.lastInput.get("replacementDefaultId"));
+    }
+
+    @Test void secretBearingClassificationFailureIsSafeAndDoesNotEchoSql() throws Exception {
+        String sql="create user demo identified by never-echo-this";
+        var response=call("POST","/api/sql/classify",Map.of("sql",sql));
+        assertEquals(422,response.statusCode());
+        assertTrue(response.body().contains("SQL_REJECTED"));
+        assertTrue(response.body().contains("correlationId"));
+        assertFalse(response.body().contains("never-echo-this"));
     }
 
     @Test void credentialRecoveryFailuresMapToSafeCorrelated409And500() throws Exception {
@@ -133,6 +143,28 @@ class ConsoleHttpServerTest {
         assertEquals(404, request("GET", "/app/missing.js", null, cookie, null).statusCode());
         for (String path : List.of("/app/%2e%2e/secret", "/app/%252e%252e/secret", "/app/%2fsecret", "/app/a%00b"))
             assertTrue(request("GET", path, null, cookie, null).statusCode() >= 400);
+    }
+
+    @Test void spaHtmlGetsUniqueMatchingCspNonceWithoutWeakeningOtherResponses() throws Exception {
+        var first=request("GET","/app/sql",null,cookie,null);
+        var second=request("GET","/app/sql",null,cookie,null);
+        String firstNonce=htmlNonce(first.body()),secondNonce=htmlNonce(second.body());
+        assertNotEquals(firstNonce,secondNonce);
+        assertTrue(firstNonce.matches("[A-Za-z0-9_-]{32,}"));
+        assertTrue(first.headers().firstValue("Content-Security-Policy").orElseThrow()
+                .contains("style-src 'self' 'nonce-"+firstNonce+"'"));
+        assertFalse(first.headers().firstValue("Content-Security-Policy").orElseThrow().contains("'unsafe-inline'"));
+        assertFalse(first.body().contains("__DM7_CSP_NONCE__"));
+        assertEquals("no-store",first.headers().firstValue("Cache-Control").orElseThrow());
+        var asset=request("GET","/app/app.js",null,cookie,null);
+        assertEquals("no-cache",asset.headers().firstValue("Cache-Control").orElseThrow());
+        assertFalse(asset.headers().firstValue("Content-Security-Policy").orElseThrow().contains("nonce-"));
+        assertFalse(asset.body().contains(firstNonce));
+    }
+
+    private static String htmlNonce(String html) {
+        var match=java.util.regex.Pattern.compile("<meta name=\"csp-nonce\" content=\"([^\"]+)\"").matcher(html);
+        assertTrue(match.find(),html);return match.group(1);
     }
 
     @Test void boundedDownloadsReturn429AndReleasePermitAfterDisconnect() throws Exception {
@@ -187,6 +219,7 @@ class ConsoleHttpServerTest {
         volatile Map<String,Object> lastInput=Map.of();
         @Override public Map<String,Object> call(String operation, Map<String,Object> input, SessionState session) {
             lastInput=input;
+            if(operation.equals("sql.classify")&&String.valueOf(input.get("sql")).contains("never-echo-this"))throw new io.dm7codex.plugin.sql.SqlClassificationService.ClassificationRejected("EMBEDDED_CREDENTIALS");
             if(operation.equals("connections.delete")&&"recovery".equals(input.get("replacementDefaultId")))throw ConsoleHttpServer.BackendProblem.credentialRecoveryRequired();
             if(operation.equals("connections.delete")&&"uncertain".equals(input.get("replacementDefaultId")))throw ConsoleHttpServer.BackendProblem.credentialStateUncertain();
             seenSessions.add(session.sessionId());

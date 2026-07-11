@@ -1,4 +1,4 @@
-import type { ApiClient, CancelResult, ConnectionInput, ConnectionList, ConnectionTestResult, DeleteConnectionResult, DownloadArtifact, ExecuteInput, ExecuteResult, ExecutionDetail, ExportArtifact, HistoryPage, QueryInput, QueryResult, ReleaseSnapshot, RuntimeSummary, SafeConnection, SchemaPage, UrlDiagnostics } from './types'
+import type { ApiClient, CancelResult, ConnectionInput, ConnectionList, ConnectionTestResult, DeleteConnectionResult, DownloadArtifact, ExecuteInput, ExecuteResult, ExecutionDetail, ExportArtifact, HistoryPage, QueryInput, QueryResult, ReleaseSnapshot, RuntimeSummary, SafeConnection, SchemaPage, SqlClassification, UrlDiagnostics } from './types'
 
 type Fetcher = typeof fetch
 type ClientOptions = { fetcher?: Fetcher; timeoutMs?: number }
@@ -65,12 +65,12 @@ export function createApiClient(options: ClientOptions = {}): ApiClient {
   const fetcher = options.fetcher ?? fetch
   const timeoutMs = options.timeoutMs ?? 15_000
 
-  async function request<T>(path: string, init: RequestInit = {}, signal?: AbortSignal): Promise<T> {
+  async function request<T>(path: string, init: RequestInit = {}, signal?: AbortSignal, deadlineMs = timeoutMs): Promise<T> {
     try {
       const response = await fetcher(safePath(path), {
         ...init,
         credentials: 'same-origin',
-        signal: combinedSignal(signal, timeoutMs),
+        signal: combinedSignal(signal, deadlineMs),
         headers: init.body ? { 'Content-Type': 'application/json', ...init.headers } : init.headers,
       })
       if (response.status === 204) return undefined as T
@@ -117,8 +117,9 @@ export function createApiClient(options: ClientOptions = {}): ApiClient {
     setDefaultConnection: (id, signal) => request<SafeConnection>(`/api/connections/${encodeURIComponent(id)}/default`, { method: 'POST', body: '{}' }, signal),
     testConnection: (id, signal) => request<ConnectionTestResult>(`/api/connections/${encodeURIComponent(id)}/test`, { method: 'POST', body: '{}' }, signal),
     diagnoseUrl: (jdbcUrl, signal) => request<UrlDiagnostics>(`/api/connections/diagnostics${queryString({ jdbcUrl })}`, { method: 'GET' }, signal),
-    query: (input: QueryInput, signal) => request<QueryResult>('/api/query', { method: 'POST', body: JSON.stringify(input) }, signal),
-    execute: (input: ExecuteInput, signal) => request<ExecuteResult>('/api/execute', { method: 'POST', body: JSON.stringify(input) }, signal),
+    classifySql: (sql, signal) => request<SqlClassification>('/api/sql/classify', { method: 'POST', body: JSON.stringify({ sql }) }, signal),
+    query: (input: QueryInput, signal) => request<QueryResult>('/api/query', { method: 'POST', body: JSON.stringify(input) }, signal, Math.max(timeoutMs,(input.timeoutSeconds??60)*1000+5000)),
+    execute: (input: ExecuteInput, signal) => request<ExecuteResult>('/api/execute', { method: 'POST', body: JSON.stringify(input) }, signal, Math.max(timeoutMs,(input.timeoutSeconds??60)*1000+5000)),
     metadata: (query, signal) => request<SchemaPage>(`/api/metadata${queryString(query)}`, { method: 'GET' }, signal),
     getExecution: (id, signal) => request<ExecutionDetail>(`/api/executions/${encodeURIComponent(id)}`, { method: 'GET' }, signal),
     cancelExecution: (id, signal) => request<CancelResult>(`/api/executions/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: '{}' }, signal),

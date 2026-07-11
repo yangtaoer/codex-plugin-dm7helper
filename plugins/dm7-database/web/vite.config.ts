@@ -8,6 +8,7 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: false,
+    chunkSizeWarningLimit: 700,
   },
   server: {
     host: '127.0.0.1',

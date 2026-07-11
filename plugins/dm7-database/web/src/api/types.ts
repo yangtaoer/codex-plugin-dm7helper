@@ -66,6 +66,7 @@ export type ConnectionTestResult = { success: boolean; latencyMs: number; driver
 export type UrlDiagnostics = { urlSummary: string; warnings: string[] }
 export type SqlParameter = { jdbcType: number; value: unknown }
 export type QueryInput = { connectionId?: string; executionId?: string; sql: string; parameters?: SqlParameter[]; maxRows?: number; maxBytes?: number; timeoutSeconds?: number }
+export type SqlClassification = { statementCount: number; kinds: SqlKind[]; queryOnly: boolean; requiresPurpose: boolean; atomicAllowed: boolean }
 export type SafeExecutionError = { correlationId: string; phase: string; message: string; sqlState: string | null; errorCode: number | null; restartRequired: boolean }
 export type QueryColumn = { outputLabel: string; originalLabel: string; originalName: string; jdbcType: number; typeName: string }
 export type QueryResult = { executionId: string; success: boolean; columns: QueryColumn[]; rows: Record<string, unknown>[]; truncated: boolean; returnedRows: number; bytes: number; elapsedMillis: number; databaseFingerprint: string; error: SafeExecutionError | null }
@@ -93,6 +94,7 @@ export interface ApiClient {
   setDefaultConnection(id: string, signal?: AbortSignal): Promise<SafeConnection>
   testConnection(id: string, signal?: AbortSignal): Promise<ConnectionTestResult>
   diagnoseUrl(jdbcUrl: string, signal?: AbortSignal): Promise<UrlDiagnostics>
+  classifySql(sql: string, signal?: AbortSignal): Promise<SqlClassification>
   query(input: QueryInput, signal?: AbortSignal): Promise<QueryResult>
   execute(input: ExecuteInput, signal?: AbortSignal): Promise<ExecuteResult>
   metadata(query?: MetadataQuery, signal?: AbortSignal): Promise<SchemaPage>

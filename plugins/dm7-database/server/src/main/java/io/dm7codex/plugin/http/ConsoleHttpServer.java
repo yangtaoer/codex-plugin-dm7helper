@@ -110,6 +110,7 @@ public final class ConsoleHttpServer implements AutoCloseable {
             throw new JsonHttp.HttpProblem(404,"NOT_FOUND","资源不存在。");
         } catch(JsonHttp.HttpProblem problem){ safeError(exchange,problem.status(),problem.code(),problem.safeMessage()); }
         catch(BackendProblem problem){safeError(exchange,problem.status(),problem.code(),problem.safeMessage());}
+        catch(io.dm7codex.plugin.sql.SqlClassificationService.ClassificationRejected|io.dm7codex.plugin.sql.SecretBearingSqlException rejected){safeError(exchange,422,"SQL_REJECTED","SQL 不符合安全执行约束。");}
         catch(DownloadRejected rejected){safeError(exchange,409,rejected.code(),"导出文件校验失败。");}
         catch(RejectedExecutionException busy){ safeError(exchange,429,"SERVER_BUSY","服务忙，请稍后重试。"); }
         catch(IllegalArgumentException|ClassCastException|java.time.DateTimeException invalid){ safeError(exchange,422,"INVALID_ARGUMENT","请求参数无效。"); }
@@ -143,6 +144,7 @@ public final class ConsoleHttpServer implements AutoCloseable {
         else if(path.matches("/api/connections/[^/]+/default")){ allow(x,"POST"); operation="connections.default"; input=withId(bodyOrQuery(x),segment(path,3)); }
         else if(path.matches("/api/connections/[^/]+/test")){ allow(x,"POST"); operation="connections.test"; input=withId(bodyOrQuery(x),segment(path,3)); }
         else if(path.matches("/api/connections/[^/]+")){ allow(x,"GET","PUT","DELETE"); operation="connections."+switch(method){case"GET"->"get";case"PUT"->"update";default->"delete";}; input=withId(bodyOrQuery(x),segment(path,3)); }
+        else if(path.equals("/api/sql/classify")){ allow(x,"POST"); operation="sql.classify"; input=bodyOrQuery(x); }
         else if(path.equals("/api/query")){ allow(x,"POST"); operation="query"; input=bodyOrQuery(x); }
         else if(path.equals("/api/execute")){ allow(x,"POST"); operation="execute"; input=bodyOrQuery(x); }
         else if(path.equals("/api/metadata")){ allow(x,"GET"); operation="metadata"; input=queryObject(x); }
@@ -167,6 +169,7 @@ public final class ConsoleHttpServer implements AutoCloseable {
             case"connections.get","connections.default","connections.test","executions.get","executions.cancel"->Set.of("id");
             case"connections.delete"->Set.of("id","replacementDefaultId","leaveWithoutDefault");
             case"connections.diagnostics"->Set.of("jdbcUrl");
+            case"sql.classify"->Set.of("sql");
             case"query"->Set.of("connectionId","executionId","sql","parameters","maxRows","maxBytes","timeoutSeconds");
             case"execute"->Set.of("connectionId","executionId","sql","parameters","purpose","atomic","continueOnError","timeoutSeconds");
             case"metadata"->Set.of("connectionId","schemaPattern","objectPattern","offset","limit");
@@ -175,7 +178,7 @@ public final class ConsoleHttpServer implements AutoCloseable {
         if(!allowed.containsAll(input.keySet()))throw new JsonHttp.HttpProblem(422,"UNKNOWN_FIELD","请求包含不允许的字段。");
     }
     private static void validateTypes(String operation,Map<String,Object> input)throws JsonHttp.HttpProblem{
-        if(operation.equals("query")||operation.equals("execute"))requireText(input,"sql");
+        if(operation.equals("sql.classify")||operation.equals("query")||operation.equals("execute"))requireText(input,"sql");
         if(operation.equals("execute"))requireText(input,"purpose");
         if(operation.equals("release.export")&&!(input.get("confirm")instanceof Boolean))invalidType();
         if(operation.startsWith("connections.")&&!operation.equals("connections.list")&&!operation.equals("connections.create")&&!operation.equals("connections.diagnostics"))requireText(input,"id");
@@ -202,7 +205,21 @@ public final class ConsoleHttpServer implements AutoCloseable {
     }
     int activeDownloadClients(){return maxDownloadClients-downloadClients.availablePermits();}
 
-    private void staticAsset(HttpExchange x,String path)throws IOException,JsonHttp.HttpProblem{allow(x,"GET","HEAD");String relative=path.substring("/app/".length());boolean asset=relative.contains(".");if(relative.isEmpty()||!asset)relative="index.html";byte[] bytes;try(var in=ConsoleHttpServer.class.getResourceAsStream("/web/"+relative)){if(in==null)throw new JsonHttp.HttpProblem(404,"NOT_FOUND","资源不存在。");bytes=JsonHttp.bounded(in,5*1024*1024);}String type=mime(relative);x.getResponseHeaders().set("Content-Type",type);x.getResponseHeaders().set("Cache-Control","no-cache");if(x.getRequestMethod().equals("HEAD"))x.sendResponseHeaders(200,-1);else send(x,200,bytes);}
+    private void staticAsset(HttpExchange x,String path)throws IOException,JsonHttp.HttpProblem{
+        allow(x,"GET","HEAD");String relative=path.substring("/app/".length());boolean asset=relative.contains(".");
+        if(relative.isEmpty()||!asset)relative="index.html";byte[] bytes;
+        try(var in=ConsoleHttpServer.class.getResourceAsStream("/web/"+relative)){if(in==null)throw new JsonHttp.HttpProblem(404,"NOT_FOUND","资源不存在。");bytes=JsonHttp.bounded(in,5*1024*1024);}
+        String type=mime(relative);x.getResponseHeaders().set("Content-Type",type);x.getResponseHeaders().set("Cache-Control",relative.equals("index.html")?"no-store":"no-cache");
+        if(relative.equals("index.html")){
+            String nonce=Base64.getUrlEncoder().withoutPadding().encodeToString(new java.security.SecureRandom().generateSeed(32));
+            String html=new String(bytes,StandardCharsets.UTF_8);
+            int placeholder=html.indexOf("__DM7_CSP_NONCE__");
+            if(placeholder<0||html.indexOf("__DM7_CSP_NONCE__",placeholder+1)>=0)throw new JsonHttp.HttpProblem(500,"INVALID_WEB_ASSET","控制台资源无效。");
+            bytes=html.replace("__DM7_CSP_NONCE__",nonce).getBytes(StandardCharsets.UTF_8);
+            x.getResponseHeaders().set("Content-Security-Policy",HttpSecurity.CSP.replace("style-src 'self'","style-src 'self' 'nonce-"+nonce+"'"));
+        }
+        if(x.getRequestMethod().equals("HEAD"))x.sendResponseHeaders(200,-1);else send(x,200,bytes);
+    }
     private static String mime(String name){String lower=name.toLowerCase(Locale.ROOT);if(lower.endsWith(".html"))return"text/html; charset=utf-8";if(lower.endsWith(".js")||lower.endsWith(".mjs"))return"text/javascript; charset=utf-8";if(lower.endsWith(".css"))return"text/css; charset=utf-8";if(lower.endsWith(".json"))return"application/json; charset=utf-8";if(lower.endsWith(".svg"))return"image/svg+xml";if(lower.endsWith(".png"))return"image/png";if(lower.endsWith(".ico"))return"image/x-icon";if(lower.endsWith(".woff2"))return"font/woff2";return"application/octet-stream";}
 
     private void sse(HttpExchange x,SessionState state)throws IOException,JsonHttp.HttpProblem{
