@@ -104,6 +104,14 @@ public final class ExportRepository {
         }
     }
 
+    public Optional<ExportArtifactRecord> findArtifactById(String sessionId, String exportId) throws SQLException {
+        try (var connection = database.openConnection();
+             var statement = connection.prepareStatement("SELECT * FROM export_artifact WHERE session_id = ? AND export_id = ?")) {
+            statement.setString(1, sessionId); statement.setString(2, exportId);
+            try (var rows = statement.executeQuery()) { return rows.next() ? Optional.of(readArtifact(rows)) : Optional.empty(); }
+        }
+    }
+
     public List<ExportArtifactRecord> findRecoverable() throws SQLException {
         try (var connection = database.openConnection();
                 var statement = connection.prepareStatement("""

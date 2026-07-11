@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.dm7codex.plugin.connection.*;
 import io.dm7codex.plugin.execution.*;
 import io.dm7codex.plugin.execution.ExecutionModels.*;
+import io.dm7codex.plugin.http.ConsoleHttpServer;
 import io.dm7codex.plugin.release.ReleaseExportService;
 import io.dm7codex.plugin.release.ReleaseLogService;
 import io.dm7codex.plugin.runtime.*;
@@ -13,7 +14,7 @@ import io.dm7codex.plugin.state.*;
 import java.util.*;
 
 /** Adapts the MCP contract to the existing application services without exposing secrets. */
-public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoCloseable {
+public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, ConsoleHttpServer.Backend, AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP = new TypeReference<>() {};
 
@@ -26,14 +27,20 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
     private final ExecutionRepository history;
     private final ReleaseLogService releaseLog;
     private final ReleaseExportService exports;
+    private final ExportRepository exportRepository;
+    private final ExecutionEventBus eventBus;
+    private final ExecutionRegistry registry;
+    private final java.nio.file.Path exportsRoot;
 
     private Dm7ServicesBackend(StateDatabase database, SessionInitializer initializer,
             ConnectionConfigRepository profiles, ConnectionTestService connectionTests,
             ExecutionService executions, MetadataService metadata, ExecutionRepository history,
-            ReleaseLogService releaseLog, ReleaseExportService exports) {
+            ReleaseLogService releaseLog, ReleaseExportService exports, ExportRepository exportRepository,
+            ExecutionEventBus eventBus, ExecutionRegistry registry, java.nio.file.Path exportsRoot) {
         this.database = database; this.initializer = initializer; this.profiles = profiles;
         this.connectionTests = connectionTests; this.executions = executions; this.metadata = metadata;
         this.history = history; this.releaseLog = releaseLog; this.exports = exports;
+        this.exportRepository=exportRepository;this.eventBus=eventBus;this.registry=registry;this.exportsRoot=exportsRoot.toAbsolutePath().normalize();
     }
 
     public static Dm7ServicesBackend open(RuntimePaths paths) throws Exception {
@@ -48,12 +55,14 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
             var history = new ExecutionRepository(state);
             var registry = new ExecutionRegistry();
             var releaseLog = new ReleaseLogService(paths, sessions, java.time.Duration.ofSeconds(5));
+            var eventBus=new ExecutionEventBus(2_000);
             var executions = new ExecutionService(factory, new DmSqlParser(), new SqlSecurityPolicy(),
-                    releaseLog, history, new ExecutionEventBus(2_000), registry);
+                    releaseLog, history, eventBus, registry);
+            var exportRepository=new ExportRepository(state);
             return new Dm7ServicesBackend(state, initializer, profiles,
                     new ConnectionTestService(factory, profiles), executions,
                     new MetadataService(factory), history, releaseLog,
-                    new ReleaseExportService(paths, sessions, new ExportRepository(state)));
+                    new ReleaseExportService(paths, sessions, exportRepository),exportRepository,eventBus,registry,paths.exportsDirectory());
         } catch (Exception failure) {
             state.close();
             throw failure;
@@ -64,8 +73,91 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
         return initializer.initialize(identity);
     }
 
-    @Override
-    public Map<String, Object> call(String name, Map<String, Object> arguments, SessionState session) throws Exception {
+    public ExecutionEventBus eventBus(){return eventBus;}
+
+    @Override public Map<String,Object> call(String operation,Map<String,Object> input,SessionState session)throws Exception{
+        return switch(operation){
+            case "runtime" -> runtime(session);
+            case "connections.list" -> listConnections();
+            case "connections.get" -> connection(findProfile(input));
+            case "connections.create" -> saveProfile(input,null);
+            case "connections.update" -> saveProfile(input,findProfile(input));
+            case "connections.delete" -> { profiles.delete(UUID.fromString(required(input,"id"))); yield Map.of("deleted",true); }
+            case "connections.default" -> connection(profiles.setDefault(UUID.fromString(required(input,"id"))));
+            case "connections.test" -> testConnection(Map.of("connectionId",required(input,"id")));
+            case "connections.diagnostics" -> diagnostics(required(input,"jdbcUrl"));
+            case "query" -> query(input,session,ExecutionSource.CONSOLE);
+            case "execute" -> execute(input,session,ExecutionSource.CONSOLE);
+            case "metadata" -> describe(input);
+            case "executions.get" -> getExecution(Map.of("executionId",required(input,"id")),session);
+            case "executions.cancel" -> cancel(Map.of("executionId",required(input,"id")),session);
+            case "history" -> history(input,session);
+            case "release.preview" -> convert(releaseLog.inspect(session));
+            case "release.export" -> {
+                if(!Boolean.TRUE.equals(input.get("confirm")))throw new IllegalArgumentException("confirmation required");
+                var result=export(session);result.remove("path");result.put("downloadUrl","/api/release/artifacts/"+result.get("id")+"/download");yield result;
+            }
+            default -> callMcp(operation,input,session);
+        };
+    }
+
+    @Override public Optional<ConsoleHttpServer.Download> download(String id,SessionState session)throws Exception{
+        if(id==null||!id.matches("[A-Za-z0-9._:-]{1,256}"))throw new IllegalArgumentException("invalid artifact id");
+        var artifact=exportRepository.findArtifactById(session.sessionId(),id);
+        if(artifact.isEmpty()||artifact.get().artifactPath()==null||!"COMPLETE".equals(artifact.get().state()))return Optional.empty();
+        var path=artifact.get().artifactPath().toAbsolutePath().normalize();
+        var trustedRoot=exportsRoot.toRealPath();
+        if(!path.startsWith(exportsRoot)||!java.nio.file.Files.isRegularFile(path,java.nio.file.LinkOption.NOFOLLOW_LINKS))return Optional.empty();
+        if(java.nio.file.Files.isSymbolicLink(path))return Optional.empty();
+        var real=path.toRealPath();if(!real.startsWith(trustedRoot))return Optional.empty();
+        int maximum=50*1024*1024;byte[] bytes;
+        try(var in=java.nio.file.Files.newInputStream(real);var out=new java.io.ByteArrayOutputStream()){
+            byte[] chunk=new byte[8192];for(int n;(n=in.read(chunk))>=0;){if(out.size()+n>maximum)throw new IllegalStateException("artifact too large");out.write(chunk,0,n);}bytes=out.toByteArray();
+        }
+        return Optional.of(new ConsoleHttpServer.Download(path.getFileName().toString(),"application/sql; charset=utf-8",bytes));
+    }
+
+    private Map<String,Object> runtime(SessionState session)throws Exception{var release=releaseLog.inspect(session);return Map.of("sessionShortId",session.sessionId().substring(0,Math.min(12,session.sessionId().length())),"currentVersion",release.currentVersion(),"runningCount",registry.activeCount(),"connections",profiles.list().size());}
+    private ConnectionProfile findProfile(Map<String,Object> input){return profiles.find(UUID.fromString(required(input,"id"))).orElseThrow(()->new IllegalArgumentException("not found"));}
+    private Map<String,Object> saveProfile(Map<String,Object> input,ConnectionProfile old)throws Exception{
+        var allowed=Set.of("id","name","driverJar","driverClass","jdbcUrl","username","password","schema","connectTimeoutSeconds","socketTimeoutSeconds","queryTimeoutSeconds","maxRows","maxBytes","isDefault");
+        if(!allowed.containsAll(input.keySet()))throw new IllegalArgumentException("unknown field");
+        UUID id=old==null?UUID.randomUUID():old.id();java.nio.file.Path driver=java.nio.file.Path.of(text(input,"driverJar",old==null?null:old.driverJar().toString())).toAbsolutePath().normalize();
+        if(!driver.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")||!java.nio.file.Files.isRegularFile(driver,java.nio.file.LinkOption.NOFOLLOW_LINKS)||java.nio.file.Files.isSymbolicLink(driver))throw new IllegalArgumentException("driverJar invalid");
+        String sha=sha256(driver);String password=nullableText(input,"password");char[] secret=password==null?null:password.toCharArray();
+        try{
+            var value=new ConnectionProfile(id,text(input,"name",old==null?null:old.name()),driver,sha,
+                    text(input,"driverClass",old==null?ConnectionProfile.DEFAULT_DRIVER_CLASS:old.driverClass()),
+                    text(input,"jdbcUrl",old==null?null:old.jdbcUrl()),text(input,"username",old==null?null:old.username()),
+                    input.containsKey("schema")?nullableText(input,"schema"):old==null?null:old.schema(),number(input,"connectTimeoutSeconds",old==null?10:old.connectTimeoutSeconds()).intValue(),
+                    number(input,"socketTimeoutSeconds",old==null?30:old.socketTimeoutSeconds()).intValue(),number(input,"queryTimeoutSeconds",old==null?60:old.queryTimeoutSeconds()).intValue(),
+                    number(input,"maxRows",old==null?1000:old.maxRows()).intValue(),number(input,"maxBytes",old==null?10L*1024*1024:old.maxBytes()).longValue(),
+                    input.containsKey("isDefault")?(Boolean)input.get("isDefault"):old==null||old.isDefault());
+            return connection(profiles.save(value,Optional.ofNullable(secret)));
+        }finally{if(secret!=null)Arrays.fill(secret,'\0');}
+    }
+    private static Map<String,Object> connection(ConnectionProfile p){var m=new LinkedHashMap<String,Object>();m.put("id",p.id().toString());m.put("name",p.name());m.put("driverJar",p.driverJar().toString());m.put("driverSha256",p.driverSha256());m.put("driverClass",p.driverClass());m.put("jdbcUrl",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("username",p.username());m.put("schema",p.schema());m.put("connectTimeoutSeconds",p.connectTimeoutSeconds());m.put("socketTimeoutSeconds",p.socketTimeoutSeconds());m.put("queryTimeoutSeconds",p.queryTimeoutSeconds());m.put("maxRows",p.maxRows());m.put("maxBytes",p.maxBytes());m.put("isDefault",p.isDefault());return m;}
+    private static Map<String,Object> diagnostics(String url){var inspected=JdbcUrlDiagnostics.inspect(url);return Map.of("urlSummary",JdbcUrlDiagnostics.redact(url),"warnings",inspected.warnings());}
+    private static String sha256(java.nio.file.Path path)throws Exception{var digest=java.security.MessageDigest.getInstance("SHA-256");try(var in=java.nio.file.Files.newInputStream(path)){byte[] b=new byte[8192];for(int n;(n=in.read(b))>=0;)digest.update(b,0,n);}return java.util.HexFormat.of().formatHex(digest.digest());}
+    private static String text(Map<String,Object> m,String k,String fallback){Object v=m.get(k);if(v==null){if(fallback==null)throw new IllegalArgumentException(k+" required");return fallback;}if(!(v instanceof String s)||s.isBlank())throw new IllegalArgumentException(k+" invalid");return s;}
+    private static String nullableText(Map<String,Object>m,String k){Object v=m.get(k);if(v==null)return null;if(!(v instanceof String s))throw new IllegalArgumentException(k+" invalid");return s;}
+    private static Number number(Map<String,Object>m,String k,Number fallback){Object v=m.get(k);if(v==null)return fallback;if(!(v instanceof Number n))throw new IllegalArgumentException(k+" invalid");return n;}
+    private Map<String,Object> history(Map<String,Object> input,SessionState session)throws Exception{
+        int offset=integer(input,"offset",0),limit=integer(input,"limit",50);
+        var filter=new ExecutionFilter(session.sessionId(),enumValue(input,"status",ExecutionStatus.class),
+                enumValue(input,"source",ExecutionSource.class),enumValue(input,"purpose",SqlPurpose.class),
+                instantValue(input,"startedAfter"),instantValue(input,"startedBefore"),booleanValue(input,"recorded"),
+                uuidValue(input,"correlationId"),booleanValue(input,"success"),enumValue(input,"kind",SqlKind.class));
+        var page=history.search(filter,offset,limit);var items=page.items().stream().map(Dm7ServicesBackend::historyItem).toList();
+        return Map.of("items",items,"offset",page.offset(),"limit",page.limit(),"hasMore",page.hasMore());
+    }
+    private static Map<String,Object> historyItem(ExecutionSummary s){var m=new LinkedHashMap<String,Object>();m.put("executionId",s.executionId().toString());m.put("correlationId",s.correlationId().toString());m.put("connectionFingerprint",s.connectionFingerprint());m.put("source",s.source().name());m.put("purpose",s.purpose().map(Enum::name).orElse(null));m.put("status",s.status().name());m.put("startedAt",s.startedAt().toString());m.put("completedAt",s.completedAt()==null?null:s.completedAt().toString());m.put("affectedRows",s.affectedRows());m.put("returnedRows",s.returnedRows());m.put("recorded",s.recorded());m.put("exclusionReason",s.exclusionReason());return m;}
+    private static <E extends Enum<E>> E enumValue(Map<String,Object>m,String key,Class<E>type){String value=nullableText(m,key);return value==null?null:Enum.valueOf(type,value.toUpperCase(Locale.ROOT));}
+    private static java.time.Instant instantValue(Map<String,Object>m,String key){String value=nullableText(m,key);return value==null?null:java.time.Instant.parse(value);}
+    private static UUID uuidValue(Map<String,Object>m,String key){String value=nullableText(m,key);return value==null?null:UUID.fromString(value);}
+    private static Boolean booleanValue(Map<String,Object>m,String key){Object value=m.get(key);if(value==null)return null;if(value instanceof Boolean b)return b;if(value instanceof String s&&(s.equalsIgnoreCase("true")||s.equalsIgnoreCase("false")))return Boolean.parseBoolean(s);throw new IllegalArgumentException(key+" invalid");}
+
+    private Map<String, Object> callMcp(String name, Map<String, Object> arguments, SessionState session) throws Exception {
         return switch (name) {
             case "dm7_list_connections" -> listConnections();
             case "dm7_test_connection" -> testConnection(arguments);
@@ -95,25 +187,30 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
 
     private Map<String, Object> testConnection(Map<String, Object> arguments) {
         var result = connectionTests.test(connectionId(arguments));
-        if (!result.success()) throw new IllegalStateException("Connection test failed");
         return convert(result);
     }
 
     private Map<String, Object> query(Map<String, Object> arguments, SessionState session) {
+        return query(arguments,session,ExecutionSource.MCP);
+    }
+    private Map<String, Object> query(Map<String, Object> arguments, SessionState session, ExecutionSource source) {
         var typedParameters = parameters(arguments);
         var result = executions.query(session, new QueryCommand(connectionId(arguments), executionId(arguments),
                 required(arguments, "sql"), typedParameters, integer(arguments, "maxRows", 1_000),
                 longValue(arguments, "maxBytes", 10_485_760), integer(arguments, "timeoutSeconds", 60),
-                ExecutionSource.MCP));
+                source));
         return queryResult(result);
     }
 
     private Map<String, Object> execute(Map<String, Object> arguments, SessionState session) {
+        return execute(arguments,session,ExecutionSource.MCP);
+    }
+    private Map<String, Object> execute(Map<String, Object> arguments, SessionState session,ExecutionSource source) {
         var typedParameters = parameters(arguments);
         SqlPurpose purpose = SqlPurpose.valueOf(required(arguments, "purpose").toUpperCase(Locale.ROOT));
         var result = executions.execute(session, new ExecuteCommand(connectionId(arguments), executionId(arguments),
                 required(arguments, "sql"), typedParameters, purpose, bool(arguments, "atomic", true),
-                bool(arguments, "continueOnError", false), integer(arguments, "timeoutSeconds", 60), ExecutionSource.MCP));
+                bool(arguments, "continueOnError", false), integer(arguments, "timeoutSeconds", 60), source));
         return executionResult(result);
     }
 
@@ -349,10 +446,14 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, AutoC
         return text;
     }
     private static int integer(Map<String, Object> values, String key, int fallback) {
-        Object value = values.get(key); return value == null ? fallback : ((Number) value).intValue();
+        Object value = values.get(key); if(value==null)return fallback;
+        try{return value instanceof Number n?new java.math.BigDecimal(n.toString()).intValueExact():Integer.parseInt((String)value);}
+        catch(RuntimeException invalid){throw new IllegalArgumentException(key+" is invalid");}
     }
     private static long longValue(Map<String, Object> values, String key, long fallback) {
-        Object value = values.get(key); return value == null ? fallback : ((Number) value).longValue();
+        Object value = values.get(key); if(value==null)return fallback;
+        try{return value instanceof Number n?new java.math.BigDecimal(n.toString()).longValueExact():Long.parseLong((String)value);}
+        catch(RuntimeException invalid){throw new IllegalArgumentException(key+" is invalid");}
     }
     private static boolean bool(Map<String, Object> values, String key, boolean fallback) {
         Object value = values.get(key); return value == null ? fallback : (Boolean) value;

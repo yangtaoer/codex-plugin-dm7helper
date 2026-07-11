@@ -11,6 +11,9 @@ import io.dm7codex.plugin.runtime.SessionInitializer;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
+import io.dm7codex.plugin.execution.ExecutionModels.*;
+import io.dm7codex.plugin.sql.SqlKind;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -122,6 +125,27 @@ class ExecutionRepositoryTest {
                     assertEquals(session.sessionId(), rows.getString("session_id"));
                 }
             }
+        }
+    }
+
+    @Test void advancedHistoryFiltersRemainSessionScopedAndComposable() throws Exception {
+        var paths=RuntimePaths.forTest(tempDir);
+        try(var database=StateDatabase.open(paths.stateDatabase())){
+            var session=new SessionInitializer(paths,new SessionRepository(database,paths.sessionsDirectory()))
+                    .initialize(new SessionIdentity("history-filter","test","verified"));
+            var repository=new ExecutionRepository(database);UUID executionId=UUID.randomUUID(),correlationId=UUID.randomUUID();
+            repository.saveExecution(new ExecutionRepository.ExecutionRecord(executionId.toString(),correlationId.toString(),
+                    session.sessionId(),"fingerprint",ExecutionSource.CONSOLE.name(),"MIGRATION","UPDATE T SET C=1",
+                    ExecutionStatus.COMPLETED.name(),ExecutionStatus.COMPLETED.name(),Instant.parse("2026-07-10T06:00:00Z"),
+                    Instant.parse("2026-07-10T06:00:01Z"),1L,0L,null,null,null,true,null));
+            repository.appendStatement(new ExecutionRepository.StatementEventRecord(executionId.toString(),session.sessionId(),
+                    session.version(),0,1L,SqlKind.DML.name(),"SUCCEEDED","LOGGING",1L,null,null,true,null,
+                    "UPDATE T SET C=1","UPDATE T SET C=1",Instant.parse("2026-07-10T06:00:01Z")));
+            var filter=new ExecutionFilter(session.sessionId(),null,ExecutionSource.CONSOLE,null,null,null,true,
+                    correlationId,true,SqlKind.DML);
+            assertEquals(1,repository.search(filter,0,20).items().size());
+            assertEquals(0,repository.search(new ExecutionFilter("other",null,null,null,null,null,true,
+                    correlationId,true,SqlKind.DML),0,20).items().size());
         }
     }
 

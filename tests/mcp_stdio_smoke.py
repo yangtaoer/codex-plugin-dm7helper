@@ -8,6 +8,9 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import urllib.request
+import urllib.error
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 
@@ -34,6 +37,11 @@ def resolve_java() -> str:
 
 
 JAVA = resolve_java()
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def launch(data: Path) -> subprocess.Popen[str]:
@@ -161,6 +169,40 @@ def main() -> None:
         lowered = stderr.lower()
         for secret in ("password", "master.key", "jdbc:dm7://"):
             assert secret not in lowered, (secret, stderr)
+
+        console_process = launch(data / "console")
+        assert console_process.stdin and console_process.stdout and console_process.stderr
+        console_process.stdin.write(json.dumps({"jsonrpc":"2.0","id":50,"method":"initialize","params":{
+            "protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"console-smoke","version":"1"}}}) + "\n")
+        console_process.stdin.flush()
+        assert json.loads(console_process.stdout.readline())["id"] == 50
+        console_process.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n')
+        console_process.stdin.write('{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"dm7_open_console","arguments":{}}}\n')
+        console_process.stdin.flush()
+        opened = json.loads(console_process.stdout.readline())
+        assert opened["result"]["isError"] is False, opened
+        redeem_url = opened["result"]["structuredContent"]["url"]
+        parsed = urllib.parse.urlsplit(redeem_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        opener = urllib.request.build_opener(NoRedirect())
+        request = urllib.request.Request(redeem_url, data=b"", method="POST", headers={"Origin": origin})
+        try:
+            opener.open(request, timeout=5)
+            raise AssertionError("redeem unexpectedly followed to an unavailable SPA without exposing redirect")
+        except urllib.error.HTTPError as response:
+            assert response.code == 303, response.code
+        replay = urllib.request.Request(redeem_url, data=b"", method="POST", headers={"Origin": origin})
+        try:
+            urllib.request.urlopen(replay, timeout=5)
+            raise AssertionError("console token replay succeeded")
+        except urllib.error.HTTPError as response:
+            assert response.code == 401, response.code
+        console_process.stdin.close()
+        console_process.wait(timeout=30)
+        console_stderr = console_process.stderr.read()
+        assert console_process.returncode == 0, console_stderr
+        assert console_process.stdout.read() == "", "HTTP server polluted MCP stdout"
+        assert redeem_url not in console_stderr and parsed.query not in console_stderr, console_stderr
 
         response_process = launch(data / "valid-response")
         response_frames, response_stderr = exchange(response_process, [

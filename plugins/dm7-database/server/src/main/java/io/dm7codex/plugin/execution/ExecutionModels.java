@@ -149,7 +149,12 @@ public final class ExecutionModels {
     }
 
     public record ExecutionFilter(String sessionId, ExecutionStatus status, ExecutionSource source,
-                                  SqlPurpose purpose, Instant startedAfter, Instant startedBefore) {
+                                  SqlPurpose purpose, Instant startedAfter, Instant startedBefore,
+                                  Boolean recorded, UUID correlationId, Boolean success, SqlKind kind) {
+        public ExecutionFilter(String sessionId, ExecutionStatus status, ExecutionSource source,
+                               SqlPurpose purpose, Instant startedAfter, Instant startedBefore) {
+            this(sessionId,status,source,purpose,startedAfter,startedBefore,null,null,null,null);
+        }
         public ExecutionFilter {
             if (sessionId != null) sessionId = text(sessionId, "sessionId", 512);
             if (startedAfter != null && startedBefore != null && startedAfter.isAfter(startedBefore))

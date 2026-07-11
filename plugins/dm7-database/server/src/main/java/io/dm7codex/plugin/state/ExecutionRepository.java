@@ -187,6 +187,10 @@ public final class ExecutionRepository {
         if (filter.purpose() != null) { sql.append(" AND purpose = ?"); values.add(filter.purpose().name()); }
         if (filter.startedAfter() != null) { sql.append(" AND started_at >= ?"); values.add(filter.startedAfter().toString()); }
         if (filter.startedBefore() != null) { sql.append(" AND started_at <= ?"); values.add(filter.startedBefore().toString()); }
+        if (filter.recorded() != null) { sql.append(" AND recorded = ?"); values.add(filter.recorded() ? 1 : 0); }
+        if (filter.correlationId() != null) { sql.append(" AND correlation_id = ?"); values.add(filter.correlationId().toString()); }
+        if (filter.success() != null) { sql.append(filter.success() ? " AND status = 'COMPLETED'" : " AND status <> 'COMPLETED'"); }
+        if (filter.kind() != null) { sql.append(" AND EXISTS (SELECT 1 FROM statement_event se WHERE se.execution_id = execution.execution_id AND se.statement_kind = ?)"); values.add(filter.kind().name()); }
         sql.append(" ORDER BY started_at DESC, execution_id LIMIT ? OFFSET ?");
         values.add(limit + 1); values.add(offset);
         try (var connection = database.openConnection(); var statement = connection.prepareStatement(sql.toString())) {

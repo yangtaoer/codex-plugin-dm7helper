@@ -146,4 +146,28 @@ class Dm7ServicesBackendTest {
             }
         }
     }
+
+    @Test void consoleConnectionCrudNeverReturnsPasswordAndExportDownloadIsSessionScoped() throws Exception {
+        Path driver=temporary.resolve("local-driver.jar");Files.writeString(driver,"not-a-real-driver",StandardCharsets.UTF_8);
+        try(var backend=Dm7ServicesBackend.open(RuntimePaths.forTest(temporary))){
+            var session=backend.initialize(new SessionIdentity("console-thread","test","verified"));
+            var created=backend.call("connections.create",Map.of(
+                    "name","达梦中文连接","driverJar",driver.toString(),"jdbcUrl","jdbc:dm7://localhost:5236?password=hidden",
+                    "username","operator","password","top-secret"),session);
+            assertEquals("达梦中文连接",created.get("name"));
+            assertFalse(created.toString().contains("top-secret"));assertTrue(created.get("jdbcUrl").toString().contains("***"));
+            String id=(String)created.get("id");
+            assertEquals(id,backend.call("connections.get",Map.of("id",id),session).get("id"));
+            assertFalse(backend.call("connections.list",Map.of(),session).toString().contains("top-secret"));
+            var exported=backend.call("release.export",Map.of("confirm",true),session);
+            assertFalse(exported.containsKey("path"));String exportId=(String)exported.get("id");
+            var download=backend.download(exportId,session).orElseThrow();
+            assertEquals("application/sql; charset=utf-8",download.contentType());
+            assertFalse(new String(download.bytes(),StandardCharsets.UTF_8).startsWith("\uFEFF"));
+            var other=backend.initialize(new SessionIdentity("other-thread","test","verified"));
+            assertTrue(backend.download(exportId,other).isEmpty());
+            backend.call("connections.delete",Map.of("id",id),session);
+            assertEquals(Map.of("connections",java.util.List.of()),backend.call("connections.list",Map.of(),session));
+        }
+    }
 }

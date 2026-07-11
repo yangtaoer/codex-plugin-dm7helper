@@ -1,10 +1,16 @@
 package io.dm7codex.plugin;
 
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.ByteArrayOutputStream;
+import io.dm7codex.plugin.mcp.Dm7ServicesBackend;
+import io.dm7codex.plugin.runtime.RuntimePaths;
+import io.dm7codex.plugin.http.ConsoleHttpServer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -32,6 +38,17 @@ class AppMainLifecycleTest {
         };
         assertTimeoutPreemptively(Duration.ofSeconds(5), () -> AppMain.runStdio(
                 environment("input"), failingInput, OutputStream.nullOutputStream()));
+    }
+
+    @Test void openConsoleToolUsesRealProcessOwnedLauncher() throws Exception {
+        var environment=environment("console");
+        try(var backend=Dm7ServicesBackend.open(RuntimePaths.fromEnvironment(environment,temporary));
+            var console=new ConsoleHttpServer(new io.dm7codex.plugin.http.ConsoleTokenService(),backend,backend.eventBus())){
+            var result=AppMain.adapter(environment,backend,console).call("dm7_open_console",Map.of());
+            assertFalse(result.isError());
+            var content=(Map<?,?>)result.structuredContent();
+            assertTrue(((String)content.get("url")).contains("/console/redeem?token="));
+        }
     }
 
     private Map<String, String> environment(String name) {

@@ -4,6 +4,8 @@ import io.dm7codex.plugin.mcp.Dm7McpServer;
 import io.dm7codex.plugin.mcp.Dm7ServicesBackend;
 import io.dm7codex.plugin.runtime.RuntimePaths;
 import io.dm7codex.plugin.runtime.SessionIdentityResolver;
+import io.dm7codex.plugin.http.ConsoleHttpServer;
+import io.dm7codex.plugin.http.ConsoleTokenService;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpSyncServer;
@@ -47,10 +49,9 @@ public final class AppMain {
     static void runStdio(Map<String, String> environment, InputStream stdin, java.io.OutputStream stdout)
             throws Exception {
         RuntimePaths paths = RuntimePaths.fromEnvironment(environment, pluginRoot());
-        try (var backend = Dm7ServicesBackend.open(paths)) {
-            var adapter = new Dm7McpServer(
-                    () -> SessionIdentityResolver.resolve(environment), backend::initialize,
-                    backend, Dm7McpServer.ConsoleLauncher.unavailable());
+        try (var backend = Dm7ServicesBackend.open(paths);
+             var console = new ConsoleHttpServer(new ConsoleTokenService(), backend, backend.eventBus())) {
+            var adapter = adapter(environment, backend, console);
             var input = new ProtocolGuardInputStream(stdin, stdout);
             var defaults = McpJsonDefaults.getMapper();
             if (!(defaults instanceof JacksonMcpJsonMapper jacksonDefaults)) {
@@ -73,6 +74,11 @@ public final class AppMain {
                 server.closeGracefully();
             }
         }
+    }
+
+    static Dm7McpServer adapter(Map<String,String> environment,Dm7ServicesBackend backend,ConsoleHttpServer console) {
+        return new Dm7McpServer(() -> SessionIdentityResolver.resolve(environment), backend::initialize,
+                backend, console::open);
     }
 
     private static Path pluginRoot() throws URISyntaxException {
