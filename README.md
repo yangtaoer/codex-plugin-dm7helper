@@ -20,3 +20,9 @@ The plugin is published through the repo-local marketplace at `.agents/plugins/m
 - `docs/superpowers`: approved design and implementation plan
 
 The distributable plugin never bundles a Dameng JDBC driver or database credentials.
+
+## Build and verify
+
+Run `plugins/dm7-database/scripts/test.ps1`, then `package.ps1`. The release gate covers Java, frontend, browser, plugin-layout, UTF-8 asset, and MCP STDIO smoke tests. Packaging uses `SOURCE_DATE_EPOCH`, compares two clean runtime JAR builds, and produces a runtime-only ZIP in `dist`.
+
+Installation and operation are documented in `plugins/dm7-database/docs`. This is a BYO-driver plugin: obtain the DM7 JDBC driver under Dameng's license and select it locally; never commit or redistribute it. Java 17 is the runtime minimum, while JDK 21 is recommended for development.

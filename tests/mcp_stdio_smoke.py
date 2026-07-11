@@ -15,7 +15,8 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 
 ROOT = Path(__file__).resolve().parents[1]
-JAR = ROOT / "plugins" / "dm7-database" / "lib" / "dm7-codex-plugin.jar"
+PLUGIN_ROOT = Path(os.environ.get("DM7_SMOKE_PLUGIN_ROOT", ROOT / "plugins" / "dm7-database")).resolve()
+JAR = PLUGIN_ROOT / "lib" / "dm7-codex-plugin.jar"
 TOOLS = [
     "dm7_open_console", "dm7_list_connections", "dm7_test_connection", "dm7_query",
     "dm7_execute", "dm7_describe_schema", "dm7_get_execution", "dm7_cancel_execution",
@@ -49,7 +50,7 @@ def launch(data: Path) -> subprocess.Popen[str]:
     env.update({"PLUGIN_DATA": str(data), "CODEX_THREAD_ID": "smoke-thread-中文"})
     return subprocess.Popen(
         [JAVA, "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
-        cwd=ROOT, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        cwd=PLUGIN_ROOT, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
 
 
@@ -289,7 +290,7 @@ def main() -> None:
                                  "CODEX_THREAD_ID": "invalid-utf8"})
         invalid_utf8 = subprocess.Popen(
             [JAVA, "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
-            cwd=ROOT, env=invalid_utf8_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            cwd=PLUGIN_ROOT, env=invalid_utf8_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE)
         utf8_stdout, utf8_stderr = invalid_utf8.communicate(
             b'{"jsonrpc":"2.0","id":31,"method":"bad-\xff-password"}\n', timeout=5)
@@ -326,7 +327,7 @@ def main() -> None:
         failed_env.pop("PLUGIN_DATA", None)
         failed = subprocess.run(
             [JAVA, "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
-            cwd=ROOT, env=failed_env, input="", capture_output=True,
+            cwd=PLUGIN_ROOT, env=failed_env, input="", capture_output=True,
             text=True, encoding="utf-8", errors="replace", timeout=30)
         assert failed.returncode != 0 and failed.stdout == ""
 

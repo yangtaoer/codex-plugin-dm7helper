@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +75,36 @@ class PluginScriptsTest(unittest.TestCase):
             expected = hashlib.sha256("thread-with-中文".encode()).hexdigest()
             self.assertEqual(expected, context["sessionHash"])
             self.assertEqual(expected, context["processThreadHash"])
+            self.assertEqual({"sessionHash", "timestamp", "processThreadHash"}, set(context))
+            self.assertNotIn("thread-with-中文", files[0].read_text("utf-8"))
+            self.assertFalse((data / "release").exists())
+
+    def test_session_hook_is_atomic_under_concurrency_and_missing_env_is_noop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary) / "plugin data"
+            environment = self.clean_environment()
+            environment["PLUGIN_DATA"] = str(data)
+            environment["CODEX_SESSION_ID"] = "session-private-value"
+            environment["CODEX_THREAD_ID"] = "thread-private-value"
+            hook = PLUGIN / "hooks" / "session-context.ps1"
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(lambda _: self.run_powershell(hook, cwd=Path(temporary), environment=environment), range(12)))
+            self.assertTrue(all(result.returncode == 0 for result in results), [result.stderr for result in results])
+            files = list((data / "session-context").glob("*.json"))
+            self.assertEqual(1, len(files))
+            raw = files[0].read_text("utf-8")
+            json.loads(raw)
+            self.assertNotIn("session-private-value", raw)
+            self.assertNotIn("thread-private-value", raw)
+            self.assertEqual([], list((data / "session-context").glob("*.tmp")))
+
+            missing = self.clean_environment()
+            missing.pop("CODEX_SESSION_ID", None)
+            missing.pop("CODEX_THREAD_ID", None)
+            missing["PLUGIN_DATA"] = str(Path(temporary) / "missing")
+            result = self.run_powershell(hook, cwd=Path(temporary), environment=missing)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertFalse((Path(temporary) / "missing").exists())
 
     def test_hook_command_quotes_a_plugin_root_with_spaces(self):
         with tempfile.TemporaryDirectory(prefix="dm7 plugin root ") as temporary:
@@ -259,6 +290,50 @@ class PluginScriptsTest(unittest.TestCase):
             self.assertIn("Package contains an integration environment value", result.stderr)
             self.assertNotIn(secret, result.stdout)
             self.assertNotIn(secret, result.stderr)
+
+    def test_package_is_byte_reproducible_and_rejects_unexpected_archives(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repo, plugin = self.make_package_fixture(base)
+            environment = self.clean_environment()
+            environment["SOURCE_DATE_EPOCH"] = "1783612800"
+            first = self.run_powershell(plugin / "scripts" / "package.ps1", cwd=base, environment=environment)
+            self.assertEqual(0, first.returncode, first.stderr)
+            archive = repo / "dist" / "dm7-database-0.1.0.zip"
+            first_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
+            second = self.run_powershell(plugin / "scripts" / "package.ps1", cwd=base, environment=environment)
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertEqual(first_hash, hashlib.sha256(archive.read_bytes()).hexdigest())
+
+            unexpected = plugin / "assets" / "nested.zip"
+            unexpected.write_bytes(b"PK\x03\x04unexpected")
+            rejected = self.run_powershell(plugin / "scripts" / "package.ps1", cwd=base, environment=environment)
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertIn("Package contains forbidden files", rejected.stderr)
+
+    def test_scripts_and_docs_declare_complete_runtime_contracts(self):
+        build = (PLUGIN / "scripts" / "build.ps1").read_text("utf-8")
+        tests = (PLUGIN / "scripts" / "test.ps1").read_text("utf-8")
+        package = (PLUGIN / "scripts" / "package.ps1").read_text("utf-8")
+        self.assertIn("JAVA_HOME", build)
+        self.assertIn("clean package", build)
+        self.assertIn("mcp_stdio_smoke.py", tests)
+        self.assertIn("web_assets_test.py", tests)
+        self.assertIn(" e2e", tests)
+        self.assertIn("FirstJarHash", package)
+        self.assertIn("SecondJarHash", package)
+        self.assertIn("SOURCE_DATE_EPOCH", package)
+
+        docs = "\n".join(
+            path.read_text("utf-8")
+            for path in [ROOT / "README.md", PLUGIN / "README.md", PLUGIN / "SECURITY.md", PLUGIN / "docs" / "USER_GUIDE.md", PLUGIN / "docs" / "DEVELOPMENT.md"]
+        )
+        for required in (
+            "Java 17", "BYO-driver", "dbname=", "schema=", "UTF-8", "mock", "seed", "sample",
+            "dm7_open_console", "dm7_list_connections", "dm7_test_connection", "dm7_query", "dm7_execute",
+            "dm7_describe_schema", "dm7_get_execution", "dm7_cancel_execution", "dm7_get_release_log", "dm7_release_export",
+        ):
+            self.assertIn(required, docs)
 
 
 if __name__ == "__main__":
