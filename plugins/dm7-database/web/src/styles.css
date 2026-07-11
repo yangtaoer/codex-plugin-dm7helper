@@ -205,7 +205,7 @@ th { color: var(--muted); font-size: 11px; }
 .card-error, .danger-copy { color: var(--danger); font-size: 11px; }
 .test-warnings { margin: 11px 0 0; padding-left: 18px; color: var(--warning); font-size: 10px; line-height: 1.6; }
 .card-actions { display: flex; flex-wrap: wrap; gap: 1px; padding: 7px; background: var(--surface-2); }
-.card-actions button { display: inline-flex; min-height: 36px; flex: 1 1 auto; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 1px solid transparent; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
+.card-actions button { display: inline-flex; min-height: 44px; flex: 1 1 auto; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 1px solid transparent; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
 .card-actions button:hover { border-color: var(--border-strong); background: var(--surface); color: var(--text); }
 .card-actions button:disabled { cursor: wait; opacity: .55; }
 .card-actions .danger-action:hover { border-color: var(--danger); color: var(--danger); }
