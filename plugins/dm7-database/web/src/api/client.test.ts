@@ -90,6 +90,13 @@ describe('same-origin API client', () => {
     })
   })
 
+  it('classifies validation failures separately from generic server failures', async () => {
+    const validation = vi.fn().mockResolvedValue(response({ code: 'INVALID_SQL', message: 'SQL 不符合约束' }, { status: 422 }))
+    await expect(createApiClient({ fetcher: validation }).runtime()).rejects.toMatchObject({ status: 422, category: 'VALIDATION' })
+    const server = vi.fn().mockResolvedValue(response({ code: 'SERVER_FAILURE', message: '服务暂不可用' }, { status: 500 }))
+    await expect(createApiClient({ fetcher: server }).runtime()).rejects.toMatchObject({ status: 500, category: 'HTTP_ERROR' })
+  })
+
   it.each([
     [401, 'UNAUTHENTICATED'],
     [429, 'RATE_LIMITED'],

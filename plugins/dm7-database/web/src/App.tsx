@@ -98,13 +98,13 @@ export function App({ api }: { api: ApiClient }) {
     </aside>
     <div className="app-stage">
       <header className="status-bar">
-        <div className="status-cluster"><span className="status-key">当前连接</span>{runtime.kind === 'loading' ? <span>读取中…</span> : runtime.kind === 'error' ? <StatusBadge tone="danger">状态异常</StatusBadge> : runtime.value.connections === 0 ? <StatusBadge tone="warning">尚未配置连接</StatusBadge> : connectionLookup === 'loading' ? <StatusBadge>正在确认默认连接</StatusBadge> : connectionLookup === 'error' ? <StatusBadge tone="warning">无法确认默认连接</StatusBadge> : !defaultConnection ? <StatusBadge tone="warning">未选择默认连接</StatusBadge> : <StatusBadge tone="success">{defaultConnection.name} · {defaultConnection.connected ? '已连接' : '就绪'}</StatusBadge>}</div>
+        <div className="status-cluster"><span className="status-key">当前连接</span>{runtime.kind === 'loading' ? <span>读取中…</span> : runtime.kind === 'error' ? <StatusBadge tone="danger">状态异常</StatusBadge> : runtime.kind === 'stale' || runtime.kind === 'reconnecting' ? <StatusBadge tone="warning">连接状态已过期</StatusBadge> : runtime.value.connections === 0 ? <StatusBadge tone="warning">尚未配置连接</StatusBadge> : connectionLookup === 'loading' ? <StatusBadge>正在确认默认连接</StatusBadge> : connectionLookup === 'error' ? <StatusBadge tone="warning">无法确认默认连接</StatusBadge> : !defaultConnection ? <StatusBadge tone="warning">未选择默认连接</StatusBadge> : <StatusBadge tone="success">{defaultConnection.name} · {defaultConnection.connected ? '已连接' : '就绪'}</StatusBadge>}</div>
         <div className="status-metrics"><span><small>SESSION</small><code>{runtimeValue?.sessionShortId ?? '————————'}</code></span><span><small>VERSION</small><code>{runtimeValue?.currentVersion ?? '————'}</code></span><span><small>RUNNING</small><strong>{runtimeValue ? `${runtimeValue.runningCount} 个任务` : '—'}</strong></span></div>
         <button className="icon-button" aria-label={theme === 'dark' ? '切换为浅色主题' : '切换为深色主题'} onClick={toggle}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>
       </header>
       <main id="main-content" tabIndex={-1}>
         <RuntimeFeedback state={runtime} streamStatus={stream.status} onRetry={() => void refreshSnapshot('loading')} />
-        <RouteContent active={active} runtime={runtimeValue} theme={theme} onThemeToggle={toggle} navigate={navigate} />
+        <RouteContent active={active} runtime={runtimeValue} runtimeStatus={runtime.kind} theme={theme} onThemeToggle={toggle} navigate={navigate} />
       </main>
     </div>
     <ToastRegion />
@@ -122,8 +122,8 @@ function RuntimeFeedback({ state, streamStatus, onRetry }: { state: RuntimeState
   return <button className="refresh-runtime" aria-label="刷新运行状态" onClick={onRetry}><RefreshCw size={14} aria-hidden="true" />状态已同步</button>
 }
 
-function RouteContent({ active, runtime, theme, onThemeToggle, navigate }: { active: Route | 'not-found'; runtime?: RuntimeSummary; theme: string; onThemeToggle(): void; navigate: Navigate }) {
-  if (active === 'overview') return <OverviewPage runtime={runtime} navigate={navigate} />
+function RouteContent({ active, runtime, runtimeStatus, theme, onThemeToggle, navigate }: { active: Route | 'not-found'; runtime?: RuntimeSummary; runtimeStatus: RuntimeState['kind']; theme: string; onThemeToggle(): void; navigate: Navigate }) {
+  if (active === 'overview') return <OverviewPage runtime={runtime} runtimeStatus={runtimeStatus} navigate={navigate} />
   if (active === 'settings') return <SettingsPage theme={theme} onThemeToggle={onThemeToggle} />
   if (active === 'not-found') return <EmptyState title="页面未找到" description="该控制台路由不存在。请从左侧导航继续。" action={<InternalLink className="button-primary" to="/app/overview" navigate={navigate}>返回概览</InternalLink>} />
   const content = {
@@ -136,7 +136,7 @@ function RouteContent({ active, runtime, theme, onThemeToggle, navigate }: { act
   return <><PageHeader eyebrow="WORKSPACE" title={content[0] as string} description={content[1] as string} /><section className="placeholder-panel"><Icon size={30} strokeWidth={1.35} aria-hidden="true" /><div><h2>功能通道已预留</h2><p>{content[3] as string}</p></div><span className="placeholder-code">MODULE / {active.toUpperCase()}</span></section></>
 }
 
-function OverviewPage({ runtime, navigate }: { runtime?: RuntimeSummary; navigate: Navigate }) {
+function OverviewPage({ runtime, runtimeStatus, navigate }: { runtime?: RuntimeSummary; runtimeStatus: RuntimeState['kind']; navigate: Navigate }) {
   const metrics = useMemo(() => [
     ['会话标识', runtime?.sessionShortId ?? '等待同步', 'CODEX SESSION'],
     ['活动版本', runtime?.currentVersion ?? '—', 'RELEASE TRACK'],
@@ -145,7 +145,7 @@ function OverviewPage({ runtime, navigate }: { runtime?: RuntimeSummary; navigat
   ], [runtime])
   return <><PageHeader eyebrow="CONTROL OVERVIEW" title="数据库运行概览" description="当前 Codex 会话的 DM7 连接、执行和发版基线。" />
     <section className="metric-grid" aria-label="运行摘要">{metrics.map(([label, value, code]) => <article key={label}><div className="metric-index">{code}</div><p>{label}</p><strong>{value}</strong></article>)}</section>
-    <section className="overview-grid"><article className="health-panel"><div className="section-heading"><span>RUNTIME HEALTH</span>{runtime ? <StatusBadge tone="success">本地服务已就绪</StatusBadge> : <StatusBadge tone="warning">等待运行状态</StatusBadge>}</div><div className="health-lines"><p><Blocks size={18} /> <span><strong>DM7 Codex Plugin</strong><small>后端、MCP 与控制台同一进程</small></span></p><p><ShieldCheck size={18} /><span><strong>安全边界</strong><small>127.0.0.1 回环 · 同源会话验证</small></span></p></div></article>
+    <section className="overview-grid"><article className="health-panel"><div className="section-heading"><span>RUNTIME HEALTH</span>{runtimeStatus === 'ready' ? <StatusBadge tone="success">本地服务已就绪</StatusBadge> : runtimeStatus === 'error' ? <StatusBadge tone="danger">服务状态未知</StatusBadge> : runtimeStatus === 'stale' || runtimeStatus === 'reconnecting' ? <StatusBadge tone="warning">数据已过期</StatusBadge> : <StatusBadge tone="warning">等待运行状态</StatusBadge>}</div><div className="health-lines"><p><Blocks size={18} /> <span><strong>DM7 Codex Plugin</strong><small>后端、MCP 与控制台同一进程</small></span></p><p><ShieldCheck size={18} /><span><strong>安全边界</strong><small>127.0.0.1 回环 · 同源会话验证</small></span></p></div></article>
       <article className="next-action"><span className="eyebrow">NEXT ACTION</span><PlaySquare size={28} /><h2>{runtime?.connections ? '打开 SQL 控制台' : '配置第一个连接'}</h2><p>{runtime?.connections ? '使用已保存的连接执行查询。' : '驱动路径和密码仅在本地处理。'}</p><InternalLink to={runtime?.connections ? '/app/sql' : '/app/connections'} navigate={navigate}>继续 <span aria-hidden="true">→</span></InternalLink></article></section>
   </>
 }

@@ -26,7 +26,9 @@ export type SafeConnection = {
 }
 
 export type ConnectionList = { connections: SafeConnection[] }
-export type ExecutionStatus = 'QUEUED' | 'CONNECTING' | 'PARSING' | 'EXECUTING' | 'COMMITTING' | 'LOGGING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'REJECTED'
+export const EXECUTION_STATUSES = ['QUEUED', 'CONNECTING', 'PARSING', 'EXECUTING', 'COMMITTING', 'LOGGING', 'COMPLETED', 'FAILED', 'CANCELLED', 'REJECTED'] as const
+export type ExecutionStatus = typeof EXECUTION_STATUSES[number]
+export const EXECUTION_EVENT_NAMES = EXECUTION_STATUSES.map((status) => status.toLowerCase()) as Lowercase<ExecutionStatus>[]
 export type ExecutionSource = 'MCP' | 'CONSOLE'
 export type SqlPurpose = 'PRODUCTION_CHANGE' | 'MIGRATION' | 'TEST' | 'MOCK' | 'SEED' | 'SAMPLE'
 export type SqlKind = 'QUERY' | 'EXPLAIN' | 'DDL' | 'DML' | 'DCL' | 'TRANSACTION' | 'SESSION' | 'CALL' | 'ANONYMOUS_BLOCK' | 'UNKNOWN'

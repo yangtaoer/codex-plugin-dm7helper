@@ -166,4 +166,42 @@ describe('DM7 console shell', () => {
     expect(screen.getByText('实时通道连接中')).toBeTruthy()
     expect(screen.queryByText('状态已同步')).toBeNull()
   })
+
+  it('never renders successful health after authoritative recovery failures and returns to ready only after success', async () => {
+    const runtimeCall = vi.fn()
+      .mockResolvedValueOnce(runtime)
+      .mockRejectedValueOnce(new Error('重新同步失败'))
+      .mockRejectedValueOnce(new Error('实时流恢复后刷新失败'))
+      .mockResolvedValueOnce({ ...runtime, currentVersion: 'v003', runningCount: 0 })
+    const client = api({ runtime: runtimeCall })
+    const { rerender } = render(<App api={client} />)
+    expect(await screen.findByText('本地服务已就绪')).toBeTruthy()
+
+    stream.status = 'reconnecting'
+    rerender(<App api={client} />)
+    expect(await screen.findByText('数据已过期')).toBeTruthy()
+
+    stream.status = 'resyncing'
+    rerender(<App api={client} />)
+    await act(async () => { await stream.options?.resync?.() })
+    expect(await screen.findByText('服务状态未知')).toBeTruthy()
+    expect(screen.queryByText('本地服务已就绪')).toBeNull()
+    expect(screen.getByText('状态异常')).toBeTruthy()
+
+    stream.status = 'reconnecting'
+    rerender(<App api={client} />)
+    stream.status = 'connected'
+    rerender(<App api={client} />)
+    expect(await screen.findByText('实时流恢复后刷新失败')).toBeTruthy()
+    expect(screen.getByText('服务状态未知')).toBeTruthy()
+    expect(screen.queryByText('本地服务已就绪')).toBeNull()
+
+    stream.status = 'reconnecting'
+    rerender(<App api={client} />)
+    stream.status = 'connected'
+    rerender(<App api={client} />)
+    expect(await screen.findAllByText('v003')).toHaveLength(2)
+    expect(screen.getByText('本地服务已就绪')).toBeTruthy()
+    expect(screen.queryByText('服务状态未知')).toBeNull()
+  })
 })

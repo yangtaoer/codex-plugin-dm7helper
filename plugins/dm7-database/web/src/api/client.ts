@@ -2,7 +2,7 @@ import type { ApiClient, CancelResult, ConnectionInput, ConnectionList, Connecti
 
 type Fetcher = typeof fetch
 type ClientOptions = { fetcher?: Fetcher; timeoutMs?: number }
-export type ApiErrorCategory = 'UNAUTHENTICATED' | 'CONFLICT' | 'RATE_LIMITED' | 'TIMEOUT' | 'ABORTED' | 'HTTP_ERROR' | 'NETWORK_ERROR' | 'MALFORMED_RESPONSE'
+export type ApiErrorCategory = 'UNAUTHENTICATED' | 'CONFLICT' | 'VALIDATION' | 'RATE_LIMITED' | 'TIMEOUT' | 'ABORTED' | 'HTTP_ERROR' | 'NETWORK_ERROR' | 'MALFORMED_RESPONSE'
 
 function categoryFor(status: number, code: string): ApiErrorCategory {
   if (code === 'TIMEOUT') return 'TIMEOUT'
@@ -10,6 +10,7 @@ function categoryFor(status: number, code: string): ApiErrorCategory {
   if (code === 'MALFORMED_RESPONSE') return 'MALFORMED_RESPONSE'
   if (status === 401) return 'UNAUTHENTICATED'
   if (status === 409) return 'CONFLICT'
+  if (status === 422) return 'VALIDATION'
   if (status === 429) return 'RATE_LIMITED'
   return status === 0 ? 'NETWORK_ERROR' : 'HTTP_ERROR'
 }

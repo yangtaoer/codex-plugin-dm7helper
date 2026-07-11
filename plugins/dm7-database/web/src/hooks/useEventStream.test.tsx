@@ -47,6 +47,14 @@ describe('useEventStream', () => {
     expect(result.current.events[0]).toMatchObject({ id: '8', executionId: 'dm7-1', status: 'executing' })
   })
 
+  it('receives rejected as the final named lifecycle event', () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    const { result } = renderHook(() => useEventStream())
+    const source = FakeEventSource.instances[0]
+    act(() => source.listeners.get('rejected')?.(new MessageEvent('rejected', { data: JSON.stringify({ executionId: 'dm7-rejected', status: 'rejected', timestamp: '2026-01-01T00:00:00Z', detail: '队列已满' }), lastEventId: '10' })))
+    expect(result.current.events[0]).toMatchObject({ id: '10', executionId: 'dm7-rejected', status: 'rejected' })
+  })
+
   it('lets a transient native reconnect retain Last-Event-ID without replacing the source', async () => {
     vi.stubGlobal('EventSource', FakeEventSource)
     const resync = vi.fn().mockResolvedValue(undefined)

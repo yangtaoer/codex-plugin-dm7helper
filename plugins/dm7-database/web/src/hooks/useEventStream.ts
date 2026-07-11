@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { EventRecord } from '../api/types'
+import { EXECUTION_EVENT_NAMES, type EventRecord } from '../api/types'
 
 export type StreamStatus = 'connecting' | 'connected' | 'reconnecting' | 'resyncing'
 
@@ -10,8 +10,6 @@ export type EventStreamOptions = {
   maximumBackoffMs?: number
   resync?: () => Promise<void>
 }
-
-const eventNames = ['queued', 'connecting', 'parsing', 'executing', 'committing', 'logging', 'completed', 'failed', 'cancelled'] as const
 
 export function useEventStream({
   maximumEvents = 200,
@@ -54,7 +52,7 @@ export function useEventStream({
     }
     const detachAndClose = () => {
       if (!source) return
-      eventNames.forEach((name) => source?.removeEventListener(name, receive))
+      EXECUTION_EVENT_NAMES.forEach((name) => source?.removeEventListener(name, receive))
       source.onopen = null
       source.onerror = null
       source.onmessage = null
@@ -76,7 +74,7 @@ export function useEventStream({
         if (recoveryTimer === null) recoveryTimer = setTimeout(recover, Math.max(0, recoveryGraceMs))
       }
       source.onmessage = receive
-      eventNames.forEach((name) => source?.addEventListener(name, receive))
+      EXECUTION_EVENT_NAMES.forEach((name) => source?.addEventListener(name, receive))
     }
     const recover = async () => {
       recoveryTimer = null
