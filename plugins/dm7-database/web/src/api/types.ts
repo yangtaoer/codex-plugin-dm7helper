@@ -55,7 +55,8 @@ export type HistoryItem = {
 export type HistoryPage = { items: HistoryItem[]; offset: number; limit: number; hasMore: boolean }
 export type EventRecord = { id: string; executionId: string; status: Lowercase<ExecutionStatus>; timestamp: string; detail: string }
 export type DownloadArtifact = { filename: string; blob: Blob }
-export type DeleteConnectionResult = { deleted: true }
+export type DeleteConnectionResult = { deleted: true; defaultConnectionId: string | null }
+export type DeleteConnectionInput = { replacementDefaultId?: string; leaveWithoutDefault?: true }
 export type ConnectionInput = {
   name: string; driverJar: string; driverClass?: string; jdbcUrl: string; username: string
   password?: string; clearPassword?: boolean; schema?: string | null; connectTimeoutSeconds?: number; socketTimeoutSeconds?: number
@@ -83,7 +84,7 @@ export type ExportArtifact = { id: string; version: string; newActiveVersion: st
 export interface ApiClient {
   runtime(signal?: AbortSignal): Promise<RuntimeSummary>
   history(query?: HistoryQuery, signal?: AbortSignal): Promise<HistoryPage>
-  removeConnection(id: string, signal?: AbortSignal): Promise<DeleteConnectionResult>
+  removeConnection(id: string, input?: DeleteConnectionInput, signal?: AbortSignal): Promise<DeleteConnectionResult>
   downloadArtifact(id: string, signal?: AbortSignal): Promise<DownloadArtifact>
   listConnections(signal?: AbortSignal): Promise<ConnectionList>
   getConnection(id: string, signal?: AbortSignal): Promise<SafeConnection>

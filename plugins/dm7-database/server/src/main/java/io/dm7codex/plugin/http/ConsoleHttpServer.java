@@ -90,7 +90,8 @@ public final class ConsoleHttpServer implements AutoCloseable {
     private static Map<String,Object> safeCurrentConnection(Map<String,Object> listed){
         Object raw=listed.get("connections");if(!(raw instanceof List<?> values)||values.isEmpty())return Map.of("configured",false,"connected",false);
         Map<?,?> selected=values.stream().filter(Map.class::isInstance).map(Map.class::cast)
-                .filter(value->Boolean.TRUE.equals(value.get("isDefault"))).findFirst().orElseGet(()->(Map<?,?>)values.get(0));
+                .filter(value->Boolean.TRUE.equals(value.get("isDefault"))).findFirst().orElse(null);
+        if(selected==null)return Map.of("configured",true,"connected",false,"isDefault",false);
         var safe=new LinkedHashMap<String,Object>();for(String key:List.of("id","name","urlSummary","schema","isDefault","configured","connected"))if(selected.containsKey(key))safe.put(key,selected.get(key));
         safe.putIfAbsent("configured",true);safe.putIfAbsent("connected",false);return Collections.unmodifiableMap(safe);
     }
@@ -157,13 +158,14 @@ public final class ConsoleHttpServer implements AutoCloseable {
         json(x,200,backend.call(operation,input,state));
     }
 
-    private Map<String,Object> bodyOrQuery(HttpExchange x) throws IOException,JsonHttp.HttpProblem { return switch(x.getRequestMethod()){case"POST","PUT","PATCH"->JsonHttp.readObject(x,MAX_BODY_BYTES,requestBodyReaders,requestBodyTimeout);default->queryObject(x);}; }
+    private Map<String,Object> bodyOrQuery(HttpExchange x) throws IOException,JsonHttp.HttpProblem { return switch(x.getRequestMethod()){case"POST","PUT","PATCH","DELETE"->JsonHttp.readObject(x,MAX_BODY_BYTES,requestBodyReaders,requestBodyTimeout);default->queryObject(x);}; }
     private static Map<String,Object> withId(Map<String,Object> values,String id){var copy=new LinkedHashMap<>(values); copy.put("id",id); return copy;}
     private static void validateFields(String operation,Map<String,Object> input)throws JsonHttp.HttpProblem{
         Set<String> allowed=switch(operation){
             case"runtime","connections.list","release.preview"->Set.of();
             case"connections.create","connections.update"->Set.of("id","name","driverJar","driverClass","jdbcUrl","username","password","clearPassword","schema","connectTimeoutSeconds","socketTimeoutSeconds","queryTimeoutSeconds","maxRows","maxBytes","isDefault");
-            case"connections.get","connections.delete","connections.default","connections.test","executions.get","executions.cancel"->Set.of("id");
+            case"connections.get","connections.default","connections.test","executions.get","executions.cancel"->Set.of("id");
+            case"connections.delete"->Set.of("id","replacementDefaultId","leaveWithoutDefault");
             case"connections.diagnostics"->Set.of("jdbcUrl");
             case"query"->Set.of("connectionId","executionId","sql","parameters","maxRows","maxBytes","timeoutSeconds");
             case"execute"->Set.of("connectionId","executionId","sql","parameters","purpose","atomic","continueOnError","timeoutSeconds");
@@ -179,6 +181,8 @@ public final class ConsoleHttpServer implements AutoCloseable {
         if(operation.startsWith("connections.")&&!operation.equals("connections.list")&&!operation.equals("connections.create")&&!operation.equals("connections.diagnostics"))requireText(input,"id");
         for(String key:List.of("name","driverJar","driverClass","jdbcUrl","username","password","schema"))if(input.containsKey(key)&&!(input.get(key)instanceof String))invalidType();
         if(input.containsKey("clearPassword")&&!(input.get("clearPassword")instanceof Boolean))invalidType();
+        if(input.containsKey("replacementDefaultId")&&!(input.get("replacementDefaultId")instanceof String))invalidType();
+        if(input.containsKey("leaveWithoutDefault")&&!(input.get("leaveWithoutDefault")instanceof Boolean))invalidType();
         for(String key:List.of("connectTimeoutSeconds","socketTimeoutSeconds","queryTimeoutSeconds","maxRows","maxBytes"))if(input.containsKey(key)&&!(input.get(key)instanceof Number))invalidType();
         if(input.containsKey("isDefault")&&!(input.get("isDefault")instanceof Boolean))invalidType();
     }
@@ -270,5 +274,5 @@ public final class ConsoleHttpServer implements AutoCloseable {
         @Override public synchronized void close()throws IOException{try{snapshot.close();}finally{Files.deleteIfExists(temporary);}}
     }
     public static final class DownloadRejected extends Exception {private final String code;public DownloadRejected(String code){super(code);this.code=code;}public String code(){return code;}}
-    public static final class BackendProblem extends RuntimeException {private final int status;private final String code;private final String safeMessage;private BackendProblem(int status,String code,String safeMessage){super(code);this.status=status;this.code=code;this.safeMessage=safeMessage;}public static BackendProblem notFound(){return new BackendProblem(404,"NOT_FOUND","资源不存在。");}public static BackendProblem conflict(){return new BackendProblem(409,"CONFLICT","操作与当前状态冲突。");}int status(){return status;}String code(){return code;}String safeMessage(){return safeMessage;}}
+    public static final class BackendProblem extends RuntimeException {private final int status;private final String code;private final String safeMessage;private BackendProblem(int status,String code,String safeMessage){super(code);this.status=status;this.code=code;this.safeMessage=safeMessage;}public static BackendProblem notFound(){return new BackendProblem(404,"NOT_FOUND","资源不存在。");}public static BackendProblem conflict(){return new BackendProblem(409,"CONFLICT","操作与当前状态冲突。");}public static BackendProblem credentialRecoveryRequired(){return new BackendProblem(409,"CREDENTIAL_RECOVERY_REQUIRED","凭据已安全移除，请重新输入密码后重试。");}public static BackendProblem credentialStateUncertain(){return new BackendProblem(500,"CREDENTIAL_STATE_UNCERTAIN","凭据状态无法确认，请重启插件并重新保存连接。");}int status(){return status;}String code(){return code;}String safeMessage(){return safeMessage;}}
 }

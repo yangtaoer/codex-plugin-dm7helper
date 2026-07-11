@@ -108,7 +108,7 @@ export function createApiClient(options: ClientOptions = {}): ApiClient {
   return {
     runtime: (signal) => request<RuntimeSummary>('/api/runtime', { method: 'GET' }, signal),
     history: (query, signal) => request<HistoryPage>(`/api/history${queryString(query)}`, { method: 'GET' }, signal),
-    removeConnection: (id, signal) => request<DeleteConnectionResult>(`/api/connections/${encodeURIComponent(id)}`, { method: 'DELETE' }, signal),
+    removeConnection: (id, input = {}, signal) => request<DeleteConnectionResult>(`/api/connections/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify(input) }, signal),
     downloadArtifact: (id, signal) => download(`/api/release/artifacts/${encodeURIComponent(id)}/download`, signal),
     listConnections: (signal) => request<ConnectionList>('/api/connections', { method: 'GET' }, signal),
     getConnection: (id, signal) => request<SafeConnection>(`/api/connections/${encodeURIComponent(id)}`, { method: 'GET' }, signal),

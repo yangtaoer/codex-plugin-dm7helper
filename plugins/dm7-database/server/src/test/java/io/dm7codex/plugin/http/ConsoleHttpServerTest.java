@@ -50,6 +50,7 @@ class ConsoleHttpServerTest {
         assertEquals(400, request("POST", "/api/query", "{", cookie, base.toString()).statusCode());
         assertEquals(400, request("POST", "/api/query", "{\"password\":\"a\",\"password\":\"b\"}", cookie, base.toString()).statusCode());
         assertEquals(422,call("POST","/api/query",Map.of("sql",7)).statusCode());
+        assertEquals(422,call("DELETE","/api/connections/id-a",Map.of("leaveWithoutDefault","yes")).statusCode());
         assertEquals(422,call("POST","/api/query",Map.of("sql","select 1","unknown",true)).statusCode());
         assertEquals(404,call("GET","/api/connections/missing",null).statusCode());
         assertEquals(409,call("POST","/api/connections",Map.of("name","duplicate")).statusCode());
@@ -91,7 +92,7 @@ class ConsoleHttpServerTest {
                 call("GET", "/api/runtime", null), call("GET", "/api/connections", null),
                 call("POST", "/api/connections", Map.of("name", "中文", "password", "never-return")),
                 call("PUT", "/api/connections/id-a", Map.of("name", "更新")),
-                call("DELETE", "/api/connections/id-a", null),
+                call("DELETE", "/api/connections/id-a", Map.of()),
                 call("POST", "/api/connections/id-a/default", Map.of()),
                 call("POST", "/api/connections/id-a/test", Map.of()),
                 call("GET", "/api/connections/diagnostics?jdbcUrl=jdbc%3Adm7%3Aexample", null),
@@ -105,6 +106,20 @@ class ConsoleHttpServerTest {
                 call("POST", "/api/release/export", Map.of("confirm", true)));
         for (HttpResponse<String> result : calls) { assertEquals(200, result.statusCode(), result.body()); assertTrue(result.body().contains("中文响应")); assertFalse(result.body().contains("never-return")); }
         assertEquals(Set.of("internal-a"), backend.seenSessions);
+    }
+
+    @Test void deleteAcceptsExplicitDefaultDispositionInJsonBody() throws Exception {
+        assertEquals(200,call("DELETE","/api/connections/id-a",Map.of("replacementDefaultId","id-b")).statusCode());
+        assertEquals("id-b",backend.lastInput.get("replacementDefaultId"));
+    }
+
+    @Test void credentialRecoveryFailuresMapToSafeCorrelated409And500() throws Exception {
+        var recoverable=call("DELETE","/api/connections/id-a",Map.of("replacementDefaultId","recovery"));
+        assertEquals(409,recoverable.statusCode());assertTrue(recoverable.body().contains("CREDENTIAL_RECOVERY_REQUIRED"));
+        assertTrue(recoverable.body().contains("correlationId"));assertFalse(recoverable.body().contains("secret"));
+        var uncertain=call("DELETE","/api/connections/id-a",Map.of("replacementDefaultId","uncertain"));
+        assertEquals(500,uncertain.statusCode());assertTrue(uncertain.body().contains("CREDENTIAL_STATE_UNCERTAIN"));
+        assertTrue(uncertain.body().contains("correlationId"));assertFalse(uncertain.body().contains("secret"));
     }
 
     @Test void constrainsArtifactDownloadsAndStaticClasspath() throws Exception {
@@ -169,7 +184,11 @@ class ConsoleHttpServerTest {
         volatile boolean blockDownloads;
         final java.util.concurrent.CountDownLatch downloadEntered=new java.util.concurrent.CountDownLatch(1);
         final java.util.concurrent.CountDownLatch releaseDownload=new java.util.concurrent.CountDownLatch(1);
+        volatile Map<String,Object> lastInput=Map.of();
         @Override public Map<String,Object> call(String operation, Map<String,Object> input, SessionState session) {
+            lastInput=input;
+            if(operation.equals("connections.delete")&&"recovery".equals(input.get("replacementDefaultId")))throw ConsoleHttpServer.BackendProblem.credentialRecoveryRequired();
+            if(operation.equals("connections.delete")&&"uncertain".equals(input.get("replacementDefaultId")))throw ConsoleHttpServer.BackendProblem.credentialStateUncertain();
             seenSessions.add(session.sessionId());
             if(operation.equals("connections.get")&&"missing".equals(input.get("id")))throw ConsoleHttpServer.BackendProblem.notFound();
             if(operation.equals("connections.create")&&"duplicate".equals(input.get("name")))throw ConsoleHttpServer.BackendProblem.conflict();

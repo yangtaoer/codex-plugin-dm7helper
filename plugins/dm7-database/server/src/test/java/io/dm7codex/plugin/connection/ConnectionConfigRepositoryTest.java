@@ -201,9 +201,103 @@ class ConnectionConfigRepositoryTest {
             }
         };
         secrets.deleteFailure = new IllegalStateException("injected secret failure");
-        IllegalStateException failure = assertThrows(IllegalStateException.class, () -> repository.delete(saved.id()));
-        assertEquals(1, failure.getSuppressed().length);
+        CredentialStateException failure = assertThrows(CredentialStateException.class, () -> repository.delete(saved.id()));
+        assertEquals(CredentialStateException.State.UNCERTAIN, failure.state());
+        assertTrue(failure.getCause().getSuppressed().length >= 1);
     }
+
+    @Test void replacementRestoreFailureDeletesCredentialAndReportsRecoveryRequired() throws Exception {
+        ScriptedSecretStore secrets = new ScriptedSecretStore();
+        Path config = tempDir.resolve("replace-recovery-config");
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(config, secrets);
+        UUID id = UUID.randomUUID();
+        ConnectionProfile saved = repository.save(profile(id, "替换恢复", false), Optional.of("old".toCharArray()));
+        secrets.onPut = call -> {
+            if (call == 2) breakConfiguration(config);
+            if (call == 3) throw new IllegalStateException("restore failed");
+        };
+        CredentialStateException failure = assertThrows(CredentialStateException.class,
+                () -> repository.save(saved, Optional.of("new".toCharArray())));
+        assertEquals(CredentialStateException.State.RECOVERY_REQUIRED, failure.state());
+        assertFalse(secrets.contains(id));
+        assertTrue(failure.getCause().getSuppressed().length >= 1);
+        assertTrue(secrets.restoreArgument == null || allZero(secrets.restoreArgument));
+    }
+
+    @Test void clearRestoreFailureFallsBackToDeleteAndReportsRecoveryRequired() throws Exception {
+        ScriptedSecretStore secrets = new ScriptedSecretStore();
+        Path config = tempDir.resolve("clear-recovery-config");
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(config, secrets);
+        UUID id = UUID.randomUUID();
+        ConnectionProfile saved = repository.save(profile(id, "清除恢复", false), Optional.of("old".toCharArray()));
+        secrets.onDelete = call -> { if (call == 1) breakConfiguration(config); };
+        secrets.onPut = call -> { if (call == 2) throw new IllegalStateException("restore failed"); };
+        CredentialStateException failure = assertThrows(CredentialStateException.class,
+                () -> repository.save(saved, Optional.empty(), true));
+        assertEquals(CredentialStateException.State.RECOVERY_REQUIRED, failure.state());
+        assertFalse(secrets.contains(id));
+        assertTrue(secrets.restoreArgument == null || allZero(secrets.restoreArgument));
+    }
+
+    @Test void createOrphanCleanupFailureRetriedThenReportsRecoveryRequired() throws Exception {
+        ScriptedSecretStore secrets = new ScriptedSecretStore();
+        Path config = tempDir.resolve("create-recovery-config");
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(config, secrets);
+        secrets.onPut = call -> { if (call == 1) breakConfiguration(config); };
+        secrets.onDelete = call -> { if (call == 1) throw new IllegalStateException("first cleanup failed"); };
+        UUID id = UUID.randomUUID();
+        CredentialStateException failure = assertThrows(CredentialStateException.class,
+                () -> repository.save(profile(id, "新建孤儿", false), Optional.of("new".toCharArray())));
+        assertEquals(CredentialStateException.State.RECOVERY_REQUIRED, failure.state());
+        assertFalse(secrets.contains(id));
+    }
+
+    @Test void fallbackDeleteFailureMarksCredentialStateUncertainAndKeepsAllFailures() throws Exception {
+        ScriptedSecretStore secrets = new ScriptedSecretStore();
+        Path config = tempDir.resolve("uncertain-config");
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(config, secrets);
+        UUID id = UUID.randomUUID();
+        ConnectionProfile saved = repository.save(profile(id, "不确定状态", false), Optional.of("old".toCharArray()));
+        secrets.onPut = call -> { if (call == 2) breakConfiguration(config); if (call == 3) throw new IllegalStateException("restore failed"); };
+        secrets.onDelete = call -> { throw new IllegalStateException("fail closed failed"); };
+        CredentialStateException failure = assertThrows(CredentialStateException.class,
+                () -> repository.save(saved, Optional.of("new".toCharArray())));
+        assertEquals(CredentialStateException.State.UNCERTAIN, failure.state());
+        assertTrue(failure.getCause().getSuppressed().length >= 2);
+    }
+
+    @Test void deletingDefaultRequiresExplicitReplacementOrExplicitNoDefault() throws Exception {
+        RecordingSecretStore secrets = new RecordingSecretStore();
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(tempDir.resolve("explicit-delete"), secrets);
+        ConnectionProfile first = repository.save(profile(UUID.randomUUID(), "默认", false), Optional.empty());
+        ConnectionProfile second = repository.save(profile(UUID.randomUUID(), "替代", false), Optional.empty());
+        assertThrows(IllegalArgumentException.class, () -> repository.delete(first.id(), Optional.empty(), false));
+        assertThrows(IllegalArgumentException.class, () -> repository.delete(first.id(), Optional.of(first.id()), false));
+        assertThrows(IllegalArgumentException.class, () -> repository.delete(first.id(), Optional.of(UUID.randomUUID()), false));
+        repository.delete(first.id(), Optional.of(second.id()), false);
+        assertTrue(repository.find(second.id()).orElseThrow().isDefault());
+    }
+
+    @Test void explicitNoDefaultIsStableUntilUserSelectsOne() throws Exception {
+        RecordingSecretStore secrets = new RecordingSecretStore();
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(tempDir.resolve("no-default"), secrets);
+        ConnectionProfile first = repository.save(profile(UUID.randomUUID(), "默认", false), Optional.empty());
+        ConnectionProfile second = repository.save(profile(UUID.randomUUID(), "保留", false), Optional.empty());
+        repository.delete(first.id(), Optional.empty(), true);
+        assertEquals(0, repository.list().stream().filter(ConnectionProfile::isDefault).count());
+        ConnectionProfile third = repository.save(profile(UUID.randomUUID(), "新增", false), Optional.empty());
+        assertFalse(third.isDefault());
+        assertEquals(0, repository.list().stream().filter(ConnectionProfile::isDefault).count());
+        repository.setDefault(second.id());
+        assertTrue(repository.find(second.id()).orElseThrow().isDefault());
+    }
+
+    private static void breakConfiguration(Path config) {
+        try { Path file=config.resolve("connections.json"); Files.delete(file); Files.createDirectory(file); }
+        catch(Exception e){ throw new IllegalStateException(e); }
+    }
+
+    private static boolean allZero(char[] value) { for(char c:value)if(c!='\0')return false;return true; }
 
     static ConnectionProfile profile(UUID id, String name, boolean isDefault) {
         return new ConnectionProfile(id, name, Path.of("driver.jar"), "0".repeat(64), FakeDriverJar.DRIVER_CLASS,
@@ -232,5 +326,16 @@ class ConnectionConfigRepositoryTest {
             if (deleteFailure != null) throw deleteFailure;
             values.remove(connectionId);
         }
+    }
+
+    private static final class ScriptedSecretStore implements SecretStore {
+        interface Action { void accept(int call); }
+        final java.util.Map<UUID,char[]> values=new HashMap<>();
+        final AtomicInteger puts=new AtomicInteger(),deletes=new AtomicInteger();
+        Action onPut=ignored->{},onDelete=ignored->{}; char[] restoreArgument;
+        @Override public void put(UUID id,char[] secret){int call=puts.incrementAndGet();if(call>=2)restoreArgument=secret;onPut.accept(call);values.put(id,secret.clone());}
+        @Override public Optional<char[]> read(UUID id){return Optional.ofNullable(values.get(id)).map(char[]::clone);}
+        @Override public boolean contains(UUID id){return values.containsKey(id);}
+        @Override public void delete(UUID id){int call=deletes.incrementAndGet();onDelete.accept(call);values.remove(id);}
     }
 }

@@ -206,4 +206,28 @@ class Dm7ServicesBackendTest {
             assertFalse(output.contains("first-value"));assertFalse(output.contains("replacement"));
         }
     }
+
+    @Test void deletingDefaultRequiresExplicitDispositionAndUsesAuthoritativeReplacement() throws Exception {
+        Path driver=temporary.resolve("delete-contract.jar");Files.writeString(driver,"fixture",StandardCharsets.UTF_8);
+        try(var backend=Dm7ServicesBackend.open(RuntimePaths.forTest(temporary))){
+            var session=backend.initialize(new SessionIdentity("delete-contract","test","verified"));
+            var first=backend.call("connections.create",Map.of("name","主连接","driverJar",driver.toString(),"jdbcUrl","jdbc:dm7://one","username","u"),session);
+            var second=backend.call("connections.create",Map.of("name","替代连接","driverJar",driver.toString(),"jdbcUrl","jdbc:dm7://two","username","u"),session);
+            String firstId=(String)first.get("id"),secondId=(String)second.get("id");
+            assertThrows(IllegalArgumentException.class,()->backend.call("connections.delete",Map.of("id",firstId),session));
+            var deleted=backend.call("connections.delete",Map.of("id",firstId,"replacementDefaultId",secondId),session);
+            assertEquals(secondId,deleted.get("defaultConnectionId"));
+            @SuppressWarnings("unchecked") var values=(java.util.List<Map<String,Object>>)backend.call("connections.list",Map.of(),session).get("connections");
+            assertEquals(1,values.size());assertEquals(true,values.get(0).get("isDefault"));
+            backend.call("connections.create",Map.of("name","保留连接","driverJar",driver.toString(),"jdbcUrl","jdbc:dm7://three","username","u"),session);
+            backend.call("connections.delete",Map.of("id",secondId,"leaveWithoutDefault",true),session);
+            @SuppressWarnings("unchecked") var remaining=(java.util.List<Map<String,Object>>)backend.call("connections.list",Map.of(),session).get("connections");
+            assertTrue(remaining.stream().noneMatch(value->Boolean.TRUE.equals(value.get("isDefault"))));
+            assertThrows(IllegalArgumentException.class,()->backend.call("query",Map.of("sql","select 1"),session));
+            try(var console=new io.dm7codex.plugin.http.ConsoleHttpServer(new io.dm7codex.plugin.http.ConsoleTokenService(),backend,backend.eventBus())){
+                @SuppressWarnings("unchecked") var summary=(Map<String,Object>)console.open(session).get("connection");
+                assertEquals(true,summary.get("configured"));assertEquals(false,summary.get("isDefault"));assertFalse(summary.containsKey("id"));
+            }
+        }
+    }
 }

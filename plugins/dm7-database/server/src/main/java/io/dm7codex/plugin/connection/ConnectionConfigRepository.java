@@ -85,7 +85,7 @@ public final class ConnectionConfigRepository {
                 profiles.replaceAll((id, current) -> id.equals(normalized.id()) ? current : withDefault(current, false));
             }
             profiles.put(normalized.id(), normalized);
-            enforceOneDefault(profiles);
+            enforceAtMostOneDefault(profiles);
 
             Optional<char[]> previous = Optional.empty();
             if (newPassword.isPresent() || clearPassword) previous = vault.read(normalized.id());
@@ -94,7 +94,7 @@ public final class ConnectionConfigRepository {
                 if (clearPassword) vault.delete(normalized.id());
                 writeProfiles(profiles);
             } catch (RuntimeException e) {
-                if (newPassword.isPresent() || clearPassword) restoreSecret(normalized.id(), previous);
+                if (newPassword.isPresent() || clearPassword) recoverSecret(normalized.id(), previous, e);
                 throw e;
             } finally {
                 previous.ifPresent(value -> Arrays.fill(value, '\0'));
@@ -111,16 +111,37 @@ public final class ConnectionConfigRepository {
     }
 
     public void delete(UUID id) {
+        delete(id, Optional.empty(), false);
+    }
+
+    public void delete(UUID id, Optional<UUID> replacementDefaultId, boolean leaveWithoutDefault) {
         Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(replacementDefaultId, "replacementDefaultId");
         synchronized (lock) {
             Map<UUID, ConnectionProfile> profiles = readProfiles();
             Map<UUID, ConnectionProfile> original = new LinkedHashMap<>(profiles);
             ConnectionProfile removed = profiles.remove(id);
             if (removed != null) {
-                if (!profiles.isEmpty() && profiles.values().stream().noneMatch(ConnectionProfile::isDefault)) {
-                    UUID replacement = profiles.keySet().stream().sorted().findFirst().orElseThrow();
-                    profiles.put(replacement, withDefault(profiles.get(replacement), true));
+                if (!removed.isDefault() && (replacementDefaultId.isPresent() || leaveWithoutDefault)) {
+                    throw new IllegalArgumentException("Default replacement is only valid when deleting the default connection");
                 }
+                if (removed.isDefault() && !profiles.isEmpty()) {
+                    if (replacementDefaultId.isPresent() == leaveWithoutDefault) {
+                        throw new IllegalArgumentException("Choose one default replacement disposition");
+                    }
+                    if (replacementDefaultId.isPresent()) {
+                        UUID replacement = replacementDefaultId.get();
+                        if (replacement.equals(id) || !profiles.containsKey(replacement)) {
+                            throw new IllegalArgumentException("Replacement connection was not found");
+                        }
+                        profiles.replaceAll((profileId, profile) -> withDefault(profile, profileId.equals(replacement)));
+                    } else {
+                        profiles.replaceAll((profileId, profile) -> withDefault(profile, false));
+                    }
+                } else if (replacementDefaultId.isPresent() || leaveWithoutDefault) {
+                    throw new IllegalArgumentException("Default replacement is not required");
+                }
+                enforceAtMostOneDefault(profiles);
                 writeProfiles(profiles);
             }
             try {
@@ -131,6 +152,8 @@ public final class ConnectionConfigRepository {
                         writeProfiles(original);
                     } catch (RuntimeException rollbackFailure) {
                         failure.addSuppressed(rollbackFailure);
+                        throw new CredentialStateException(CredentialStateException.State.UNCERTAIN,
+                                "Connection deletion state could not be recovered", failure);
                     }
                 }
                 throw failure;
@@ -159,7 +182,7 @@ public final class ConnectionConfigRepository {
                 ConnectionProfile profile = fromJson(value);
                 if (profiles.put(profile.id(), profile) != null) throw new IOException("duplicate id");
             }
-            enforceOneDefault(profiles);
+            enforceAtMostOneDefault(profiles);
             return profiles;
         } catch (IOException | IllegalArgumentException e) {
             throw new IllegalStateException("Connection configuration could not be read");
@@ -232,19 +255,29 @@ public final class ConnectionConfigRepository {
         return profile;
     }
 
-    private static void enforceOneDefault(Map<UUID, ConnectionProfile> profiles) {
+    private static void enforceAtMostOneDefault(Map<UUID, ConnectionProfile> profiles) {
         long count = profiles.values().stream().filter(ConnectionProfile::isDefault).count();
-        if (!profiles.isEmpty() && count != 1) {
-            throw new IllegalStateException("Connection configuration must have exactly one default");
+        if (count > 1) {
+            throw new IllegalStateException("Connection configuration can have at most one default");
         }
     }
 
-    private void restoreSecret(UUID id, Optional<char[]> previous) {
+    private void recoverSecret(UUID id, Optional<char[]> previous, RuntimeException primary) {
         try {
             if (previous.isPresent()) vault.put(id, previous.get()); else vault.delete(id);
-        } catch (RuntimeException ignored) {
-            // Preserve the original failure; the vault remains fail-closed and will surface on the next operation.
+            return;
+        } catch (RuntimeException restoreFailure) {
+            primary.addSuppressed(restoreFailure);
         }
+        try {
+            vault.delete(id);
+        } catch (RuntimeException failClosedFailure) {
+            primary.addSuppressed(failClosedFailure);
+            throw new CredentialStateException(CredentialStateException.State.UNCERTAIN,
+                    "Credential state could not be recovered", primary);
+        }
+        throw new CredentialStateException(CredentialStateException.State.RECOVERY_REQUIRED,
+                "Saved credential was removed after a persistence failure", primary);
     }
 
     private static ConnectionProfile withDefault(ConnectionProfile profile, boolean value) {

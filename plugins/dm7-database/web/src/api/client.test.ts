@@ -30,9 +30,11 @@ describe('same-origin API client', () => {
   })
 
   it('matches the real 200 delete shape and distinguishes downloads, malformed JSON, and aborts', async () => {
-    const deleted = vi.fn().mockResolvedValue(response({ deleted: true }))
-    const deletion = await createApiClient({ fetcher: deleted }).removeConnection('safe-id')
+    const deleted = vi.fn().mockResolvedValue(response({ deleted: true, defaultConnectionId: 'next-id' }))
+    const deletion = await createApiClient({ fetcher: deleted }).removeConnection('safe-id', { replacementDefaultId: 'next-id' })
     expect(deletion.deleted).toBe(true)
+    expect(deletion.defaultConnectionId).toBe('next-id')
+    expect(JSON.parse(deleted.mock.calls[0][1].body)).toEqual({ replacementDefaultId: 'next-id' })
 
     const malformed = vi.fn().mockResolvedValue(new Response('{broken', { headers: { 'Content-Type': 'application/json' } }))
     await expect(createApiClient({ fetcher: malformed }).runtime()).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })

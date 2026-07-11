@@ -82,7 +82,7 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
             case "connections.get" -> connection(findProfile(input));
             case "connections.create" -> saveProfile(input,null);
             case "connections.update" -> saveProfile(input,findProfile(input));
-            case "connections.delete" -> { var profile=findProfile(input);profiles.delete(profile.id());yield Map.of("deleted",true); }
+            case "connections.delete" -> deleteProfile(input);
             case "connections.default" -> {var profile=findProfile(input);yield connection(profiles.setDefault(profile.id()));}
             case "connections.test" -> {var profile=findProfile(input);yield testConnection(Map.of("connectionId",profile.id().toString()));}
             case "connections.diagnostics" -> diagnostics(required(input,"jdbcUrl"));
@@ -140,10 +140,26 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
                     input.containsKey("schema")?nullableText(input,"schema"):old==null?null:old.schema(),number(input,"connectTimeoutSeconds",old==null?10:old.connectTimeoutSeconds()).intValue(),
                     number(input,"socketTimeoutSeconds",old==null?30:old.socketTimeoutSeconds()).intValue(),number(input,"queryTimeoutSeconds",old==null?60:old.queryTimeoutSeconds()).intValue(),
                     number(input,"maxRows",old==null?1000:old.maxRows()).intValue(),number(input,"maxBytes",old==null?10L*1024*1024:old.maxBytes()).longValue(),
-                    input.containsKey("isDefault")?(Boolean)input.get("isDefault"):old==null||old.isDefault());
+                    input.containsKey("isDefault")?(Boolean)input.get("isDefault"):old!=null&&old.isDefault());
             try{return connection(profiles.save(value,Optional.ofNullable(secret),clearPassword));}
+            catch(CredentialStateException consistency){throw credentialProblem(consistency);}
             catch(IllegalArgumentException invalid){if(profiles.list().stream().anyMatch(existing->!existing.id().equals(id)&&existing.name().equalsIgnoreCase(requestedName)))throw ConsoleHttpServer.BackendProblem.conflict();throw invalid;}
         }finally{if(secret!=null)Arrays.fill(secret,'\0');}
+    }
+    private Map<String,Object> deleteProfile(Map<String,Object> input){
+        var allowed=Set.of("id","replacementDefaultId","leaveWithoutDefault");
+        if(!allowed.containsAll(input.keySet()))throw new IllegalArgumentException("unknown field");
+        var profile=findProfile(input);String replacement=nullableText(input,"replacementDefaultId");
+        boolean leave=Boolean.TRUE.equals(input.get("leaveWithoutDefault"));
+        try{profiles.delete(profile.id(),replacement==null?Optional.empty():Optional.of(UUID.fromString(replacement)),leave);}
+        catch(CredentialStateException consistency){throw credentialProblem(consistency);}
+        String active=profiles.list().stream().filter(ConnectionProfile::isDefault).map(value->value.id().toString()).findFirst().orElse(null);
+        var result=new LinkedHashMap<String,Object>();result.put("deleted",true);result.put("defaultConnectionId",active);return result;
+    }
+    static ConsoleHttpServer.BackendProblem credentialProblem(CredentialStateException failure){
+        return failure.state()==CredentialStateException.State.RECOVERY_REQUIRED
+                ?ConsoleHttpServer.BackendProblem.credentialRecoveryRequired()
+                :ConsoleHttpServer.BackendProblem.credentialStateUncertain();
     }
     private Map<String,Object> connection(ConnectionProfile p){var m=new LinkedHashMap<String,Object>();m.put("id",p.id().toString());m.put("name",p.name());m.put("driverFileName",p.driverJar().getFileName().toString());m.put("driverSha256",p.driverSha256());m.put("configured",true);m.put("connected",false);m.put("hasPassword",profiles.hasPassword(p.id()));m.put("driverClass",p.driverClass());m.put("jdbcUrl",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("urlSummary",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("username",p.username());m.put("schema",p.schema());m.put("connectTimeoutSeconds",p.connectTimeoutSeconds());m.put("socketTimeoutSeconds",p.socketTimeoutSeconds());m.put("queryTimeoutSeconds",p.queryTimeoutSeconds());m.put("maxRows",p.maxRows());m.put("maxBytes",p.maxBytes());m.put("isDefault",p.isDefault());return m;}
     private static Map<String,Object> diagnostics(String url){var inspected=JdbcUrlDiagnostics.inspect(url);return Map.of("urlSummary",JdbcUrlDiagnostics.redact(url),"warnings",inspected.warnings());}

@@ -92,6 +92,7 @@ describe('ConnectionsPage', () => {
     expect(screen.getByLabelText(/^连接名称/)).toHaveProperty('value', '生产主库 - 副本')
     expect(screen.getByLabelText(/^驱动 JAR 本地路径/)).toHaveProperty('value', '')
     expect(screen.getByLabelText(/^JDBC URL/)).toHaveProperty('value', '')
+    expect(screen.getByText(/凭据不会复制/)).toBeTruthy()
     fireEvent.change(screen.getByLabelText(/^JDBC URL/), { target: { value: 'jdbc:dm7://host:5236/SYSTEM' } })
     await act(async () => { vi.advanceTimersByTime(450); await Promise.resolve() })
     expect(diagnoseUrl).toHaveBeenCalledTimes(1)
@@ -100,11 +101,29 @@ describe('ConnectionsPage', () => {
     vi.useRealTimers()
   })
 
+  it('requires a fresh password when copying a source with saved credentials', async () => {
+    const createConnection=vi.fn()
+    render(<ConnectionsPage api={client({ listConnections:vi.fn().mockResolvedValue({connections:[profile]}),createConnection })}/>)
+    await screen.findByText('生产主库');fireEvent.click(screen.getByRole('button',{name:'复制生产主库'}))
+    fireEvent.change(screen.getByLabelText(/^驱动 JAR/),{target:{value:'C:\\driver.jar'}})
+    fireEvent.change(screen.getByLabelText(/^JDBC URL/),{target:{value:'jdbc:dm7://copy'}})
+    fireEvent.click(screen.getByRole('button',{name:'保存连接'}))
+    expect(createConnection).not.toHaveBeenCalled();expect(screen.getByLabelText('密码')).toBe(document.activeElement)
+    expect(screen.getByText('请输入新密码')).toBeTruthy()
+  })
+
+  it('allows passwordless copy when the source has no saved credential',async()=>{
+    const source={...profile,hasPassword:false};const createConnection=vi.fn().mockResolvedValue({...source,id:'copy'})
+    render(<ConnectionsPage api={client({listConnections:vi.fn().mockResolvedValue({connections:[source]}),createConnection})}/>)
+    await screen.findByText('生产主库');fireEvent.click(screen.getByRole('button',{name:'复制生产主库'}));fireEvent.change(screen.getByLabelText(/^驱动 JAR/),{target:{value:'C:\\driver.jar'}});fireEvent.change(screen.getByLabelText(/^JDBC URL/),{target:{value:'jdbc:dm7://copy'}});fireEvent.click(screen.getByRole('button',{name:'保存连接'}))
+    await waitFor(()=>expect(createConnection).toHaveBeenCalled());expect(createConnection.mock.calls[0][0]).not.toHaveProperty('password')
+  })
+
   it('tests, changes default and confirms destructive deletion', async () => {
     const secondary = { ...profile, id: 'c2', name: '报表库', isDefault: false, hasPassword: false }
     const testConnection = vi.fn().mockResolvedValue({ success: true, latencyMs: 18, driverVersion: '7', serverVersion: 'DM 7', actualUser: 'OP', actualSchema: '业务模式', chineseRoundTrip: true, restartRequired: false, warnings: [] })
     const setDefaultConnection = vi.fn().mockResolvedValue({ ...secondary, isDefault: true })
-    const removeConnection = vi.fn().mockResolvedValue({ deleted: true })
+    const removeConnection = vi.fn().mockResolvedValue({ deleted: true, defaultConnectionId: 'c2' })
     const listConnections = vi.fn().mockResolvedValueOnce({ connections: [profile, secondary] }).mockResolvedValue({ connections: [{ ...secondary, isDefault: true }] })
     render(<ConnectionsPage api={client({ listConnections, testConnection, setDefaultConnection, removeConnection })} />)
     await screen.findByText('报表库')
@@ -116,7 +135,52 @@ describe('ConnectionsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '删除报表库' }))
     expect(screen.getByRole('dialog').textContent).toContain('报表库')
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
-    await waitFor(() => expect(removeConnection).toHaveBeenCalledWith('c2'))
+    await waitFor(() => expect(removeConnection).toHaveBeenCalledWith('c2', {}))
+  })
+
+  it('renders complete safe test diagnostics for failure and warnings', async()=>{
+    const testConnection=vi.fn().mockResolvedValue({success:false,latencyMs:0,driverVersion:'',serverVersion:'',actualUser:'',actualSchema:'',chineseRoundTrip:false,restartRequired:true,warnings:['DM7 路径形式警告：请使用 dbname=','驱动需要重新加载']})
+    render(<ConnectionsPage api={client({listConnections:vi.fn().mockResolvedValue({connections:[profile]}),testConnection})}/>)
+    await screen.findByText('生产主库');fireEvent.click(screen.getByRole('button',{name:'测试生产主库'}))
+    expect(await screen.findByText('中文往返未通过')).toBeTruthy();expect(screen.getByText(/DM7 路径形式警告/)).toBeTruthy();expect(screen.getByText('驱动需要重新加载')).toBeTruthy()
+    expect(screen.getByText('需要重启插件')).toBeTruthy();expect(document.body.textContent).not.toContain(' /  / ');expect(document.body.textContent).not.toContain(' ·  ')
+  })
+
+  it('keeps mutation errors inside the drawer with focus and correlation disclosure',async()=>{
+    const updateConnection=vi.fn().mockRejectedValue(new ApiError(409,'CONFLICT','连接名称已存在。','corr-drawer'))
+    render(<ConnectionsPage api={client({listConnections:vi.fn().mockResolvedValue({connections:[profile]}),updateConnection})}/>)
+    await screen.findByText('生产主库');fireEvent.click(screen.getByRole('button',{name:'编辑生产主库'}));fireEvent.change(screen.getByLabelText(/^连接名称/),{target:{value:'仍保留的名称'}})
+    fireEvent.click(screen.getByRole('button',{name:'保存更改'}))
+    const alert=await screen.findByRole('alert');expect(alert.closest('[role="dialog"]')).toBeTruthy();expect(alert).toBe(document.activeElement)
+    expect(alert.textContent).toContain('连接名称已存在');expect(alert.textContent).toContain('corr-drawer');expect(screen.getByLabelText(/^连接名称/)).toHaveProperty('value','仍保留的名称')
+  })
+
+  it('Escape closes only the unsaved confirmation and returns focus without reopening',async()=>{
+    render(<ConnectionsPage api={client({listConnections:vi.fn().mockResolvedValue({connections:[profile]})})}/>)
+    await screen.findByText('生产主库');fireEvent.click(screen.getByRole('button',{name:'编辑生产主库'}));const name=screen.getByLabelText(/^连接名称/);fireEvent.change(name,{target:{value:'修改'}});name.focus()
+    fireEvent.keyDown(document,{key:'Escape'});expect(screen.getByRole('dialog',{name:'放弃未保存的更改？'})).toBeTruthy()
+    fireEvent.keyDown(screen.getByRole('dialog',{name:'放弃未保存的更改？'}),{key:'Escape'})
+    await waitFor(()=>expect(screen.queryByRole('dialog',{name:'放弃未保存的更改？'})).toBeNull());expect(screen.getByRole('dialog',{name:'编辑连接'})).toBeTruthy();expect(name).toBe(document.activeElement)
+  })
+
+  it('opens advanced disclosure before focusing an invalid numeric field',async()=>{
+    render(<ConnectionsPage api={client()}/>);await screen.findByText('还没有数据库连接');fireEvent.click(screen.getAllByRole('button',{name:'新增连接'})[0])
+    fireEvent.change(screen.getByLabelText(/^连接名称/),{target:{value:'边界'}});fireEvent.change(screen.getByLabelText(/^驱动 JAR/),{target:{value:'C:\\driver.jar'}});fireEvent.change(screen.getByLabelText(/^JDBC URL/),{target:{value:'jdbc:dm7://x'}});fireEvent.change(screen.getByLabelText(/^用户名/),{target:{value:'u'}})
+    const rows=screen.getByLabelText('最大行数');fireEvent.change(rows,{target:{value:'0'}});fireEvent.click(screen.getByRole('button',{name:'保存连接'}))
+    expect(screen.getByText('高级参数').closest('details')).toHaveProperty('open',true);expect(rows).toBe(document.activeElement)
+  })
+
+  it('requires an explicit replacement or no-default choice when deleting the default',async()=>{
+    const secondary={...profile,id:'c2',name:'报表库',isDefault:false,hasPassword:false};const removeConnection=vi.fn().mockResolvedValue({deleted:true,defaultConnectionId:null})
+    render(<ConnectionsPage api={client({listConnections:vi.fn().mockResolvedValue({connections:[profile,secondary]}),removeConnection})}/>)
+    await screen.findByText('报表库');fireEvent.click(screen.getByRole('button',{name:'删除生产主库'}));const confirm=screen.getByRole('button',{name:'确认删除'});expect((confirm as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByLabelText('删除后的默认连接')).toBeTruthy();fireEvent.change(screen.getByLabelText('删除后的默认连接'),{target:{value:'c2'}});fireEvent.click(confirm)
+    await waitFor(()=>expect(removeConnection).toHaveBeenCalledWith('c1',{replacementDefaultId:'c2'}))
+  })
+
+  it('sends the explicit leave-without-default deletion choice',async()=>{
+    const secondary={...profile,id:'c2',name:'报表库',isDefault:false};const removeConnection=vi.fn().mockResolvedValue({deleted:true,defaultConnectionId:null})
+    render(<ConnectionsPage api={client({listConnections:vi.fn().mockResolvedValue({connections:[profile,secondary]}),removeConnection})}/>);await screen.findByText('报表库');fireEvent.click(screen.getByRole('button',{name:'删除生产主库'}));fireEvent.change(screen.getByLabelText('删除后的默认连接'),{target:{value:'__none__'}});fireEvent.click(screen.getByRole('button',{name:'确认删除'}));await waitFor(()=>expect(removeConnection).toHaveBeenCalledWith('c1',{leaveWithoutDefault:true}))
   })
 
   it('prevents double submit and guards unsaved Escape close', async () => {
