@@ -243,6 +243,7 @@ th { color: var(--muted); font-size: 11px; }
 .sql-toolbar label { display: grid; gap: 5px; padding: 10px 12px; background: var(--surface-2); color: var(--faint); font-size: 8px; letter-spacing: .1em; }
 .sql-toolbar input, .sql-toolbar select, .mutation-confirm select { min-width: 0; height: 34px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: 11px ui-monospace, monospace; }
 .editor-help { margin: 0; padding: 9px 13px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
+.execution-snapshot { margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--accent); background: var(--accent-quiet); color: var(--text); font: 10px ui-monospace, monospace; }
 .sql-editor { height: 330px; min-width: 0; overflow: hidden; background: var(--bg); font-size: 12px; }
 .sql-editor .cm-editor { height: 100%; }
 .sql-editor .cm-gutters { border-right: 1px solid var(--border); background: var(--surface-2); color: var(--faint); }
@@ -277,9 +278,11 @@ th { color: var(--muted); font-size: 11px; }
 .execution-timeline { min-height: 180px; padding: 16px; }
 .execution-timeline .section-heading strong { color: var(--muted); font-size: 10px; }
 .execution-timeline ol, .mutation-messages ol { margin: 12px 0 0; padding: 0; list-style: none; }
-.execution-timeline li { display: grid; grid-template-columns: 100px 90px 1fr; gap: 12px; min-height: 42px; align-items: center; border-top: 1px solid var(--border); font-size: 11px; }
+.execution-timeline li { display: grid; grid-template-columns: 90px 60px 160px minmax(100px,1fr) 170px; gap: 10px; min-height: 46px; align-items: center; border-top: 1px solid var(--border); font-size: 10px; }
 .execution-timeline li code { color: var(--accent); }
 .execution-timeline li time { color: var(--faint); }
+.execution-timeline li small, .event-sequence { color: var(--muted); font: 9px ui-monospace, monospace; }
+.timeline-total { margin: 10px 0 0; padding: 10px; border-top: 1px solid var(--accent); color: var(--accent); font: 10px ui-monospace, monospace; text-align: right; }
 .mutation-confirm { display: grid; gap: 12px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .mutation-confirm label { display: flex; align-items: center; gap: 8px; }
 .mutation-confirm label:first-child { display: grid; }
@@ -338,8 +341,8 @@ th { color: var(--muted); font-size: 11px; }
   .drawer-actions button { flex: 1 1 130px; }
   .sql-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sql-editor { height: 270px; }
-  .execution-timeline li { grid-template-columns: 88px 1fr; }
-  .execution-timeline li span { grid-column: 1 / -1; padding-bottom: 9px; }
+  .execution-timeline li { grid-template-columns: 88px 1fr; padding: 8px 0; }
+  .execution-timeline li > span:nth-of-type(2), .execution-timeline li small { grid-column: 1 / -1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

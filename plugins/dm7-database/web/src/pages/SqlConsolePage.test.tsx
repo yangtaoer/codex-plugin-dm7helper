@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { ApiClient, QueryResult, SafeConnection } from '../api/types'
-import { SqlConsolePage } from './SqlConsolePage'
+import type { ApiClient, ExecuteResult, QueryResult, SafeConnection } from '../api/types'
+import { MutationMessages, SqlConsolePage } from './SqlConsolePage'
 
 const connection: SafeConnection = { id: 'c1', name: '主库', configured: true, connected: false, hasPassword: true, urlSummary: 'jdbc:dm7://db:5236', isDefault: true }
 const result: QueryResult = { executionId: 'e1', success: true, columns: [{ outputLabel: '中文列', originalLabel: '中文列', originalName: 'NAME', jdbcType: 12, typeName: 'VARCHAR' }], rows: [{ 中文列: '达梦数据库' }], truncated: false, returnedRows: 1, bytes: 12, elapsedMillis: 8, databaseFingerprint: 'abcdef123456', error: null }
@@ -12,7 +12,7 @@ const client = (overrides: Partial<ApiClient> = {}) => ({
 describe('SqlConsolePage', () => {
   it('classifies and immediately runs a query with a client-known UUID', async () => {
     const classifySql=vi.fn().mockResolvedValue({ statementCount: 1, kinds: ['QUERY'], queryOnly: true, requiresPurpose: false, atomicAllowed: false })
-    const query=vi.fn().mockResolvedValue(result)
+    const query=vi.fn().mockImplementation((input)=>Promise.resolve({...result,executionId:input.executionId}))
     render(<SqlConsolePage api={client({ classifySql, query })} events={[]} streamStatus="connected" theme="light" initialSql={'SELECT NAME AS "中文列" FROM T'} />)
     await screen.findByRole('option', { name: /主库/ })
     fireEvent.click(screen.getByRole('button', { name: '执行全部' }))
@@ -60,5 +60,70 @@ describe('SqlConsolePage', () => {
     expect(await screen.findByText('任务已结束，取消请求未生效。')).toBeTruthy()
     expect((screen.getByRole('button',{name:'取消执行'}) as HTMLButtonElement).disabled).toBe(false)
     resolveQuery(result)
+  })
+  it('freezes target, limits and editor against the visible execution snapshot', async () => {
+    let resolveClassify!:(value:unknown)=>void
+    const classifySql=vi.fn().mockReturnValue(new Promise(resolve=>{resolveClassify=resolve}))
+    const query=vi.fn().mockImplementation((input)=>Promise.resolve({...result,executionId:input.executionId}))
+    render(<SqlConsolePage api={client({classifySql,query})} events={[]} streamStatus="connected" theme="light" initialSql="SELECT 1"/>)
+    await screen.findByRole('option',{name:/主库/});fireEvent.click(screen.getByRole('button',{name:'执行全部'}))
+    await waitFor(()=>expect(classifySql).toHaveBeenCalled())
+    expect((screen.getByLabelText('连接') as HTMLSelectElement).disabled).toBe(true)
+    expect((screen.getByLabelText('最大行数') as HTMLInputElement).disabled).toBe(true)
+    expect(screen.getByText(/执行快照.*主库.*1,000 行.*10,485,760 bytes.*60 秒/).textContent).toBeTruthy()
+    expect(document.querySelector('.cm-content')?.getAttribute('contenteditable')).toBe('false')
+    resolveClassify({statementCount:1,kinds:['QUERY'],queryOnly:true,requiresPurpose:false,atomicAllowed:false})
+    expect(await screen.findByText('达梦数据库')).toBeTruthy()
+    expect((screen.getByLabelText('连接') as HTMLSelectElement).disabled).toBe(false)
+  })
+  it('uses complete keyboard-operated ARIA tabs', async () => {
+    render(<SqlConsolePage api={client()} events={[]} streamStatus="connected" theme="light" />)
+    const tabs=screen.getAllByRole('tab'),first=tabs[0],second=tabs[1]
+    expect(first.id).toBeTruthy();expect(first.getAttribute('aria-controls')).toBeTruthy();expect(first.tabIndex).toBe(0);expect(second.tabIndex).toBe(-1)
+    first.focus();fireEvent.keyDown(first,{key:'ArrowRight'})
+    expect(document.activeElement).toBe(second);expect(second.getAttribute('aria-selected')).toBe('true')
+    const panel=document.getElementById(second.getAttribute('aria-controls')!)!
+    expect(panel.getAttribute('role')).toBe('tabpanel');expect(panel.getAttribute('aria-labelledby')).toBe(second.id)
+    fireEvent.keyDown(second,{key:'End'});expect(document.activeElement).toBe(tabs.at(-1))
+    fireEvent.keyDown(tabs.at(-1)!,{key:'Home'});expect(document.activeElement).toBe(first)
+  })
+  it('clears cancel pending from the authoritative HTTP terminal response while SSE is disconnected', async () => {
+    let resolveQuery!:(value:QueryResult)=>void
+    const query=vi.fn().mockReturnValue(new Promise<QueryResult>(resolve=>{resolveQuery=resolve}))
+    const cancelExecution=vi.fn().mockResolvedValue({executionId:'x',cancelRequested:true})
+    const api=client({classifySql:vi.fn().mockResolvedValue({statementCount:1,kinds:['QUERY'],queryOnly:true,requiresPurpose:false,atomicAllowed:false}),query,cancelExecution})
+    const rendered=render(<SqlConsolePage api={api} events={[]} streamStatus="reconnecting" theme="light" initialSql="SELECT 1"/>)
+    await screen.findByRole('option',{name:/主库/});fireEvent.click(screen.getByRole('button',{name:'执行全部'}));await waitFor(()=>expect(query).toHaveBeenCalled())
+    const id=query.mock.calls[0][0].executionId
+    rendered.rerender(<SqlConsolePage api={api} events={[{id:'1',executionId:id,status:'executing',timestamp:new Date().toISOString(),detail:'执行中'}]} streamStatus="reconnecting" theme="light" initialSql="SELECT 1"/>)
+    await waitFor(()=>expect((screen.getByRole('button',{name:'取消执行'}) as HTMLButtonElement).disabled).toBe(false));fireEvent.click(screen.getByRole('button',{name:'取消执行'}))
+    expect(await screen.findByRole('button',{name:'正在请求取消'})).toBeTruthy()
+    resolveQuery({...result,executionId:id})
+    await screen.findByText('达梦数据库')
+    expect((screen.getByRole('button',{name:'取消执行'}) as HTMLButtonElement).disabled).toBe(true)
+  })
+  it('renders an overall mutation failure once even with no statement results', () => {
+    const error={correlationId:'overall-corr',phase:'CONNECTING',message:'连接失败',sqlState:'08001',errorCode:6002,restartRequired:true}
+    const failed:ExecuteResult={executionId:'x',success:false,status:'FAILED',statements:[],elapsedMillis:7,databaseFingerprint:'unknown',error}
+    const rendered=render(<MutationMessages result={failed}/>)
+    const alert=screen.getByRole('alert');expect(alert.textContent).toContain('CONNECTING · 连接失败');expect(alert.textContent).toContain('08001');expect(alert.textContent).toContain('需要重启')
+    expect(screen.getAllByText(/连接失败/)).toHaveLength(1)
+    rendered.rerender(<MutationMessages result={{...failed,statements:[{index:0,kind:'DML',success:false,committed:false,rowCount:0,recorded:false,exclusionReason:null,commitBehavior:'rolled_back',elapsedMillis:7,error}]}}/>)
+    expect(screen.getAllByText(/连接失败/)).toHaveLength(1)
+  })
+  it('starts a new execution after an SSE terminal and ignores the old blocking response', async () => {
+    const pending:{resolve(value:QueryResult):void}[]=[]
+    const query=vi.fn().mockImplementation(()=>new Promise<QueryResult>(resolve=>pending.push({resolve})))
+    const api=client({classifySql:vi.fn().mockResolvedValue({statementCount:1,kinds:['QUERY'],queryOnly:true,requiresPurpose:false,atomicAllowed:false}),query})
+    const rendered=render(<SqlConsolePage api={api} events={[]} streamStatus="reconnecting" theme="light" initialSql="SELECT 1"/>)
+    await screen.findByRole('option',{name:/主库/});fireEvent.click(screen.getByRole('button',{name:'执行全部'}));await waitFor(()=>expect(query).toHaveBeenCalledTimes(1))
+    const oldId=query.mock.calls[0][0].executionId
+    rendered.rerender(<SqlConsolePage api={api} events={[{id:'2',executionId:oldId,status:'cancelled',timestamp:new Date().toISOString(),detail:'已取消'}]} streamStatus="reconnecting" theme="light" initialSql="SELECT 1"/>)
+    await waitFor(()=>expect((screen.getByRole('button',{name:'执行全部'}) as HTMLButtonElement).disabled).toBe(false));fireEvent.click(screen.getByRole('button',{name:'执行全部'}));await waitFor(()=>expect(query).toHaveBeenCalledTimes(2))
+    const newId=query.mock.calls[1][0].executionId
+    pending[0].resolve({...result,executionId:oldId,rows:[{中文列:'旧结果'}]});await Promise.resolve()
+    expect(screen.queryByText('旧结果')).toBeNull();expect(document.querySelector('.execution-snapshot')?.textContent).toContain(newId)
+    pending[1].resolve({...result,executionId:newId,rows:[{中文列:'新结果'}]})
+    expect(await screen.findByText('新结果')).toBeTruthy()
   })
 })
