@@ -33,7 +33,8 @@ def exchange(process: subprocess.Popen[str], requests: list[dict]) -> tuple[list
     assert process.stdin and process.stdout and process.stderr
     process.stdin.write(payload)
     process.stdin.flush()
-    lines = [process.stdout.readline() for _ in range(4)]
+    expected_responses = sum(1 for request in requests if "id" in request)
+    lines = [process.stdout.readline() for _ in range(expected_responses)]
     assert all(lines), lines
     process.stdin.close()
     process.wait(timeout=30)
@@ -52,7 +53,19 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="dm7-mcp-中文-") as raw:
         data = Path(raw)
         process = launch(data)
-        frames, stderr = exchange(process, [
+        invalid_calls = [
+            (10, "dm7_open_console", {"sessionId": "forged"}),
+            (11, "dm7_list_connections", {"unexpected": True}),
+            (12, "dm7_test_connection", {"connectionId": 7}),
+            (13, "dm7_query", {"parameters": {}}),
+            (14, "dm7_execute", {"sql": "update t set c=1", "purpose": "invalid"}),
+            (15, "dm7_describe_schema", {"limit": 201}),
+            (16, "dm7_get_execution", {}),
+            (17, "dm7_cancel_execution", {"executionId": True}),
+            (18, "dm7_get_release_log", {"sessionId": "forged"}),
+            (19, "dm7_release_export", {"confirm": "true"}),
+        ]
+        requests = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
                 "protocolVersion": "2025-06-18", "capabilities": {},
                 "clientInfo": {"name": "dm7-smoke", "version": "1.0.0"}}},
@@ -62,7 +75,9 @@ def main() -> None:
                 "name": "dm7_get_release_log", "arguments": {}}},
             {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {
                 "name": "dm7_query", "arguments": {"sql": "select '中文'"}}},
-        ])
+        ] + [{"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": {
+            "name": name, "arguments": arguments}} for request_id, name, arguments in invalid_calls]
+        frames, stderr = exchange(process, requests)
         by_id = {frame.get("id"): frame for frame in frames if "id" in frame}
         assert {1, 2, 3, 4}.issubset(by_id), frames
         assert by_id[1]["result"]["serverInfo"] == {"name": "dm7-database", "version": "0.1.0"}
@@ -70,6 +85,10 @@ def main() -> None:
         release = by_id[3]["result"]
         assert release["isError"] is False and release["structuredContent"]["currentVersion"] == "v001"
         assert by_id[4]["result"]["isError"] is True
+        for request_id, _, _ in invalid_calls:
+            result = by_id[request_id]["result"]
+            assert result["isError"] is True, (request_id, result)
+            assert result["structuredContent"]["code"] == "INVALID_ARGUMENT", (request_id, result)
         active = list((data / "sessions").glob("*/active.sql"))
         assert len(active) == 1 and not active[0].read_bytes().startswith(b"\xef\xbb\xbf")
         assert "version: v001" in active[0].read_text(encoding="utf-8")
@@ -80,8 +99,12 @@ def main() -> None:
         malformed_data = data / "malformed"
         malformed_data.mkdir()
         malformed = launch(malformed_data)
-        stdout, malformed_stderr = malformed.communicate(
-            '{"jsonrpc":"2.0","id":99,"method":"not/a/real/method","params":{}}\n', timeout=30)
+        try:
+            stdout, malformed_stderr = malformed.communicate("not-json\n", timeout=5)
+        except subprocess.TimeoutExpired:
+            malformed.kill()
+            malformed.communicate(timeout=5)
+            raise AssertionError("malformed JSON left the STDIO server hanging")
         assert malformed.returncode == 0, malformed_stderr
         malformed_frames = [json.loads(line) for line in stdout.splitlines()]
         assert malformed_frames and malformed_frames[0]["error"]["code"] < 0

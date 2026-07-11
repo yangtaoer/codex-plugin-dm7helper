@@ -19,6 +19,9 @@ import java.sql.Clob;
 import java.sql.NClob;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.PreparedStatement;
+import io.dm7codex.plugin.sql.SqlParameterBindings;
+import io.dm7codex.plugin.sql.DmLiteralRenderer;
 import java.io.InputStream;
 import java.io.Reader;
 import java.util.ArrayList;
@@ -89,11 +92,11 @@ public final class ExecutionService implements AutoCloseable {
                 && statements.get(0).kind() != SqlKind.EXPLAIN)) {
             throw new IllegalArgumentException("Query accepts one QUERY or EXPLAIN statement");
         }
-        UUID executionId = UUID.randomUUID();
+        UUID executionId = command.executionId() == null ? UUID.randomUUID() : command.executionId();
         UUID correlationId = UUID.randomUUID();
         startHistory(executionId, correlationId, session, "unknown", command.source(),
                 Optional.empty(), command.sql());
-        registry.register(executionId);
+        if (!registry.register(executionId)) throw new IllegalArgumentException("Execution id is already active");
         publish(session, executionId, ExecutionStatus.QUEUED);
         try {
             return bounded(executionId, () -> queryValidated(session, command, statements, executionId, correlationId));
@@ -130,14 +133,21 @@ public final class ExecutionService implements AutoCloseable {
             publish(session, executionId, ExecutionStatus.EXECUTING);
             currentPhase = ExecutionStatus.EXECUTING;
             if (history != null) history.progress(executionId, ExecutionStatus.EXECUTING);
-            try (Statement statement = managed.connection().createStatement()) {
+            Statement candidate = command.parameters().isEmpty()
+                    ? managed.connection().createStatement()
+                    : managed.connection().prepareStatement(command.sql());
+            try (Statement statement = candidate) {
                 checkCancelled(executionId);
                 registry.attach(executionId, managed.connection(), statement);
                 checkCancelled(executionId);
                 statement.setQueryTimeout(timeout);
                 statement.setMaxRows(maxRows == Integer.MAX_VALUE ? maxRows : maxRows + 1);
                 statement.setFetchSize(Math.min(maxRows + 1, 500));
-                try (var rows = statement.executeQuery(command.sql())) {
+                if (statement instanceof PreparedStatement prepared) {
+                    SqlParameterBindings.bind(prepared, command.parameters());
+                }
+                try (var rows = statement instanceof PreparedStatement prepared
+                        ? prepared.executeQuery() : statement.executeQuery(command.sql())) {
                     var metadata = rows.getMetaData();
                     var columns = queryColumns(metadata);
                     var output = new ArrayList<Map<String, Object>>();
@@ -209,14 +219,32 @@ public final class ExecutionService implements AutoCloseable {
                 s -> s.kind() == SqlKind.ANONYMOUS_BLOCK || s.kind() == SqlKind.UNKNOWN)) {
             throw new UntrackableMutationException();
         }
-        UUID executionId = UUID.randomUUID();
+        var bindings = new SqlParameterBindings(new DmLiteralRenderer());
+        var statementParameters = new ArrayList<List<SqlParameter>>(statements.size());
+        var replayableSql = new ArrayList<String>(statements.size());
+        int parameterOffset = 0;
+        for (var statement : statements) {
+            int count = bindings.placeholderCount(statement.originalSql());
+            if (parameterOffset + count > command.parameters().size()) {
+                throw new IllegalArgumentException("SQL parameter count does not match placeholders");
+            }
+            var values = command.parameters().subList(parameterOffset, parameterOffset + count);
+            statementParameters.add(values);
+            replayableSql.add(bindings.render(statement.originalSql(), values));
+            parameterOffset += count;
+        }
+        if (parameterOffset != command.parameters().size()) {
+            throw new IllegalArgumentException("SQL parameter count does not match placeholders");
+        }
+        UUID executionId = command.executionId() == null ? UUID.randomUUID() : command.executionId();
         UUID correlationId = UUID.randomUUID();
         startHistory(executionId, correlationId, session, "unknown", command.source(),
                 Optional.of(command.purpose()), command.script());
-        registry.register(executionId);
+        if (!registry.register(executionId)) throw new IllegalArgumentException("Execution id is already active");
         publish(session, executionId, ExecutionStatus.QUEUED);
         try {
-            return bounded(executionId, () -> executeValidated(session, command, statements, executionId, correlationId));
+            return bounded(executionId, () -> executeValidated(session, command, statements,
+                    statementParameters, replayableSql, executionId, correlationId));
         } catch (ExecutionQueueFullException full) {
             finishRejected(session, executionId, correlationId);
             throw full;
@@ -224,7 +252,8 @@ public final class ExecutionService implements AutoCloseable {
     }
 
     private ExecutionResult executeValidated(SessionState session, ExecuteCommand command,
-            List<io.dm7codex.plugin.sql.ParsedStatement> statements, UUID executionId,
+            List<io.dm7codex.plugin.sql.ParsedStatement> statements,
+            List<List<SqlParameter>> statementParameters, List<String> replayableSql, UUID executionId,
             UUID correlationId) {
         long started = System.nanoTime();
         var results = new ArrayList<StatementResult>();
@@ -256,14 +285,22 @@ public final class ExecutionService implements AutoCloseable {
                 boolean failed = false;
                 Exception atomicFailure = null;
                 for (var parsed : statements) {
+                    int parsedIndex = parsed.index();
                     checkCancelled(executionId);
                     long statementStarted = System.nanoTime();
-                    try (Statement statement = managed.connection().createStatement()) {
+                    Statement candidate = statementParameters.get(parsedIndex).isEmpty()
+                            ? managed.connection().createStatement()
+                            : managed.connection().prepareStatement(parsed.originalSql());
+                    try (Statement statement = candidate) {
                         checkCancelled(executionId);
                         registry.attach(executionId, managed.connection(), statement);
                         checkCancelled(executionId);
                         statement.setQueryTimeout(command.timeoutSeconds());
-                        long count = Math.max(0, statement.executeUpdate(parsed.originalSql()));
+                        if (statement instanceof PreparedStatement prepared) {
+                            SqlParameterBindings.bind(prepared, statementParameters.get(parsedIndex));
+                        }
+                        long count = Math.max(0, statement instanceof PreparedStatement prepared
+                                ? prepared.executeUpdate() : statement.executeUpdate(parsed.originalSql()));
                         results.add(statementResult(parsed, true, false, count, false,
                                 exclusion(command, parsed), "plugin_transaction", elapsed(statementStarted), Optional.empty()));
                         checkCancelled(executionId);
@@ -301,7 +338,7 @@ public final class ExecutionService implements AutoCloseable {
                     for (int i = 0; i < statements.size(); i++) {
                         try {
                             releaseLog.recordCommitted(reservation, operationId(executionId, statements.get(i)),
-                                    statements.get(i), statements.get(i).originalSql());
+                                    statements.get(i), replayableSql.get(i));
                             if (command.purpose().isReleaseEligible()) results.set(i, markRecorded(results.get(i)));
                         } catch (Exception loggingFailure) {
                             closeForTerminal(reservation, managed, loggingFailure);
@@ -319,14 +356,22 @@ public final class ExecutionService implements AutoCloseable {
                 boolean anyFailure = false;
                 Exception terminalFailure = null;
                 for (var parsed : statements) {
+                    int parsedIndex = parsed.index();
                     checkCancelled(executionId);
                     long statementStarted = System.nanoTime();
-                    try (Statement statement = managed.connection().createStatement()) {
+                    Statement candidate = statementParameters.get(parsedIndex).isEmpty()
+                            ? managed.connection().createStatement()
+                            : managed.connection().prepareStatement(parsed.originalSql());
+                    try (Statement statement = candidate) {
                         checkCancelled(executionId);
                         registry.attach(executionId, managed.connection(), statement);
                         checkCancelled(executionId);
                         statement.setQueryTimeout(command.timeoutSeconds());
-                        long count = Math.max(0, statement.executeUpdate(parsed.originalSql()));
+                        if (statement instanceof PreparedStatement prepared) {
+                            SqlParameterBindings.bind(prepared, statementParameters.get(parsedIndex));
+                        }
+                        long count = Math.max(0, statement instanceof PreparedStatement prepared
+                                ? prepared.executeUpdate() : statement.executeUpdate(parsed.originalSql()));
                         boolean track = command.purpose().isReleaseEligible() && parsed.releaseEligibleKind();
                         results.add(statementResult(parsed, true, true, count, track,
                                 exclusion(command, parsed), parsed.kind() == SqlKind.DDL
@@ -336,7 +381,7 @@ public final class ExecutionService implements AutoCloseable {
                         if (reservation != null && track) {
                             try {
                                 releaseLog.recordCommitted(reservation, operationId(executionId, parsed),
-                                        parsed, parsed.originalSql());
+                                        parsed, replayableSql.get(parsedIndex));
                             } catch (Exception loggingFailure) {
                                 var error = safe(correlationId, ExecutionStatus.LOGGING, loggingFailure);
                                 results.set(resultIndex, markLoggingFailure(results.get(resultIndex), error));

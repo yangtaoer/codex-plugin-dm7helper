@@ -9,13 +9,17 @@ import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
 import io.modelcontextprotocol.spec.McpSchema.ServerCapabilities;
-import java.io.FilterInputStream;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 public final class AppMain {
     private AppMain() {}
@@ -42,7 +46,7 @@ public final class AppMain {
             var adapter = new Dm7McpServer(
                     () -> SessionIdentityResolver.resolve(environment), backend::initialize,
                     backend, Dm7McpServer.ConsoleLauncher.unavailable());
-            var input = new EofAwareInputStream(stdin);
+            var input = new ProtocolGuardInputStream(stdin, stdout);
             var transport = new StdioServerTransportProvider(McpJsonDefaults.getMapper(), input, stdout);
             McpSyncServer server = McpServer.sync(transport)
                     .serverInfo("dm7-database", "0.1.0")
@@ -69,14 +73,45 @@ public final class AppMain {
         return location;
     }
 
-    private static final class EofAwareInputStream extends FilterInputStream {
+    private static final class ProtocolGuardInputStream extends InputStream {
+        private static final ObjectMapper JSON = new ObjectMapper();
+        private static final byte[] PARSE_ERROR = ("{\"jsonrpc\":\"2.0\",\"id\":null,"
+                + "\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}\n").getBytes(UTF_8);
+        private final BufferedReader reader;
+        private final java.io.OutputStream stdout;
         private final CountDownLatch eof = new CountDownLatch(1);
-        private EofAwareInputStream(InputStream input) { super(input); }
-        @Override public int read() throws IOException {
-            int value = super.read(); if (value < 0) eof.countDown(); return value;
+        private byte[] pending = new byte[0];
+        private int cursor;
+
+        private ProtocolGuardInputStream(InputStream input, java.io.OutputStream stdout) {
+            this.reader = new BufferedReader(new InputStreamReader(input, UTF_8));
+            this.stdout = stdout;
         }
-        @Override public int read(byte[] bytes, int offset, int length) throws IOException {
-            int count = super.read(bytes, offset, length); if (count < 0) eof.countDown(); return count;
+
+        @Override public synchronized int read() throws IOException {
+            byte[] single = new byte[1];
+            return read(single, 0, 1) < 0 ? -1 : single[0] & 0xff;
+        }
+
+        @Override public synchronized int read(byte[] bytes, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            if (length == 0) return 0;
+            while (cursor >= pending.length) {
+                String line = reader.readLine();
+                if (line == null) { eof.countDown(); return -1; }
+                try {
+                    JSON.readTree(line);
+                } catch (IOException malformed) {
+                    synchronized (stdout) { stdout.write(PARSE_ERROR); stdout.flush(); }
+                    continue;
+                }
+                pending = (line + "\n").getBytes(UTF_8);
+                cursor = 0;
+            }
+            int count = Math.min(length, pending.length - cursor);
+            System.arraycopy(pending, cursor, bytes, offset, count);
+            cursor += count;
+            return count;
         }
         private void awaitEof() throws InterruptedException { eof.await(); }
     }

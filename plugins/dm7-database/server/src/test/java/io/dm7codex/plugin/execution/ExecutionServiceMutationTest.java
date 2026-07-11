@@ -19,9 +19,70 @@ import io.dm7codex.plugin.connection.DmConnectionFactory;
 import io.dm7codex.plugin.connection.DriverIsolationFixture;
 import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.api.Test;
+import java.lang.reflect.Proxy;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.Types;
+import java.nio.file.Files;
 
 class ExecutionServiceMutationTest {
     @TempDir Path tempDir;
+
+    @Test void parameterizedTrackedDmlBindsJdbcValueAndRecordsReplayableSql() throws Exception {
+        var paths = RuntimePaths.forTest(tempDir.resolve("parameterized-release"));
+        try (var database = StateDatabase.open(paths.stateDatabase())) {
+            var sessions = new SessionRepository(database, paths.sessionsDirectory());
+            var session = new SessionInitializer(paths, sessions).initialize(
+                    new SessionIdentity("parameter-thread", "codex_thread", "verified"));
+            var release = new ReleaseLogService(paths, sessions, Duration.ofSeconds(2));
+            var bound = new java.util.concurrent.atomic.AtomicReference<Object>();
+            var prepared = (PreparedStatement) Proxy.newProxyInstance(getClass().getClassLoader(),
+                    new Class<?>[]{PreparedStatement.class}, (proxy, method, args) -> switch (method.getName()) {
+                        case "setObject" -> { bound.set(args[1]); yield null; }
+                        case "executeUpdate" -> 1;
+                        case "close", "cancel", "setQueryTimeout" -> null;
+                        default -> null;
+                    });
+            var connection = (Connection) Proxy.newProxyInstance(getClass().getClassLoader(),
+                    new Class<?>[]{Connection.class}, (proxy, method, args) -> switch (method.getName()) {
+                        case "prepareStatement" -> prepared;
+                        case "setAutoCommit", "close" -> null;
+                        case "getAutoCommit" -> true;
+                        case "isClosed" -> false;
+                        default -> null;
+                    });
+            DmConnectionFactory.ConnectionOpener opener = id ->
+                    new DmConnectionFactory.ManagedConnection(connection, () -> {}, "fp");
+            ExecutionResult result;
+            try (var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                    release, null, new ExecutionEventBus(20), new ExecutionRegistry())) {
+                result = service.execute(session, new ExecuteCommand(UUID.randomUUID(), UUID.randomUUID(),
+                        "INSERT INTO T(C) VALUES (?)", List.of(new SqlParameter("中文", Types.NVARCHAR)),
+                        SqlPurpose.MIGRATION, false, false, 30, ExecutionSource.MCP));
+            }
+            assertTrue(result.success(), result.toString());
+            assertEquals("中文", bound.get());
+            assertTrue(Files.readString(session.activeSql()).contains("VALUES (N'中文')"));
+        }
+    }
+
+    @Test void callerKnownExecutionIdAllowsConcurrentCancellationWithoutEventDiscovery() throws Exception {
+        UUID clientExecutionId = UUID.randomUUID();
+        var opener = new TestJdbc.CancellableOpener();
+        try (var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                null, null, new ExecutionEventBus(20), new ExecutionRegistry())) {
+            var future = CompletableFuture.supplyAsync(() -> service.execute(TestJdbc.session(),
+                    new ExecuteCommand(UUID.randomUUID(), clientExecutionId, "UPDATE T SET C=1", List.of(),
+                            SqlPurpose.TEST, true, false, 30, ExecutionSource.MCP)));
+            assertTrue(opener.executing.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(service.cancel(clientExecutionId));
+            opener.allowReturn.countDown();
+            var result = future.join();
+            assertEquals(clientExecutionId, result.executionId());
+            assertEquals(ExecutionStatus.CANCELLED, result.status());
+            assertTrue(opener.rolledBack.get());
+        }
+    }
     @Test void atomicModeRejectsDdlBeforeOpeningConnection() {
         var opener = new TestJdbc.Opener();
         var service = TestJdbc.service(opener);

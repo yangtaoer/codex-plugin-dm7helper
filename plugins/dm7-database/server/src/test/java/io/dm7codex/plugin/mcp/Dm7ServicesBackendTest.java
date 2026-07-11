@@ -10,9 +10,51 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
+import java.sql.Types;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.Instant;
+import java.util.UUID;
+import io.dm7codex.plugin.execution.ExecutionModels.ExecutionEvent;
+import io.dm7codex.plugin.execution.ExecutionModels.ExecutionStatus;
 
 class Dm7ServicesBackendTest {
     @TempDir Path temporary;
+
+    @Test void parsesTypedMcpParametersWithoutGuessingOrLeakingUnsupportedValues() {
+        var nullParameter = new java.util.LinkedHashMap<String, Object>();
+        nullParameter.put("jdbcType", Types.VARCHAR); nullParameter.put("value", null);
+        var parsed = Dm7ServicesBackend.parameters(Map.of("parameters", java.util.List.of(
+                Map.of("jdbcType", Types.NVARCHAR, "value", "中文"),
+                nullParameter,
+                Map.of("jdbcType", Types.INTEGER, "value", 42),
+                Map.of("jdbcType", Types.BOOLEAN, "value", true),
+                Map.of("jdbcType", Types.DATE, "value", "2026-07-11"),
+                Map.of("jdbcType", Types.TIMESTAMP, "value", "2026-07-11T12:30:00"),
+                Map.of("jdbcType", Types.VARBINARY, "value", "Af8="))));
+
+        assertEquals("中文", parsed.get(0).value());
+        assertNull(parsed.get(1).value());
+        assertEquals(42, parsed.get(2).value());
+        assertEquals(true, parsed.get(3).value());
+        assertEquals(LocalDate.of(2026, 7, 11), parsed.get(4).value());
+        assertEquals(LocalDateTime.of(2026, 7, 11, 12, 30), parsed.get(5).value());
+        assertArrayEquals(new byte[]{1, (byte) 0xff}, (byte[]) parsed.get(6).value());
+        assertThrows(IllegalArgumentException.class, () -> Dm7ServicesBackend.parameters(Map.of(
+                "parameters", java.util.List.of(Map.of("jdbcType", Types.JAVA_OBJECT, "value", "secret")))));
+    }
+
+    @Test void executionEventHistoryIsFilteredAndStructuredForGetExecution() {
+        UUID wanted = UUID.randomUUID();
+        var events = Dm7ServicesBackend.executionEvents(java.util.List.of(
+                new ExecutionEvent(1, "session", wanted, ExecutionStatus.QUEUED, Instant.EPOCH, null),
+                new ExecutionEvent(2, "session", UUID.randomUUID(), ExecutionStatus.EXECUTING, Instant.EPOCH, null),
+                new ExecutionEvent(3, "session", wanted, ExecutionStatus.COMPLETED, Instant.EPOCH.plusSeconds(1), "done")), wanted);
+        assertEquals(2, events.size());
+        assertEquals("QUEUED", events.get(0).get("status"));
+        assertEquals("COMPLETED", events.get(1).get("status"));
+        assertEquals("1970-01-01T00:00:01Z", events.get(1).get("timestamp"));
+    }
 
     @Test
     void emptyRuntimeUsesRealReleaseServiceAndReturnsSafeConnectionError() throws Exception {

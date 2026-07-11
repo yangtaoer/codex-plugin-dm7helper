@@ -16,9 +16,44 @@ import io.dm7codex.plugin.sql.SqlSecurityPolicy;
 import java.nio.file.Path;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.Test;
+import java.lang.reflect.Proxy;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.Types;
+import java.util.concurrent.atomic.AtomicReference;
 
 class ExecutionServiceQueryTest {
     @TempDir Path tempDir;
+
+    @Test void typedParametersUsePreparedStatementAndClientExecutionId() {
+        UUID executionId = UUID.randomUUID();
+        var bound = new AtomicReference<Object>();
+        var statement = (PreparedStatement) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{PreparedStatement.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "setObject" -> { bound.set(args[1]); yield null; }
+                    case "executeQuery" -> TestJdbc.resultSet(List.of(List.of("中文")), List.of("V"));
+                    case "close", "setQueryTimeout", "setMaxRows", "setFetchSize", "cancel" -> null;
+                    default -> null;
+                });
+        var connection = (Connection) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{Connection.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "prepareStatement" -> statement;
+                    case "close" -> null;
+                    case "isClosed" -> false;
+                    default -> null;
+                });
+        DmConnectionFactory.ConnectionOpener opener = id ->
+                new DmConnectionFactory.ManagedConnection(connection, () -> {}, "fp");
+        QueryResult result;
+        try (var service = TestJdbc.service(opener)) {
+            result = service.query(TestJdbc.session(), new QueryCommand(UUID.randomUUID(), executionId,
+                    "SELECT ? AS V", List.of(new SqlParameter("中文", Types.NVARCHAR)),
+                    10, 1_000, 30, ExecutionSource.MCP));
+        }
+        assertTrue(result.success(), result.toString());
+        assertEquals(executionId, result.executionId());
+        assertEquals("中文", bound.get());
+    }
 
     @Test void connectionFailureIsPersistedWithSharedCorrelationAndTruePhase() throws Exception {
         var fixture = historyFixture("connect-failure");

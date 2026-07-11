@@ -3,6 +3,7 @@ package io.dm7codex.plugin.mcp;
 import io.dm7codex.plugin.runtime.SessionIdentity;
 import io.dm7codex.plugin.runtime.SessionState;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
+import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import java.util.ArrayList;
@@ -44,14 +45,21 @@ public final class Dm7McpServer {
             // Deliberately the first business action for every tool handler.
             SessionIdentity identity = identities.resolve();
             SessionState session = sessions.initialize(identity);
-            Map<String, Object> safeArguments = arguments == null ? Map.of() : Map.copyOf(arguments);
+            Map<String, Object> safeArguments = arguments == null ? Map.of()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(arguments));
             if (!definitions.containsKey(name)) return error("UNKNOWN_TOOL", "未知工具。", correlationId);
+            var validation = McpJsonDefaults.getSchemaValidator().validate(
+                    definitions.get(name).inputSchema(), safeArguments);
+            if (!validation.valid()) {
+                return error("INVALID_ARGUMENT", "工具参数不符合输入约束。", correlationId);
+            }
             if (name.equals("dm7_open_console")) return success(console.open(session), "控制台已准备。", false);
             if (name.equals("dm7_release_export") && !Boolean.TRUE.equals(safeArguments.get("confirm"))) {
                 return error("CONFIRMATION_REQUIRED", "发版导出要求 confirm=true。", correlationId);
             }
             Map<String, Object> output = backend.call(name, safeArguments, session);
-            return success(output, summary(name, output), false);
+            boolean failed = Boolean.FALSE.equals(output.get("success")) || Boolean.FALSE.equals(output.get("ok"));
+            return success(output, summary(name, output), failed);
         } catch (ConsoleUnavailable unavailable) {
             return error("CONSOLE_NOT_AVAILABLE", "控制台后端将在后续任务中提供。", correlationId);
         } catch (IllegalArgumentException invalid) {

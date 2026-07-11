@@ -25,14 +25,19 @@ public final class ExecutionModels {
 
     public enum ExecutionSource { MCP, CONSOLE }
 
-    public record QueryCommand(UUID profileId, String sql, int maxRows, long maxBytes,
-                               int timeoutSeconds, ExecutionSource source) {
+    public record QueryCommand(UUID profileId, UUID executionId, String sql, List<SqlParameter> parameters,
+                               int maxRows, long maxBytes, int timeoutSeconds, ExecutionSource source) {
         public QueryCommand(UUID profileId, String sql, int maxRows, long maxBytes, int timeoutSeconds) {
-            this(profileId, sql, maxRows, maxBytes, timeoutSeconds, ExecutionSource.MCP);
+            this(profileId, null, sql, List.of(), maxRows, maxBytes, timeoutSeconds, ExecutionSource.MCP);
+        }
+        public QueryCommand(UUID profileId, String sql, int maxRows, long maxBytes,
+                            int timeoutSeconds, ExecutionSource source) {
+            this(profileId, null, sql, List.of(), maxRows, maxBytes, timeoutSeconds, source);
         }
         public QueryCommand {
             Objects.requireNonNull(profileId, "profileId");
             sql = text(sql, "sql", 10_000_000);
+            parameters = List.copyOf(parameters);
             range(maxRows, 1, MAX_ROWS, "maxRows");
             if (maxBytes < 1 || maxBytes > MAX_BYTES) throw new IllegalArgumentException("maxBytes is outside the allowed range");
             range(timeoutSeconds, 1, MAX_TIMEOUT_SECONDS, "timeoutSeconds");
@@ -40,15 +45,23 @@ public final class ExecutionModels {
         }
     }
 
-    public record ExecuteCommand(UUID profileId, String script, SqlPurpose purpose, boolean atomic,
-                                 boolean continueOnError, int timeoutSeconds, ExecutionSource source) {
+    public record ExecuteCommand(UUID profileId, UUID executionId, String script, List<SqlParameter> parameters,
+                                 SqlPurpose purpose, boolean atomic, boolean continueOnError,
+                                 int timeoutSeconds, ExecutionSource source) {
         public ExecuteCommand(UUID profileId, String script, SqlPurpose purpose, boolean atomic,
                               boolean continueOnError, int timeoutSeconds) {
-            this(profileId, script, purpose, atomic, continueOnError, timeoutSeconds, ExecutionSource.MCP);
+            this(profileId, null, script, List.of(), purpose, atomic, continueOnError,
+                    timeoutSeconds, ExecutionSource.MCP);
+        }
+        public ExecuteCommand(UUID profileId, String script, SqlPurpose purpose, boolean atomic,
+                              boolean continueOnError, int timeoutSeconds, ExecutionSource source) {
+            this(profileId, null, script, List.of(), purpose, atomic, continueOnError,
+                    timeoutSeconds, source);
         }
         public ExecuteCommand {
             Objects.requireNonNull(profileId, "profileId");
             script = text(script, "script", 10_000_000);
+            parameters = List.copyOf(parameters);
             Objects.requireNonNull(purpose, "purpose");
             if (atomic && continueOnError) throw new IllegalArgumentException("continueOnError requires atomic=false");
             range(timeoutSeconds, 1, MAX_TIMEOUT_SECONDS, "timeoutSeconds");

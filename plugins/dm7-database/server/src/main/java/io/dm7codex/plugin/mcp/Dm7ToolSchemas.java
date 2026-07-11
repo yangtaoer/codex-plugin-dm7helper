@@ -21,8 +21,9 @@ public final class Dm7ToolSchemas {
         add(tools, "dm7_query", "执行单条只读查询或 EXPLAIN；修改语句会被拒绝。",
                 schema(props(
                         "connectionId", string("连接 ID；省略时使用默认连接。"),
+                        "executionId", uuid("客户端生成的执行 ID，可用于并发取消和查询状态。"),
                         "sql", string("单条只读 SQL。"),
-                        "parameters", array("可选绑定参数；当前执行后端仅接受空数组。"),
+                        "parameters", parameters(),
                         "maxRows", integer("最大返回行数。", 1, 10_000, 1_000),
                         "maxBytes", integer("最大结果字节数。", 1, 52_428_800, 10_485_760),
                         "timeoutSeconds", integer("查询超时秒数。", 1, 3_600, 60)), "sql"), true, false, true);
@@ -31,8 +32,9 @@ public final class Dm7ToolSchemas {
         add(tools, "dm7_execute", "执行 DDL/DML 脚本并返回逐语句结果；这是数据库修改操作。",
                 schema(props(
                         "connectionId", string("连接 ID；省略时使用默认连接。"),
+                        "executionId", uuid("客户端生成的执行 ID，可用于并发取消和查询状态。"),
                         "sql", string("DDL/DML SQL 脚本。"),
-                        "parameters", array("可选绑定参数；当前执行后端仅接受空数组。"),
+                        "parameters", parameters(),
                         "purpose", purpose,
                         "atomic", bool("是否以插件事务原子执行；包含 DDL 时不可用。", true),
                         "continueOnError", bool("非原子模式下失败后是否继续。", false),
@@ -114,10 +116,21 @@ public final class Dm7ToolSchemas {
         return result;
     }
 
-    private static Map<String, Object> array(String description) {
+    private static Map<String, Object> uuid(String description) {
+        var result = string(description);
+        result.put("pattern", "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$");
+        return result;
+    }
+
+    private static Map<String, Object> parameters() {
         var result = new LinkedHashMap<String, Object>();
-        result.put("type", "array"); result.put("items", Map.of());
-        result.put("default", List.of()); result.put("description", description);
+        var item = new LinkedHashMap<String, Object>();
+        item.put("type", "object");
+        item.put("properties", props("jdbcType", integer("java.sql.Types 类型编号。", Integer.MIN_VALUE, Integer.MAX_VALUE, 12),
+                "value", new LinkedHashMap<>()));
+        item.put("required", List.of("jdbcType", "value")); item.put("additionalProperties", false);
+        result.put("type", "array"); result.put("items", item); result.put("maxItems", 10_000);
+        result.put("default", List.of()); result.put("description", "按 SQL 问号顺序绑定的 typed JDBC 参数。");
         return result;
     }
 }
