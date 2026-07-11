@@ -1,15 +1,33 @@
 import { test, expect } from './fixtures'
 
-test('tests, edits and never echoes a saved password', async ({ page }) => {
+test('tests, replaces credentials and keeps every response/state snapshot secret-free', async ({ page, fixtureState }) => {
+  const syntheticSecret = 'SYNTHETIC_PASSWORD_NOT_REAL'
   await page.goto('/app/connections')
   await page.getByRole('button', { name: '测试华东生产只读' }).click()
   await expect(page.getByText('中文往返正常')).toBeVisible()
   await page.getByRole('button', { name: '编辑华东生产只读' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog.locator('input[type=password]')).toHaveValue('')
-  await dialog.locator('input[type=password]').fill('SYNTHETIC_PASSWORD_NOT_REAL')
+  await dialog.locator('input[type=password]').fill(syntheticSecret)
   await dialog.getByRole('button', { name: '保存更改' }).click()
-  await expect(page.locator('body')).not.toContainText('SYNTHETIC_PASSWORD_NOT_REAL')
+  await expect(page.locator('body')).not.toContainText(syntheticSecret)
+  const response = fixtureState.networkResponses.find((item) => item.method === 'PUT' && item.path.includes('/api/connections/'))
+  expect(response?.body).not.toContain(syntheticSecret)
+  expect(response?.body).not.toMatch(/"(?:password|clearPassword|driverJar)"\s*:/i)
+  expect(JSON.stringify(fixtureState.connections)).not.toContain(syntheticSecret)
+  expect(JSON.stringify(fixtureState.connections)).not.toMatch(/"(?:password|clearPassword|driverJar)"\s*:/i)
+})
+
+test('credential preserve and clear use the same safe DTO shape', async ({ page, fixtureState }) => {
+  await page.goto('/app/connections')
+  await page.getByRole('button', { name: '编辑华东生产只读' }).click()
+  await page.getByRole('button', { name: '保存更改' }).click()
+  expect(fixtureState.connections[0].hasPassword).toBe(true)
+  await page.getByRole('button', { name: '编辑华东生产只读' }).click()
+  await page.getByRole('checkbox', { name: '清除已保存密码' }).check()
+  await page.getByRole('button', { name: '保存更改' }).click()
+  expect(fixtureState.connections[0].hasPassword).toBe(false)
+  expect(JSON.stringify(fixtureState.networkResponses)).not.toMatch(/"(?:password|clearPassword|driverJar)"\s*:/)
 })
 
 test('diagnoses URL path form without rewriting it', async ({ page }) => {
@@ -19,4 +37,45 @@ test('diagnoses URL path form without rewriting it', async ({ page }) => {
   await url.fill('jdbc:dm7://demo.invalid:5236/SYSTEM')
   await expect(page.getByText(/URL 路径段可能被旧版驱动忽略/)).toBeVisible()
   await expect(url).toHaveValue('jdbc:dm7://demo.invalid:5236/SYSTEM')
+})
+
+test('empty create, copy, default change and delete disposition form a complete CRUD journey', async ({ page, fixtureState }) => {
+  fixtureState.connections = []
+  await page.goto('/app/connections')
+  await page.getByRole('button', { name: '新增连接' }).first().click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('连接名称').fill('演示主连接')
+  await dialog.getByLabel('驱动 JAR 本地路径').fill('C:\\synthetic\\DmJdbcDriver.jar')
+  await dialog.getByLabel('JDBC URL').fill('jdbc:dm7://demo.invalid:5236?dbname=SYSTEM')
+  await dialog.getByLabel('用户名').fill('DEMO_USER')
+  await dialog.getByRole('button', { name: '保存连接' }).click()
+  await expect(page.getByRole('heading', { name: '演示主连接' })).toBeVisible()
+  expect(fixtureState.connections[0].isDefault).toBe(true)
+  await page.getByRole('button', { name: '复制演示主连接' }).click()
+  const copy = page.getByRole('dialog')
+  await copy.getByLabel('驱动 JAR 本地路径').fill('C:\\synthetic\\DmJdbcDriver.jar')
+  await copy.getByLabel('JDBC URL').fill('jdbc:dm7://copy.invalid:5236?dbname=SYSTEM')
+  await copy.getByRole('button', { name: '保存连接' }).click()
+  const copied = fixtureState.connections[1]
+  await page.getByRole('button', { name: `设${copied.name}为默认` }).click()
+  expect(fixtureState.connections.find((item) => item.isDefault)?.id).toBe(copied.id)
+  await page.getByRole('button', { name: `删除${copied.name}` }).click()
+  await page.getByLabel('删除后的默认连接').selectOption(fixtureState.connections[0].id)
+  await page.getByRole('dialog').getByRole('button', { name: '确认删除' }).click()
+  expect(fixtureState.connections).toHaveLength(1)
+  expect(fixtureState.connections[0].isDefault).toBe(true)
+})
+
+test('connection 409 and 422 failures remain retryable without unsafe echo', async ({ page, fixtureState }) => {
+  fixtureState.connectionWriteMode = 'conflict'; fixtureState.expectedHttpStatuses.add(409)
+  await page.goto('/app/connections')
+  await page.getByRole('button', { name: '编辑华东生产只读' }).click()
+  await page.getByLabel('连接名称').fill('冲突名称')
+  await page.getByRole('button', { name: '保存更改' }).click()
+  await expect(page.getByRole('alert')).toContainText('连接更新被拒绝')
+  fixtureState.connectionWriteMode = 'validation'; fixtureState.expectedHttpStatuses.add(422)
+  await page.getByLabel('连接名称').fill('参数无效')
+  await page.getByRole('button', { name: '保存更改' }).click()
+  await expect(page.getByRole('alert')).toContainText('连接更新被拒绝')
+  expect(JSON.stringify(fixtureState.networkResponses)).not.toMatch(/"(?:password|clearPassword|driverJar)"\s*:/)
 })

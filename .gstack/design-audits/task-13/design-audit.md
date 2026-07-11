@@ -6,7 +6,7 @@ APP UI: dense operational workspace with persistent navigation and secondary run
 
 | Measure | Baseline | Final |
 |---|---:|---:|
-| Design quality | 82/100 | 95/100 |
+| Design quality | 82/100 | 97/100 |
 | AI slop | 1/10 | 0/10 |
 
 ## Litmus
@@ -34,4 +34,24 @@ APP UI: dense operational workspace with persistent navigation and secondary run
 - Corrected dark success semantics and contrast.
 - Kept real Chinese result rows and immutable artifact evidence in the 900px marketplace viewport.
 
-PR summary: Design review found 4 issues and fixed 4. Design score 82 → 95, AI slop score 1 → 0.
+## Score rubric
+
+| Category | Weight | Baseline | Final |
+|---|---:|---:|---:|
+| Workspace hierarchy | 20 | 17 | 19 |
+| Visual-system consistency | 20 | 18 | 19 |
+| Responsive composition | 20 | 16 | 20 |
+| Accessibility/readability | 20 | 14 | 20 |
+| Operational content/state clarity | 15 | 13 | 14 |
+| AI-slop avoidance | 5 | 4 | 5 |
+| **Total** | **100** | **82** | **97** |
+
+AI slop is the count of observed blacklist patterns, not an impression score: baseline 1 (insufficiently usable first viewport), final 0.
+
+## Before/after evidence
+
+- FINDING-001/002: `screenshots/finding-001-002-before.png` → `screenshots/finding-001-002-after.png`.
+- FINDING-003: `screenshots/finding-003-before.png` → `screenshots/finding-003-after.png`.
+- FINDING-004 at 1440×900: `screenshots/finding-004-before.png` → `screenshots/finding-004-after.png`.
+
+PR summary: Design review found 4 issues and fixed 4. Design score 82 → 97, AI slop score 1 → 0.

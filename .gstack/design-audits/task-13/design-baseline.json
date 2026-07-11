@@ -5,7 +5,7 @@
   "routes": ["overview", "sql", "activity", "release", "connections", "settings"],
   "viewports": ["390x844", "768x900", "1280x800", "1440x900"],
   "baselineDesignScore": 82,
-  "finalDesignScore": 95,
+  "finalDesignScore": 97,
   "baselineAiSlopScore": 1,
   "finalAiSlopScore": 0,
   "openCriticalHighMedium": 0
