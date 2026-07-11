@@ -2,6 +2,12 @@
 
 The plugin listens only on loopback and opens the console through a short-lived local token. Credentials are encrypted in the user-scoped plugin data directory and are never accepted as MCP arguments. Session identifiers are SHA-256 hashed before a private, atomically replaced context file is written.
 
-Use least-privilege database accounts. Review every `dm7_execute` mutation and every release export. Exported SQL can contain business data and should be handled as sensitive. The logger rejects secret-bearing statements and excludes purposes `mock`, `seed`, and `sample`; comments are not a security boundary.
+Use least-privilege database accounts. Review every `dm7_execute` mutation and every release export. Exported SQL can contain business data and should be handled as sensitive. The logger rejects secret-bearing statements and excludes purposes `TEST`, `MOCK`, `SEED`, and `SAMPLE`, including Chinese 测试SQL. A comment or filename never changes classification; the caller must select the truthful purpose.
 
 BYO-driver means users must obtain the DM7 JDBC JAR under its vendor license. Do not commit, embed, or redistribute any JDBC driver. Report suspected vulnerabilities privately to the repository owner and include reproduction steps without passwords, URLs, or production data.
+
+## Threat model
+
+Protected assets are database credentials, the BYO driver, execution metadata, release SQL, exports, and the SQLite state database. Trust boundaries are Codex chat versus the local console, STDIO MCP versus the loopback HTTP server, the user filesystem versus the database, and the plugin versus the user-selected JDBC driver. Controls include no credential MCP fields, short-lived console tokens, loopback binding, encrypted user-scoped secrets, bounded SQL/results, purpose-gated mutation logging, immutable export hashes, private session-context ACLs, and recursive package secret scanning.
+
+Out of scope are a compromised local administrator, a malicious or replaced JDBC driver explicitly selected by the user, a compromised database server, and disclosure after a user copies an export elsewhere. Treat `PLUGIN_DATA`, backups, downloads, and driver files as sensitive and verify their access controls and hashes.

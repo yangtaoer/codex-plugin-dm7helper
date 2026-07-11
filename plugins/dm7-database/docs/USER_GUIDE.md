@@ -15,6 +15,8 @@
 
 The management console has Connections, SQL Console, Activity, and Release pages. Manual SQL and AI tool calls share execution history, live events, cancellation, and downloadable results. Chinese identifiers and values remain UTF-8 end to end.
 
-For mutations, provide a truthful purpose. Purposes `mock`, `seed`, and `sample` identify test data and are excluded from release SQL. Eligible DDL/DML is logged in execution order; queries are never logged. Export operates only on the current Codex session, does not claim idempotency, and requires preview plus confirmation.
+For mutations, provide a truthful purpose. `TEST`, `MOCK`, `SEED`, and `SAMPLE` are all excluded from release SQL; use one of them for every test-data change and Chinese 测试SQL. Only `PRODUCTION_CHANGE` and `MIGRATION` DDL/DML are logged in execution order; queries are never logged. SQL comments and Chinese words do not infer purpose. Export operates only on the current Codex session, does not claim idempotency, and requires preview plus confirmation.
 
 If `dbname=` or `schema=` is wrong, fix the connection rather than qualifying around an unknown default. Keep result limits low for exploratory work.
+
+Query limits default to 1,000 rows, 10 MiB, and 60 seconds. Allowed ranges are 1–10,000 rows, 1 KiB–50 MiB in the console, and 1–3,600 seconds. History pages contain at most 200 records. Result CSV/JSON and release SQL downloads are snapshots; verify the displayed SHA-256 for release artifacts and protect downloaded business data.

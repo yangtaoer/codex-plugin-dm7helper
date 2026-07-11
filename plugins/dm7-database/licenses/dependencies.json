@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 1,
+  "components": [
+    {
+      "id": "embedded:sqlite-engine@3.53.2",
+      "license": "Public-Domain",
+      "licenseFile": "licenses/components/embedded_sqlite-engine_3.53.2.txt",
+      "provenance": "sqlite-jdbc 3.53.2.0 bundled native SQLite; https://www.sqlite.org/copyright.html"
+    },
+    {
+      "id": "maven:com.ethlo.time:itu:1.14.0",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/components/maven_com.ethlo.time_itu_1.14.0.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources; Maven POM declared Apache-2.0"
+    },
+    {
+      "id": "maven:com.fasterxml.jackson.core:jackson-annotations:2.22",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/components/maven_com.fasterxml.jackson.core_jackson-annotations_2.22.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources"
+    },
+    {
+      "id": "maven:com.fasterxml.jackson.core:jackson-core:2.22.1",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/components/maven_com.fasterxml.jackson.core_jackson-core_2.22.1.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources"
+    },
+    {
+      "id": "maven:com.fasterxml.jackson.core:jackson-databind:2.22.1",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/components/maven_com.fasterxml.jackson.core_jackson-databind_2.22.1.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources"
+    },
+    {
+      "id": "maven:com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.18.3",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/components/maven_com.fasterxml.jackson.dataformat_jackson-dataformat-yaml_2.18.3.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources"
+    },
+    {
+      "id": "maven:com.networknt:json-schema-validator:2.0.0",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/components/maven_com.networknt_json-schema-validator_2.0.0.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources; Maven POM declared Apache-2.0"
+    },
+    {
+      "id": "maven:io.modelcontextprotocol.sdk:mcp-core:2.0.0",
+      "license": "MIT",
+      "licenseFile": "licenses/components/maven_io.modelcontextprotocol.sdk_mcp-core_2.0.0.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources; https://github.com/modelcontextprotocol/java-sdk/blob/main/LICENSE"
+    },
+    {
+      "id": "maven:io.modelcontextprotocol.sdk:mcp-json-jackson2:2.0.0",
+      "license": "MIT",
+      "licenseFile": "licenses/components/maven_io.modelcontextprotocol.sdk_mcp-json-jackson2_2.0.0.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources; https://github.com/modelcontextprotocol/java-sdk/blob/main/LICENSE"
+    },
+    {
+      "id": "maven:io.projectreactor:reactor-core:3.7.0",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/components/maven_io.projectreactor_reactor-core_3.7.0.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources; Maven POM declared Apache-2.0"
+    },
+    {
+      "id": "maven:org.reactivestreams:reactive-streams:1.0.4",
+      "license": "MIT-0",
+      "licenseFile": "licenses/components/maven_org.reactivestreams_reactive-streams_1.0.4.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources; https://github.com/reactive-streams/reactive-streams-jvm/blob/v1.0.4/LICENSE"
+    },
+    {
+      "id": "maven:org.slf4j:slf4j-api:2.0.16",
+      "license": "MIT",
+      "licenseFile": "licenses/components/maven_org.slf4j_slf4j-api_2.0.16.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources"
+    },
+    {
+      "id": "maven:org.slf4j:slf4j-simple:2.0.17",
+      "license": "MIT",
+      "licenseFile": "licenses/components/maven_org.slf4j_slf4j-simple_2.0.17.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources"
+    },
+    {
+      "id": "maven:org.xerial:sqlite-jdbc:3.53.2.0",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "licenseFile": "licenses/components/maven_org.xerial_sqlite-jdbc_3.53.2.0.txt",
+      "provenance": "Maven source artifact META-INF/maven/org.xerial/sqlite-jdbc license resources"
+    },
+    {
+      "id": "maven:org.yaml:snakeyaml:2.3",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/components/maven_org.yaml_snakeyaml_2.3.txt",
+      "provenance": "Maven POM metadata and binary artifact META-INF license/notice resources; Maven POM declared Apache-2.0"
+    },
+    {
+      "id": "npm:@codemirror/autocomplete@6.20.3",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_codemirror_autocomplete_6.20.3.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@codemirror/commands@6.10.4",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_codemirror_commands_6.10.4.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@codemirror/lang-sql@6.10.0",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_codemirror_lang-sql_6.10.0.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@codemirror/language@6.12.4",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_codemirror_language_6.12.4.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@codemirror/state@6.7.1",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_codemirror_state_6.7.1.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@codemirror/view@6.43.6",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_codemirror_view_6.43.6.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@lezer/common@1.5.2",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_lezer_common_1.5.2.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@lezer/highlight@1.2.3",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_lezer_highlight_1.2.3.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@lezer/lr@1.4.10",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_lezer_lr_1.4.10.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@marijn/find-cluster-break@1.0.3",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_marijn_find-cluster-break_1.0.3.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@tanstack/react-table@8.21.3",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_tanstack_react-table_8.21.3.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@tanstack/react-virtual@3.14.5",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_tanstack_react-virtual_3.14.5.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@tanstack/table-core@8.21.3",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_tanstack_table-core_8.21.3.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:@tanstack/virtual-core@3.17.3",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_tanstack_virtual-core_3.17.3.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:crelt@1.0.7",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_crelt_1.0.7.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:lucide-react@1.24.0",
+      "license": "ISC",
+      "licenseFile": "licenses/components/npm_lucide-react_1.24.0.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:react-dom@19.2.7",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_react-dom_19.2.7.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:react@19.2.7",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_react_19.2.7.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:scheduler@0.27.0",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_scheduler_0.27.0.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:style-mod@4.1.3",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_style-mod_4.1.3.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    },
+    {
+      "id": "npm:w3c-keyname@2.2.8",
+      "license": "MIT",
+      "licenseFile": "licenses/components/npm_w3c-keyname_2.2.8.txt",
+      "provenance": "pnpm licenses list --prod and installed package license/notice files"
+    }
+  ]
+}

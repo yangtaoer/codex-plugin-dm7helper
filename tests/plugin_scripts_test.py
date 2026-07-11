@@ -78,6 +78,12 @@ class PluginScriptsTest(unittest.TestCase):
             self.assertEqual({"sessionHash", "timestamp", "processThreadHash"}, set(context))
             self.assertNotIn("thread-with-中文", files[0].read_text("utf-8"))
             self.assertFalse((data / "release").exists())
+            acl_command = f"[IO.Directory]::GetAccessControl('{(data / 'session-context')}').AreAccessRulesProtected"
+            acl_environment = self.clean_environment()
+            acl_environment.pop("PSModulePath", None)
+            acl = subprocess.run([POWERSHELL, "-NoProfile", "-Command", acl_command], env=acl_environment,
+                                 capture_output=True, text=True)
+            self.assertEqual("True", acl.stdout.strip(), acl.stderr)
 
     def test_session_hook_is_atomic_under_concurrency_and_missing_env_is_noop(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -137,6 +143,7 @@ class PluginScriptsTest(unittest.TestCase):
     def make_fake_command(self, directory: Path, name: str) -> None:
         (directory / f"{name}.cmd").write_text(
             "@echo off\r\n"
+            "if /I \"%TEST_FAIL_COMMAND%\"==\"%~n0\" exit /b 23\r\n"
             "echo %CD%^|%~nx0 %*>>\"%TEST_COMMAND_LOG%\"\r\n"
             "exit /b 0\r\n",
             encoding="ascii",
@@ -177,14 +184,41 @@ class PluginScriptsTest(unittest.TestCase):
             self.assertTrue(any("install --frozen-lockfile" in line for line in pnpm_calls), pnpm_calls)
             self.assertTrue(any(line.rstrip().endswith(" build") for line in pnpm_calls), pnpm_calls)
 
+    def test_build_and_test_propagate_every_external_gate_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary); fake_bin = base / "bin"; fake_bin.mkdir()
+            for command in ("python", "mvn", "pnpm"):
+                self.make_fake_command(fake_bin, command)
+            environment = self.clean_environment()
+            environment["PATH"] = str(fake_bin) + os.pathsep + environment["PATH"]
+            environment["TEST_COMMAND_LOG"] = str(base / "commands.log")
+            environment["SOURCE_DATE_EPOCH"] = "1783612800"
+            for script, failures in (("build.ps1", ("pnpm", "mvn")), ("test.ps1", ("python", "pnpm", "mvn"))):
+                for failure in failures:
+                    with self.subTest(script=script, failure=failure):
+                        environment["TEST_FAIL_COMMAND"] = failure
+                        result = self.run_powershell(PLUGIN / "scripts" / script, cwd=base, environment=environment)
+                        self.assertNotEqual(0, result.returncode)
+
+    def test_package_propagates_test_and_build_gate_failures(self):
+        for gate in ("test.ps1", "build.ps1"):
+            with self.subTest(gate=gate), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary); _, plugin = self.make_package_fixture(base)
+                (plugin / "scripts" / gate).write_text("throw 'fixture gate failure'\n", encoding="utf-8")
+                result = self.run_powershell(plugin / "scripts" / "package.ps1", cwd=base)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("fixture gate failure", result.stderr)
+
     def make_package_fixture(self, base: Path) -> tuple[Path, Path]:
         repo = base / "repo with spaces"
         plugin = repo / "plugins" / "dm7-database"
         scripts = plugin / "scripts"
         scripts.mkdir(parents=True)
         shutil.copy2(PLUGIN / "scripts" / "package.ps1", scripts)
+        shutil.copy2(PLUGIN / "scripts" / "verify-package-security.py", scripts)
         for name in ("test.ps1", "build.ps1"):
             (scripts / name).write_text("$ErrorActionPreference = 'Stop'\n", encoding="utf-8")
+        (scripts / "verify-extracted.ps1").write_text("$ErrorActionPreference = 'Stop'\n", encoding="utf-8")
         runtime_files = {
             ".codex-plugin/plugin.json": "{}",
             ".mcp.json": "{}",
@@ -196,6 +230,8 @@ class PluginScriptsTest(unittest.TestCase):
             "README.md": "runtime docs",
             "LICENSE": "license",
             "THIRD_PARTY_NOTICES.md": "notices",
+            "licenses/dependencies.json": '{"schemaVersion":1,"components":[]}',
+            "licenses/components/fixture.txt": "fixture license",
             "server/target/local.txt": "must not ship",
             "server/src/main/java/Secret.java": "must not ship",
             "web/node_modules/local.txt": "must not ship",
@@ -225,6 +261,8 @@ class PluginScriptsTest(unittest.TestCase):
             with zipfile.ZipFile(archive) as package:
                 names = {name.replace("\\", "/") for name in package.namelist()}
             self.assertTrue(any(name.endswith("/.codex-plugin/plugin.json") for name in names), names)
+            self.assertTrue(any(name.endswith("/licenses/dependencies.json") for name in names), names)
+            self.assertTrue(any(name.endswith("/licenses/components/fixture.txt") for name in names), names)
             for forbidden_part in ("/server/", "/web/", "/scripts/", "node_modules", "target/"):
                 self.assertFalse(any(forbidden_part in f"/{name}" for name in names), forbidden_part)
 
@@ -291,6 +329,31 @@ class PluginScriptsTest(unittest.TestCase):
             self.assertNotIn(secret, result.stdout)
             self.assertNotIn(secret, result.stderr)
 
+    def test_package_rejects_secret_inside_deflated_runtime_jar(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            _, plugin = self.make_package_fixture(base)
+            secret = "jar-only-secret-Q7x9"
+            runtime_jar = plugin / "lib" / "dm7-codex-plugin.jar"
+            with zipfile.ZipFile(runtime_jar, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("random.bin", os.urandom(65536))
+                archive.writestr("secret.txt", (secret + "\n") * 10)
+            self.assertNotIn(secret.encode(), runtime_jar.read_bytes(), "fixture secret must exist only after decompression")
+            environment = self.clean_environment(); environment["DM7_IT_PASSWORD"] = secret
+            result = self.run_powershell(plugin / "scripts" / "package.ps1", cwd=base, environment=environment)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("integration environment value", result.stderr)
+            self.assertNotIn(secret, result.stdout + result.stderr)
+
+    def test_package_propagates_fresh_extraction_gate_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            _, plugin = self.make_package_fixture(base)
+            (plugin / "scripts" / "verify-extracted.ps1").write_text("throw 'fixture verify failure'\n", encoding="utf-8")
+            result = self.run_powershell(plugin / "scripts" / "package.ps1", cwd=base)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("fixture verify failure", result.stderr)
+
     def test_package_is_byte_reproducible_and_rejects_unexpected_archives(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -315,6 +378,7 @@ class PluginScriptsTest(unittest.TestCase):
         build = (PLUGIN / "scripts" / "build.ps1").read_text("utf-8")
         tests = (PLUGIN / "scripts" / "test.ps1").read_text("utf-8")
         package = (PLUGIN / "scripts" / "package.ps1").read_text("utf-8")
+        extracted = (PLUGIN / "scripts" / "verify-extracted.ps1").read_text("utf-8")
         self.assertIn("JAVA_HOME", build)
         self.assertIn("clean package", build)
         self.assertIn("mcp_stdio_smoke.py", tests)
@@ -323,15 +387,19 @@ class PluginScriptsTest(unittest.TestCase):
         self.assertIn("FirstJarHash", package)
         self.assertIn("SecondJarHash", package)
         self.assertIn("SOURCE_DATE_EPOCH", package)
+        self.assertIn("verify-package-security.py", package)
+        self.assertIn("DM7_CODEX_JAVA17_HOME", package + extracted)
+        self.assertIn("DM7_SMOKE_PLUGIN_ROOT", package + extracted)
+        self.assertIn("validate_plugin.py", package + extracted)
 
-        docs = "\n".join(
-            path.read_text("utf-8")
-            for path in [ROOT / "README.md", PLUGIN / "README.md", PLUGIN / "SECURITY.md", PLUGIN / "docs" / "USER_GUIDE.md", PLUGIN / "docs" / "DEVELOPMENT.md"]
-        )
+        docs = "\n".join(path.read_text("utf-8") for path in
+                         [ROOT / "README.md", PLUGIN / "README.md", PLUGIN / "SECURITY.md", *sorted((PLUGIN / "docs").glob("*.md"))])
         for required in (
-            "Java 17", "BYO-driver", "dbname=", "schema=", "UTF-8", "mock", "seed", "sample",
+            "Java 17", "BYO-driver", "dbname=", "schema=", "UTF-8",
             "dm7_open_console", "dm7_list_connections", "dm7_test_connection", "dm7_query", "dm7_execute",
             "dm7_describe_schema", "dm7_get_execution", "dm7_cancel_execution", "dm7_get_release_log", "dm7_release_export",
+            "TEST", "MOCK", "SEED", "SAMPLE", "测试SQL", "PLUGIN_DATA", "backup", "restore", "recovery",
+            "cachebuster", "new task", "codex plugin marketplace add",
         ):
             self.assertIn(required, docs)
 

@@ -44,7 +44,7 @@ function Get-Sha256([string]$Path) {
 }
 
 function Assert-NoForbiddenRuntimeFiles {
-  $inspectionRoots = @('assets', 'hooks', 'lib', 'skills', 'docs') | ForEach-Object { Join-Path $pluginRoot $_ } |
+  $inspectionRoots = @('assets', 'hooks', 'lib', 'skills', 'docs', 'licenses') | ForEach-Object { Join-Path $pluginRoot $_ } |
     Where-Object { Test-Path -LiteralPath $_ }
   $files = @($inspectionRoots | ForEach-Object { Get-ChildItem -LiteralPath $_ -Recurse -File })
   $topFiles = @(Get-ChildItem -LiteralPath $pluginRoot -File)
@@ -79,9 +79,10 @@ try {
     } else { $env:SOURCE_DATE_EPOCH = '315532800' }
   }
   if ($env:SOURCE_DATE_EPOCH -notmatch '^\d+$') { throw 'SOURCE_DATE_EPOCH must be a Unix timestamp' }
+  & (Join-Path $PSScriptRoot 'verify-extracted.ps1') -CheckJava17Only
 
   Assert-NoForbiddenRuntimeFiles
-  foreach ($scanRoot in @('assets', 'hooks', 'lib', 'skills', 'docs')) {
+  foreach ($scanRoot in @('assets', 'hooks', 'lib', 'skills', 'docs', 'licenses')) {
     $scanPath = Join-Path $pluginRoot $scanRoot
     if (Test-Path -LiteralPath $scanPath) { Assert-NoIntegrationValues $scanPath }
   }
@@ -112,11 +113,19 @@ try {
     'assets\logo.svg', 'assets\logo-dark.svg', 'assets\screenshot-console.png', 'assets\screenshot-release.png',
     'SECURITY.md', 'CHANGELOG.md',
     'docs\INSTALLATION.md', 'docs\USER_GUIDE.md', 'docs\TROUBLESHOOTING.md',
-    'docs\DEVELOPMENT.md', 'docs\PACKAGING.md'
+    'docs\DEVELOPMENT.md', 'docs\PACKAGING.md', 'docs\ADMINISTRATION.md', 'docs\LICENSING.md'
   )
   foreach ($relative in $requiredRuntimeFiles) { Copy-RuntimeFile $relative $true }
   foreach ($relative in $optionalRuntimeFiles) { Copy-RuntimeFile $relative $false }
+  $licenseFiles = @(Get-ChildItem -LiteralPath (Join-Path $pluginRoot 'licenses') -Recurse -File | Sort-Object FullName)
+  if (-not ($licenseFiles | Where-Object { $_.Name -eq 'dependencies.json' })) { throw 'Dependency license inventory is missing' }
+  foreach ($licenseFile in $licenseFiles) {
+    $relative = $licenseFile.FullName.Substring($pluginRoot.Length).TrimStart('\', '/')
+    Copy-RuntimeFile $relative $true
+  }
   Assert-NoIntegrationValues $stagePlugin
+  python (Join-Path $PSScriptRoot 'verify-package-security.py') $stagePlugin
+  if ($LASTEXITCODE -ne 0) { throw 'Recursive package security scan failed' }
 
   Add-Type -AssemblyName System.IO.Compression
   Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -139,6 +148,12 @@ try {
       try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
     }
   } finally { $zip.Dispose() }
+  $archiveScan = Join-Path $stageRoot 'archive-scan'
+  New-Item -ItemType Directory -Force -Path $archiveScan | Out-Null
+  Copy-Item -LiteralPath $archive -Destination (Join-Path $archiveScan 'release.zip')
+  python (Join-Path $PSScriptRoot 'verify-package-security.py') $archiveScan
+  if ($LASTEXITCODE -ne 0) { throw 'Final archive recursive security scan failed' }
+  & (Join-Path $PSScriptRoot 'verify-extracted.ps1') -Archive $archive -RepoRoot $repoRoot
   Write-Output $archive
 } finally {
   if (Test-Path -LiteralPath $stageRoot) { Remove-Item -LiteralPath $stageRoot -Recurse -Force }

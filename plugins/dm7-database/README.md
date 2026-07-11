@@ -6,9 +6,9 @@
 
 - Configure named connections without placing passwords in chat or configuration files.
 - Run bounded queries and confirmed mutations, monitor progress, cancel work, and inspect schema metadata.
-- Record only eligible DDL/DML in a session-scoped release log. SQL marked with purpose `mock`, `seed`, or `sample` is excluded.
+- Record only eligible DDL/DML in a session-scoped release log. Purposes `TEST`, `MOCK`, `SEED`, and `SAMPLE`—including Chinese 测试SQL—are excluded; only `PRODUCTION_CHANGE` and `MIGRATION` are release-eligible.
 - Export and truncate the current session version under an explicit confirmation flow. No idempotency rewriting is attempted.
 
-See [Installation](docs/INSTALLATION.md), [User guide](docs/USER_GUIDE.md), [Troubleshooting](docs/TROUBLESHOOTING.md), [Security](SECURITY.md), and [Development](docs/DEVELOPMENT.md).
+See [Installation](docs/INSTALLATION.md), [Administration](docs/ADMINISTRATION.md), [User guide](docs/USER_GUIDE.md), [Troubleshooting](docs/TROUBLESHOOTING.md), [Security](SECURITY.md), [Licensing](docs/LICENSING.md), and [Development](docs/DEVELOPMENT.md).
 
 This is a BYO-driver distribution. The Dameng JDBC driver and all credentials are deliberately absent.
