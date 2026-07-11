@@ -85,6 +85,8 @@ class ExportRepositoryTest {
                             session.sessionId(), session.version())
                     .orElseThrow()
                     .artifactSha256());
+            assertEquals(java.util.List.of(complete), repository.listBySession(session.sessionId(), 20));
+            assertTrue(repository.listBySession("another-session",20).isEmpty());
         }
     }
 

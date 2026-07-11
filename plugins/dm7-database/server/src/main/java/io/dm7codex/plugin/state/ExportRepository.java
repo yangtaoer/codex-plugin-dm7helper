@@ -112,6 +112,17 @@ public final class ExportRepository {
         }
     }
 
+    public List<ExportArtifactRecord> listBySession(String sessionId, int limit) throws SQLException {
+        if (sessionId == null || sessionId.isBlank() || limit < 1 || limit > 100)
+            throw new IllegalArgumentException("invalid artifact list");
+        try (var connection=database.openConnection(); var statement=connection.prepareStatement(
+                "SELECT * FROM export_artifact WHERE session_id=? ORDER BY created_at DESC, version DESC LIMIT ?")) {
+            statement.setString(1,sessionId); statement.setInt(2,limit);
+            try(var rows=statement.executeQuery()){var values=new ArrayList<ExportArtifactRecord>();
+                while(rows.next()) values.add(readArtifact(rows)); return List.copyOf(values);}
+        }
+    }
+
     public List<ExportArtifactRecord> findRecoverable() throws SQLException {
         try (var connection = database.openConnection();
                 var statement = connection.prepareStatement("""

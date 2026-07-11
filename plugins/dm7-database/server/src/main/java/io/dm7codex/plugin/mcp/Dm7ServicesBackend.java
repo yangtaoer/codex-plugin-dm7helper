@@ -31,6 +31,7 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
     private final ExecutionEventBus eventBus;
     private final ExecutionRegistry registry;
     private final SqlClassificationService classifier;
+    private final SqlSummaryRedactor summaries=new SqlSummaryRedactor();
     private final java.nio.file.Path exportsRoot;
 
     private Dm7ServicesBackend(StateDatabase database, SessionInitializer initializer,
@@ -95,8 +96,9 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
             case "executions.get" -> {ensureExecution(input,session);yield getExecution(Map.of("executionId",required(input,"id")),session);}
             case "executions.cancel" -> {ensureExecution(input,session);yield cancel(Map.of("executionId",required(input,"id")),session);}
             case "history" -> history(input,session);
-            case "release.preview" -> convert(releaseLog.inspect(session));
+            case "release.preview" -> releasePreview(session);
             case "release.export" -> consoleExport(input,session);
+            case "release.recover" -> recoverExport(input,session);
             default -> callMcp(operation,input,session);
         };
     }
@@ -115,7 +117,7 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
                 artifact.get().artifactSha256(),50L*1024*1024));
     }
 
-    private Map<String,Object> runtime(SessionState session)throws Exception{var release=releaseLog.inspect(session);return Map.of("sessionShortId",session.sessionId().substring(0,Math.min(12,session.sessionId().length())),"currentVersion",release.currentVersion(),"runningCount",registry.activeCount(),"connections",profiles.list().size());}
+    private Map<String,Object> runtime(SessionState session)throws Exception{var release=releaseLog.inspect(session);return Map.of("sessionShortId",session.sessionId().substring(0,Math.min(12,session.sessionId().length())),"currentVersion",release.currentVersion(),"runningCount",history.countRunning(session.sessionId()),"connections",profiles.list().size());}
     private ConnectionProfile findProfile(Map<String,Object> input){return profiles.find(UUID.fromString(required(input,"id"))).orElseThrow(ConsoleHttpServer.BackendProblem::notFound);}
     private void ensureExecution(Map<String,Object> input,SessionState session)throws Exception{var found=history.findExecution(UUID.fromString(required(input,"id")).toString());if(found.isEmpty()||!found.get().sessionId().equals(session.sessionId()))throw ConsoleHttpServer.BackendProblem.notFound();}
     private Map<String,Object> consoleExport(Map<String,Object> input,SessionState session)throws Exception{
@@ -123,6 +125,52 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
         try{var result=export(session);result.remove("path");result.put("downloadUrl","/api/release/artifacts/"+result.get("id")+"/download");return result;}
         catch(io.dm7codex.plugin.release.ReleaseExportLockTimeout|io.dm7codex.plugin.release.ReleaseLogConnectionMismatch conflict){throw ConsoleHttpServer.BackendProblem.conflict();}
     }
+    private Map<String,Object> recoverExport(Map<String,Object> input,SessionState session)throws Exception{
+        if(!Boolean.TRUE.equals(input.get("confirm")))throw new IllegalArgumentException("confirmation required");
+        String text=required(input,"version");if(!text.matches("v[0-9]{3,9}"))throw new IllegalArgumentException("invalid version");
+        int version=Integer.parseInt(text.substring(1));
+        var artifact=exportRepository.findArtifact(session.sessionId(),version).orElseThrow(ConsoleHttpServer.BackendProblem::notFound);
+        if(!Set.of("SEALED","RECOVERY_REQUIRED").contains(artifact.state()))throw ConsoleHttpServer.BackendProblem.conflict();
+        var sessions=new SessionRepository(database,session.activeSql().getParent().getParent());
+        var release=sessions.findVersion(session.sessionId(),version);
+        var historical=new SessionState(session.sessionId(),session.externalIdHash(),version,release.databaseFingerprint(),release.activeSql(),session.createdAt());
+        try{var result=export(historical);result.remove("path");result.put("downloadUrl","/api/release/artifacts/"+result.get("id")+"/download");return result;}
+        catch(io.dm7codex.plugin.release.ReleaseExportLockTimeout conflict){throw ConsoleHttpServer.BackendProblem.conflict();}
+    }
+
+    private Map<String,Object> releasePreview(SessionState session)throws Exception{
+        var snapshot=releaseLog.inspect(session);int version=Integer.parseInt(snapshot.currentVersion().substring(1));
+        var view=history.releaseView(session.sessionId(),version,100);var result=new LinkedHashMap<String,Object>();
+        result.put("sessionShortId",session.sessionId().substring(0,Math.min(12,session.sessionId().length())));
+        result.put("currentVersion",snapshot.currentVersion());result.put("databaseFingerprint",boundFingerprint(snapshot.databaseFingerprint()));
+        result.put("bindingState",bindingState(snapshot.databaseFingerprint()));
+        result.put("statementCount",view.recordedCount());result.put("excludedCount",view.excludedCount());result.put("failedCount",view.failedCount());
+        result.put("sqlPreview",snapshot.sqlPreview());result.put("previewTruncated",snapshot.previewTruncated());
+        result.put("firstSequence",snapshot.firstSequence());result.put("lastSequence",snapshot.lastSequence());
+        result.put("runningCount",history.countRunning(session.sessionId()));result.put("entriesTruncated",view.truncated());
+        result.put("entries",view.entries().stream().map(this::releaseEntry).toList());
+        result.put("artifacts",exportRepository.listBySession(session.sessionId(),50).stream().map(this::artifactView).toList());return result;
+    }
+    private String bindingState(String fingerprint){if(fingerprint==null||fingerprint.equals("unbound"))return "UNBOUND";
+        var profile=profiles.list().stream().filter(ConnectionProfile::isDefault).findFirst();if(profile.isEmpty())return "NO_DEFAULT";
+        return DmConnectionFactory.databaseFingerprint(profile.get()).equals(fingerprint)?"MATCH":"MISMATCH";}
+    private static String boundFingerprint(String fingerprint){return fingerprint==null||fingerprint.equals("unbound")?null:fingerprint;}
+    private Map<String,Object> releaseEntry(ExecutionRepository.ReleaseEntryRecord entry){var item=new LinkedHashMap<String,Object>();
+        item.put("sequence",entry.sequence());item.put("index",entry.statementIndex());item.put("kind",entry.kind());item.put("status",entry.status());
+        item.put("source",entry.source());item.put("purpose",entry.purpose());item.put("recorded",entry.recorded());
+        item.put("exclusionReason",entry.exclusionReason());item.put("createdAt",entry.createdAt().toString());item.put("sqlSummary",summaries.summarize(entry.rawSql()));return item;}
+    private Map<String,Object> artifactView(ExportRepository.ExportArtifactRecord artifact){var item=new LinkedHashMap<String,Object>();
+        item.put("id",artifact.exportId());item.put("state",artifact.state());item.put("version","v%03d".formatted(artifact.version()));
+        item.put("filename",artifact.artifactPath()==null?null:artifact.artifactPath().getFileName().toString());item.put("sha256",artifact.artifactSha256());
+        item.put("statementCount",artifact.statementCount());item.put("firstSequence",artifact.firstSequence());item.put("lastSequence",artifact.lastSequence());
+        item.put("createdAt",artifact.createdAt().toString());item.put("completedAt",artifact.completedAt()==null?null:artifact.completedAt().toString());
+        String integrity="RECOVERABLE";String expected=artifact.artifactSha256();Long bytes=null;boolean downloadable=false;
+        if(!"COMPLETE".equals(artifact.state()))try{var sealed=exportRepository.findSealed(artifact.sessionId(),artifact.version());if(sealed.isEmpty())integrity="UNAVAILABLE";else{expected=sealed.get().sealedSourceSha256();var source=sealed.get().sealedSourcePath();if(!java.nio.file.Files.isRegularFile(source,java.nio.file.LinkOption.NOFOLLOW_LINKS))integrity="MISSING";else if(!sha256(source).equals(expected))integrity="TAMPERED";}}catch(Exception ignored){integrity="UNAVAILABLE";}
+        if("COMPLETE".equals(artifact.state())&&artifact.artifactPath()!=null)try{
+            var path=artifact.artifactPath();if(!java.nio.file.Files.isRegularFile(path,java.nio.file.LinkOption.NOFOLLOW_LINKS))integrity="MISSING";
+            else if(!sha256(path).equals(artifact.artifactSha256()))integrity="TAMPERED";else{integrity="VERIFIED";bytes=java.nio.file.Files.size(path);downloadable=true;}}
+        catch(Exception ignored){integrity="UNAVAILABLE";}item.put("sha256",expected);item.put("expectedSha256",expected);item.put("byteLength",bytes);item.put("integrityState",integrity);item.put("downloadAvailable",downloadable);
+        item.put("downloadUrl",downloadable?"/api/release/artifacts/"+artifact.exportId()+"/download":null);return item;}
     private Map<String,Object> saveProfile(Map<String,Object> input,ConnectionProfile old)throws Exception{
         var allowed=Set.of("id","name","driverJar","driverClass","jdbcUrl","username","password","clearPassword","schema","connectTimeoutSeconds","socketTimeoutSeconds","queryTimeoutSeconds","maxRows","maxBytes","isDefault");
         if(!allowed.containsAll(input.keySet()))throw new IllegalArgumentException("unknown field");
@@ -181,10 +229,10 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
                 enumValue(input,"source",ExecutionSource.class),enumValue(input,"purpose",SqlPurpose.class),
                 instantValue(input,"startedAfter"),instantValue(input,"startedBefore"),booleanValue(input,"recorded"),
                 uuidValue(input,"correlationId"),booleanValue(input,"success"),enumValue(input,"kind",SqlKind.class));
-        var page=history.search(filter,offset,limit);var items=page.items().stream().map(Dm7ServicesBackend::historyItem).toList();
+        var page=history.search(filter,offset,limit);var items=page.items().stream().map(this::historyItem).toList();
         return Map.of("items",items,"offset",page.offset(),"limit",page.limit(),"hasMore",page.hasMore());
     }
-    private static Map<String,Object> historyItem(ExecutionSummary s){var m=new LinkedHashMap<String,Object>();m.put("executionId",s.executionId().toString());m.put("correlationId",s.correlationId().toString());m.put("connectionFingerprint",s.connectionFingerprint());m.put("source",s.source().name());m.put("purpose",s.purpose().map(Enum::name).orElse(null));m.put("status",s.status().name());m.put("startedAt",s.startedAt().toString());m.put("completedAt",s.completedAt()==null?null:s.completedAt().toString());m.put("affectedRows",s.affectedRows());m.put("returnedRows",s.returnedRows());m.put("recorded",s.recorded());m.put("exclusionReason",s.exclusionReason());return m;}
+    private Map<String,Object> historyItem(ExecutionSummary s){var m=new LinkedHashMap<String,Object>();m.put("executionId",s.executionId().toString());m.put("correlationId",s.correlationId().toString());m.put("connectionFingerprint",s.connectionFingerprint());m.put("source",s.source().name());m.put("purpose",s.purpose().map(Enum::name).orElse(null));m.put("status",s.status().name());m.put("startedAt",s.startedAt().toString());m.put("completedAt",s.completedAt()==null?null:s.completedAt().toString());m.put("affectedRows",s.affectedRows());m.put("returnedRows",s.returnedRows());m.put("recorded",s.recorded());m.put("exclusionReason",s.exclusionReason());try{m.put("sqlSummary",summaries.summarize(history.findExecution(s.executionId().toString()).map(ExecutionRepository.ExecutionRecord::sqlText).orElse("")));}catch(Exception unavailable){m.put("sqlSummary","");}return m;}
     private static <E extends Enum<E>> E enumValue(Map<String,Object>m,String key,Class<E>type){String value=nullableText(m,key);return value==null?null:Enum.valueOf(type,value.toUpperCase(Locale.ROOT));}
     private static java.time.Instant instantValue(Map<String,Object>m,String key){String value=nullableText(m,key);return value==null?null:java.time.Instant.parse(value);}
     private static UUID uuidValue(Map<String,Object>m,String key){String value=nullableText(m,key);return value==null?null:UUID.fromString(value);}
@@ -257,12 +305,14 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
         summary.put("startedAt", instant(record.startedAt())); summary.put("completedAt", instant(record.completedAt()));
         summary.put("affectedRowCount", record.affectedRowCount()); summary.put("returnedRowCount", record.returnedRowCount());
         summary.put("recorded", record.recorded()); summary.put("exclusionReason", record.exclusionReason());
+        summary.put("sqlSummary", summaries.summarize(record.sqlText()));
         var statements = history.findStatements(id).stream().map(statement -> {
             var item = new LinkedHashMap<String, Object>();
             item.put("index", statement.statementIndex()); item.put("kind", statement.statementKind());
             item.put("status", statement.status()); item.put("phase", statement.phase());
             item.put("rowCount", statement.rowCount()); item.put("recorded", statement.recorded());
             item.put("exclusionReason", statement.exclusionReason());
+            item.put("sqlSummary", summaries.summarize(statement.rawSql()));
             return Collections.unmodifiableMap(item);
         }).toList();
         return Map.of("summary", summary, "statements", statements,

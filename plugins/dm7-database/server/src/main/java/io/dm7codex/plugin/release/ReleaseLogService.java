@@ -212,10 +212,10 @@ public final class ReleaseLogService {
             current = requireCurrentAtLeast(supplied);
             validateActiveHeader(current);
             var release = sessions.findVersion(current.sessionId(), current.version());
-            var preview = Files.readString(current.activeSql(), UTF_8);
+            var bounded = boundedPreview(current.activeSql(), 64 * 1024);
             return new ReleaseSnapshot(
                     versionText(current.version()), current.databaseFingerprint(),
-                    release.statementCount(), 0, 0, preview,
+                    release.statementCount(), 0, 0, bounded.text(), bounded.truncated(),
                     release.firstSequence(), release.lastSequence());
         } catch (ReleaseExportLockTimeout timeout) {
             throw timeout;
@@ -345,6 +345,19 @@ public final class ReleaseLogService {
         return "v%03d".formatted(version);
     }
 
+    private static BoundedPreview boundedPreview(Path path, int maxBytes) throws IOException {
+        try (var input=Files.newInputStream(path)) {
+            byte[] bytes=input.readNBytes(maxBytes + 1); boolean truncated=bytes.length>maxBytes;
+            int length=Math.min(bytes.length,maxBytes);
+            while(length>0) try {
+                var decoder=UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT);
+                return new BoundedPreview(decoder.decode(ByteBuffer.wrap(bytes,0,length)).toString(),truncated);
+            } catch(java.nio.charset.CharacterCodingException incomplete){length--;truncated=true;}
+            return new BoundedPreview("",truncated);
+        }
+    }
+
     private static String sha256(byte[] bytes) {
         try {
             return HexFormat.of().formatHex(
@@ -375,6 +388,8 @@ public final class ReleaseLogService {
             int excludedCount,
             int failedCount,
             String sqlPreview,
+            boolean previewTruncated,
             Long firstSequence,
             Long lastSequence) {}
+    private record BoundedPreview(String text, boolean truncated) {}
 }

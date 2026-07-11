@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.UUID;
 import io.dm7codex.plugin.execution.ExecutionModels.*;
 import io.dm7codex.plugin.sql.SqlKind;
+import io.dm7codex.plugin.sql.SqlPurpose;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -146,6 +147,48 @@ class ExecutionRepositoryTest {
             assertEquals(1,repository.search(filter,0,20).items().size());
             assertEquals(0,repository.search(new ExecutionFilter("other",null,null,null,null,null,true,
                     correlationId,true,SqlKind.DML),0,20).items().size());
+        }
+    }
+
+    @Test void releaseEntriesAndCountsAreExactBoundedAndSessionScoped() throws Exception {
+        var paths=RuntimePaths.forTest(tempDir);
+        try(var database=StateDatabase.open(paths.stateDatabase())){
+            var initializer=new SessionInitializer(paths,new SessionRepository(database,paths.sessionsDirectory()));
+            var session=initializer.initialize(new SessionIdentity("release-view-a","test","verified"));
+            var other=initializer.initialize(new SessionIdentity("release-view-b","test","verified"));
+            var repository=new ExecutionRepository(database);
+            repository.appendStatement(new ExecutionRepository.StatementEventRecord(null,session.sessionId(),1,0,1L,"DDL","SUCCEEDED","LOGGING",0L,null,null,true,null,"CREATE TABLE A(P VARCHAR(9) DEFAULT 'secret')","CREATE TABLE A(P VARCHAR(9) DEFAULT 'secret')",Instant.parse("2026-07-10T06:00:01Z")));
+            repository.appendStatement(new ExecutionRepository.StatementEventRecord(null,session.sessionId(),1,1,null,"DML","SUCCEEDED","EXECUTING",1L,null,null,false,"test purpose","INSERT INTO A VALUES ('hidden')",null,Instant.parse("2026-07-10T06:00:02Z")));
+            repository.appendStatement(new ExecutionRepository.StatementEventRecord(null,session.sessionId(),1,2,null,"DML","FAILED","EXECUTING",0L,"42000",9,false,null,"UPDATE A SET P='failure-secret'",null,Instant.parse("2026-07-10T06:00:03Z")));
+            repository.appendStatement(new ExecutionRepository.StatementEventRecord(null,other.sessionId(),1,0,1L,"DDL","SUCCEEDED","LOGGING",0L,null,null,true,null,"DROP TABLE OTHER",null,Instant.now()));
+
+            var view=repository.releaseView(session.sessionId(),1,2);
+            assertEquals(1,view.recordedCount()); assertEquals(1,view.excludedCount()); assertEquals(1,view.failedCount());
+            assertEquals(2,view.entries().size()); assertTrue(view.truncated());
+            assertTrue(view.entries().stream().noneMatch(e->e.rawSql().contains("OTHER")));
+        }
+    }
+
+    @Test void persistsExcludedAndFailedStatementFactsWithoutReplayableSql() throws Exception {
+        var paths=RuntimePaths.forTest(tempDir);
+        try(var database=StateDatabase.open(paths.stateDatabase())){
+            var session=new SessionInitializer(paths,new SessionRepository(database,paths.sessionsDirectory())).initialize(new SessionIdentity("facts","test","verified"));
+            var repository=new ExecutionRepository(database);var id=UUID.randomUUID();
+            repository.saveExecution(new ExecutionRepository.ExecutionRecord(id.toString(),UUID.randomUUID().toString(),session.sessionId(),"fp","CONSOLE","TEST","UPDATE A SET P='private'","EXECUTING","RUNNING",Instant.now(),null,null,null,null,null,null,false,null));
+            var parsed=new io.dm7codex.plugin.sql.DmSqlParser().parse("UPDATE A SET P='private'");
+            var error=new SafeError(UUID.randomUUID(),ExecutionStatus.EXECUTING,"Database operation failed","42000",9,false);
+            var result=new StatementResult(0,SqlKind.DML,false,false,0,false,"purpose_test","auto_commit",2,java.util.Optional.of(error));
+            repository.persistStatementFacts(id,session.sessionId(),session.version(),parsed,List.of(result));
+            var stored=repository.findStatements(id.toString()).get(0);
+            assertEquals("FAILED",stored.status());assertEquals("purpose_test",stored.exclusionReason());assertNull(stored.replayableSql());
+        }
+    }
+
+    @Test void runningHistoryUsesExactPhaseFilterAndSessionCount() throws Exception {
+        var paths=RuntimePaths.forTest(tempDir);try(var database=StateDatabase.open(paths.stateDatabase())){
+            var initializer=new SessionInitializer(paths,new SessionRepository(database,paths.sessionsDirectory()));var session=initializer.initialize(new SessionIdentity("running-a","test","verified"));var other=initializer.initialize(new SessionIdentity("running-b","test","verified"));var repository=new ExecutionRepository(database);
+            repository.started(UUID.randomUUID(),session.sessionId(),"fp",ExecutionSource.CONSOLE,java.util.Optional.empty(),"SELECT 1");var id=UUID.randomUUID();repository.started(id,session.sessionId(),"fp",ExecutionSource.MCP,java.util.Optional.of(SqlPurpose.MIGRATION),"UPDATE A SET C=1");repository.progress(id,ExecutionStatus.EXECUTING);repository.started(UUID.randomUUID(),other.sessionId(),"fp",ExecutionSource.MCP,java.util.Optional.empty(),"SELECT 1");
+            assertEquals(2,repository.countRunning(session.sessionId()));assertEquals(1,repository.countRunning(other.sessionId()));var page=repository.search(new ExecutionFilter(session.sessionId(),ExecutionStatus.EXECUTING,null,null,null,null),0,20);assertEquals(1,page.items().size());assertEquals(ExecutionStatus.EXECUTING,page.items().get(0).status());repository.terminal(id,ExecutionStatus.COMPLETED,java.util.Optional.empty());assertEquals(1,repository.countRunning(session.sessionId()));assertEquals(1,repository.countRunning(other.sessionId()));
         }
     }
 

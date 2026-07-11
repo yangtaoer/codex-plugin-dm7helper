@@ -153,6 +153,7 @@ public final class ConsoleHttpServer implements AutoCloseable {
         else if(path.equals("/api/history")){ allow(x,"GET"); operation="history"; input=queryObject(x); }
         else if(path.equals("/api/release")){ allow(x,"GET"); operation="release.preview"; input=queryObject(x); }
         else if(path.equals("/api/release/export")){ allow(x,"POST"); operation="release.export"; input=bodyOrQuery(x); }
+        else if(path.equals("/api/release/recover")){ allow(x,"POST"); operation="release.recover"; input=bodyOrQuery(x); }
         else if(path.matches("/api/release/artifacts/[^/]+/download")){ allow(x,"GET"); download(x,segment(path,4),state); return; }
         else if(path.equals("/api/events")){ allow(x,"GET"); if(x.getRequestURI().getRawQuery()!=null)throw new JsonHttp.HttpProblem(400,"UNKNOWN_FIELD","事件请求不允许查询参数。");sse(x,state); return; }
         else throw new JsonHttp.HttpProblem(404,"NOT_FOUND","资源不存在。");
@@ -174,13 +175,14 @@ public final class ConsoleHttpServer implements AutoCloseable {
             case"execute"->Set.of("connectionId","executionId","sql","parameters","purpose","atomic","continueOnError","timeoutSeconds");
             case"metadata"->Set.of("connectionId","schemaPattern","objectPattern","offset","limit");
             case"history"->Set.of("status","source","purpose","offset","limit","startedAfter","startedBefore","recorded","correlationId","success","kind");
-            case"release.export"->Set.of("confirm"); default->Set.of();};
+            case"release.export"->Set.of("confirm"); case"release.recover"->Set.of("version","confirm"); default->Set.of();};
         if(!allowed.containsAll(input.keySet()))throw new JsonHttp.HttpProblem(422,"UNKNOWN_FIELD","请求包含不允许的字段。");
     }
     private static void validateTypes(String operation,Map<String,Object> input)throws JsonHttp.HttpProblem{
         if(operation.equals("sql.classify")||operation.equals("query")||operation.equals("execute"))requireText(input,"sql");
         if(operation.equals("execute"))requireText(input,"purpose");
-        if(operation.equals("release.export")&&!(input.get("confirm")instanceof Boolean))invalidType();
+        if((operation.equals("release.export")||operation.equals("release.recover"))&&!(input.get("confirm")instanceof Boolean))invalidType();
+        if(operation.equals("release.recover"))requireText(input,"version");
         if(operation.startsWith("connections.")&&!operation.equals("connections.list")&&!operation.equals("connections.create")&&!operation.equals("connections.diagnostics"))requireText(input,"id");
         for(String key:List.of("name","driverJar","driverClass","jdbcUrl","username","password","schema"))if(input.containsKey(key)&&!(input.get(key)instanceof String))invalidType();
         if(input.containsKey("clearPassword")&&!(input.get("clearPassword")instanceof Boolean))invalidType();

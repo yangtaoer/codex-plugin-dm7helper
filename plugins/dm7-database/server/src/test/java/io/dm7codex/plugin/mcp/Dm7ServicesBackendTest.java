@@ -230,4 +230,28 @@ class Dm7ServicesBackendTest {
             }
         }
     }
+
+    @Test void releasePreviewAndArtifactsAreSafeSessionScopedAndCompleteCannotRecover() throws Exception {
+        var paths=RuntimePaths.forTest(temporary);
+        try(var backend=Dm7ServicesBackend.open(paths)){
+            var session=backend.initialize(new SessionIdentity("release-ui-a","test","verified"));
+            var preview=backend.call("release.preview",Map.of(),session);
+            assertEquals("v001",preview.get("currentVersion"));assertEquals("UNBOUND",preview.get("bindingState"));
+            assertEquals(0,preview.get("statementCount"));assertEquals(java.util.List.of(),preview.get("entries"));
+            assertFalse(preview.toString().contains(temporary.toString()));
+            var exported=backend.call("release.export",Map.of("confirm",true),session);String id=(String)exported.get("id");
+            var rotated=backend.call("release.preview",Map.of(),session);
+            assertEquals("v002",rotated.get("currentVersion"));
+            @SuppressWarnings("unchecked") var artifacts=(java.util.List<Map<String,Object>>)rotated.get("artifacts");
+            assertEquals(1,artifacts.size());assertEquals(id,artifacts.get(0).get("id"));assertEquals("VERIFIED",artifacts.get(0).get("integrityState"));
+            assertFalse(artifacts.get(0).containsKey("path"));assertThrows(io.dm7codex.plugin.http.ConsoleHttpServer.BackendProblem.class,
+                    ()->backend.call("release.recover",Map.of("version","v001","confirm",true),session));
+            assertThrows(IllegalArgumentException.class,()->backend.call("release.recover",Map.of("version","v001","confirm",false),session));
+            assertThrows(IllegalArgumentException.class,()->backend.call("release.recover",Map.of("version","001","confirm",true),session));
+            assertThrows(io.dm7codex.plugin.http.ConsoleHttpServer.BackendProblem.class,()->backend.call("release.recover",Map.of("version","v999","confirm",true),session));
+            var other=backend.initialize(new SessionIdentity("release-ui-b","test","verified"));
+            assertEquals(java.util.List.of(),backend.call("release.preview",Map.of(),other).get("artifacts"));
+            assertThrows(io.dm7codex.plugin.http.ConsoleHttpServer.BackendProblem.class,()->backend.call("release.recover",Map.of("version","v001","confirm",true),other));
+        }
+    }
 }

@@ -1,0 +1,50 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { expect, it, vi } from 'vitest'
+import type { ApiClient, EventRecord, HistoryPage } from '../api/types'
+import { ActivityPage } from './ActivityPage'
+
+const item={executionId:'11111111-1111-4111-8111-111111111111',correlationId:'22222222-2222-4222-8222-222222222222',connectionFingerprint:'a'.repeat(64),source:'CONSOLE' as const,purpose:'MIGRATION' as const,status:'EXECUTING' as const,startedAt:'2026-07-11T08:00:00Z',completedAt:null,affectedRows:0,returnedRows:0,recorded:false,exclusionReason:null,sqlSummary:'UPDATE CUSTOMER SET NAME=?'}
+const page:HistoryPage={items:[item],offset:0,limit:50,hasMore:false}
+
+it('uses shared events, applies exact filters, cancels active work and opens safe detail',async()=>{
+  const history=vi.fn().mockResolvedValue(page),cancelExecution=vi.fn().mockResolvedValue({executionId:item.executionId,cancelRequested:true})
+  const getExecution=vi.fn().mockResolvedValue({summary:{...item,phase:'EXECUTING'},statements:[{index:0,kind:'DML',status:'RUNNING',sqlSummary:'UPDATE CUSTOMER SET NAME=?'}],events:[{sequence:1,status:'EXECUTING',timestamp:item.startedAt,detail:'statement 1'}]})
+  const api={history,cancelExecution,getExecution} as unknown as ApiClient
+  const events:EventRecord[]=[{id:'9',executionId:item.executionId,status:'executing',timestamp:item.startedAt,detail:'statement 1'}]
+  render(<ActivityPage api={api} events={events} streamStatus="connected" />)
+  expect((await screen.findAllByText('UPDATE CUSTOMER SET NAME=?')).length).toBeGreaterThan(0)
+  fireEvent.change(screen.getByLabelText('来源'),{target:{value:'CONSOLE'}});fireEvent.change(screen.getByLabelText('状态'),{target:{value:'EXECUTING'}})
+  fireEvent.click(screen.getByRole('button',{name:'应用筛选'}));await waitFor(()=>expect(history).toHaveBeenLastCalledWith(expect.objectContaining({source:'CONSOLE',status:'EXECUTING',offset:0,limit:50}),expect.any(AbortSignal)))
+  fireEvent.click(screen.getAllByRole('button',{name:'取消任务'})[0]);await waitFor(()=>expect(cancelExecution).toHaveBeenCalledWith(item.executionId,expect.any(AbortSignal)))
+  fireEvent.click(screen.getAllByRole('button',{name:'查看执行详情'})[0]);expect(await screen.findByRole('dialog',{name:'执行详情'})).toBeTruthy()
+  expect(document.body.textContent).not.toContain('secret')
+})
+
+it('aborts stale history requests and resets without broadening fields',async()=>{
+ const calls:AbortSignal[]=[];const history=vi.fn((_q:unknown,signal?:AbortSignal)=>{calls.push(signal!);return Promise.resolve(page)})
+ render(<ActivityPage api={{history} as unknown as ApiClient} events={[]} streamStatus="connected"/>);await screen.findByText('ACTIVE JOBS')
+ fireEvent.change(screen.getByLabelText('来源'),{target:{value:'MCP'}});fireEvent.click(screen.getByRole('button',{name:'应用筛选'}));
+ await waitFor(()=>expect(history).toHaveBeenCalledTimes(2));expect(calls[0].aborted).toBe(true);expect(history.mock.calls[1][0]).toEqual({source:'MCP',offset:0,limit:50})
+ fireEvent.click(screen.getByRole('button',{name:'重置'}));await waitFor(()=>expect(history).toHaveBeenCalledTimes(3));expect(history.mock.calls[2][0]).toEqual({offset:0,limit:50})
+})
+
+it('paginates without duplicate executions and reports stale stream',async()=>{
+ const second={...item,executionId:'33333333-3333-4333-8333-333333333333',sqlSummary:'DELETE FROM CUSTOMER WHERE ID=?'}
+ const history=vi.fn().mockResolvedValueOnce({...page,hasMore:true}).mockResolvedValueOnce({items:[item,second],offset:50,limit:50,hasMore:false})
+ render(<ActivityPage api={{history} as unknown as ApiClient} events={[]} streamStatus="reconnecting"/>);expect(screen.getByText(/实时通道已过期/)).toBeTruthy();await screen.findAllByText(item.sqlSummary)
+ fireEvent.click(screen.getByRole('button',{name:'加载更多'}));expect((await screen.findAllByText(second.sqlSummary)).length).toBe(2);expect(screen.getAllByText(item.sqlSummary).length).toBe(2)
+ expect(history).toHaveBeenLastCalledWith({offset:50,limit:50},expect.any(AbortSignal))
+})
+
+it('keeps cancellation pending non-terminal and surfaces safe failure',async()=>{
+ let reject!:(e:Error)=>void;const cancelExecution=vi.fn(()=>new Promise((_r,j)=>{reject=j}));render(<ActivityPage api={{history:vi.fn().mockResolvedValue(page),cancelExecution} as unknown as ApiClient} events={[]} streamStatus="connected"/>);await screen.findAllByText(item.sqlSummary)
+ fireEvent.click(screen.getAllByRole('button',{name:'取消任务'})[0]);expect(screen.getAllByText('取消请求中').length).toBeGreaterThan(0);reject(new Error('操作与当前状态冲突。'))
+ expect(await screen.findByRole('alert')).toHaveProperty('textContent',expect.stringContaining('操作与当前状态冲突'))
+})
+
+it('coalesces ten phase events into one terminal refresh and aborts on unmount',async()=>{
+ const signals:AbortSignal[]=[];const history=vi.fn((_q:unknown,signal?:AbortSignal)=>{signals.push(signal!);return Promise.resolve(page)});const {rerender,unmount}=render(<ActivityPage api={{history} as unknown as ApiClient} events={[]} streamStatus="connected"/>);await waitFor(()=>expect(history).toHaveBeenCalledTimes(1))
+ const statuses=['queued','connecting','parsing','executing','committing','logging','executing','logging','committing'] as const;const phaseEvents=statuses.map((status,i)=>({id:String(i+1),executionId:item.executionId,status,timestamp:item.startedAt,detail:status}))
+ rerender(<ActivityPage api={{history} as unknown as ApiClient} events={phaseEvents} streamStatus="connected"/>);await new Promise(r=>setTimeout(r,220));expect(history).toHaveBeenCalledTimes(1)
+ rerender(<ActivityPage api={{history} as unknown as ApiClient} events={[...phaseEvents,{id:'10',executionId:item.executionId,status:'completed',timestamp:item.startedAt,detail:'done'}]} streamStatus="connected"/>);await waitFor(()=>expect(history).toHaveBeenCalledTimes(2));unmount();expect(signals.at(-1)?.aborted).toBe(true)
+})

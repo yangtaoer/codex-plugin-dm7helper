@@ -419,6 +419,29 @@ class ExecutionServiceMutationTest {
         }
     }
 
+    @Test void statementLedgerSeparatesRecordedExcludedFailedAndRolledBackFacts() throws Exception {
+        try(var fixture=releaseFixture("statement-ledger")){
+            var repository=new ExecutionRepository(fixture.database);
+            var eligible=new TestJdbc.Opener().fingerprint("db-a");
+            try(var service=new ExecutionService(eligible,new DmSqlParser(),new SqlSecurityPolicy(),fixture.release,repository,new ExecutionEventBus(50),new ExecutionRegistry())){
+                assertTrue(service.execute(fixture.session,new ExecuteCommand(UUID.randomUUID(),"UPDATE A SET C=1",SqlPurpose.MIGRATION,false,false,60)).success());
+            }
+            var excluded=new TestJdbc.Opener().fingerprint("db-a").failOnStatement(2);
+            try(var service=new ExecutionService(excluded,new DmSqlParser(),new SqlSecurityPolicy(),fixture.release,repository,new ExecutionEventBus(50),new ExecutionRegistry())){
+                service.execute(fixture.session,new ExecuteCommand(UUID.randomUUID(),"UPDATE A SET C=2; UPDATE B SET C=3",SqlPurpose.TEST,false,true,60));
+            }
+            var rolledBack=new TestJdbc.Opener().fingerprint("db-a").failOnStatement(2);
+            try(var service=new ExecutionService(rolledBack,new DmSqlParser(),new SqlSecurityPolicy(),fixture.release,repository,new ExecutionEventBus(50),new ExecutionRegistry())){
+                service.execute(fixture.session,new ExecuteCommand(UUID.randomUUID(),"UPDATE C SET C=4; UPDATE D SET C=5",SqlPurpose.MIGRATION,true,false,60));
+            }
+            var view=repository.releaseView(fixture.session.sessionId(),1,20);
+            assertEquals(1,view.recordedCount());assertEquals(1,view.excludedCount());assertEquals(3,view.failedCount());
+            assertEquals(1,view.entries().stream().filter(e->e.recorded()&&e.sequence()!=null).count());
+            assertTrue(view.entries().stream().filter(e->!e.recorded()).allMatch(e->e.rawSql()!=null));
+            assertEquals(1,fixture.release.inspect(fixture.session).statementCount());
+        }
+    }
+
     private ExecutionService executionWithRelease(TestJdbc.Opener opener, ReleaseLogService release) {
         return new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(), release,
                 null, new ExecutionEventBus(50), new ExecutionRegistry());

@@ -125,6 +125,7 @@ export function createApiClient(options: ClientOptions = {}): ApiClient {
     cancelExecution: (id, signal) => request<CancelResult>(`/api/executions/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: '{}' }, signal),
     release: (signal) => request<ReleaseSnapshot>('/api/release', { method: 'GET' }, signal),
     releaseExport: (confirm, signal) => request<ExportArtifact>('/api/release/export', { method: 'POST', body: JSON.stringify({ confirm }) }, signal),
+    releaseRecover: (version,confirm,signal) => request<ExportArtifact>('/api/release/recover',{method:'POST',body:JSON.stringify({version,confirm})},signal),
   }
 }
 

@@ -82,15 +82,17 @@ describe('same-origin API client', () => {
     await client.execute({ sql: 'UPDATE T SET A=1', purpose: 'PRODUCTION_CHANGE', atomic: true })
     await client.cancelExecution('execution-1')
     await client.releaseExport(true)
+    await client.releaseRecover('v001',true)
     expect(fetcher.mock.calls.map(([path]) => path)).toEqual([
       '/api/connections', '/api/connections/connection-1/default', '/api/connections/connection-1/test',
-      '/api/sql/classify', '/api/query', '/api/execute', '/api/executions/execution-1/cancel', '/api/release/export',
+      '/api/sql/classify', '/api/query', '/api/execute', '/api/executions/execution-1/cancel', '/api/release/export', '/api/release/recover',
     ])
     for (const [, init] of fetcher.mock.calls) {
       expect(init).toEqual(expect.objectContaining({ credentials: 'same-origin' }))
       expect(init.headers).toEqual(expect.objectContaining({ 'Content-Type': 'application/json' }))
     }
     expect(JSON.parse(fetcher.mock.calls[0][1].body)).toMatchObject({ name: '本地库', password: 'secret' })
+    expect(JSON.parse(fetcher.mock.calls.at(-1)![1].body)).toEqual({version:'v001',confirm:true})
     expect(JSON.parse(fetcher.mock.calls[7][1].body)).toEqual({ confirm: true })
   })
 

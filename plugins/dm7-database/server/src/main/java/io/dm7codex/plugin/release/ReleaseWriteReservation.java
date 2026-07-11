@@ -31,6 +31,8 @@ public final class ReleaseWriteReservation implements AutoCloseable {
         return session;
     }
 
+    public int releaseVersion() { ensureOpen(); return session.version(); }
+
     String fingerprint() {
         ensureOpen();
         return fingerprint;

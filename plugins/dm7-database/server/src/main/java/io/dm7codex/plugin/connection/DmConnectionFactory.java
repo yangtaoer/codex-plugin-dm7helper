@@ -66,7 +66,7 @@ public final class DmConnectionFactory {
                     statement.execute("SET SCHEMA " + profile.schema());
                 }
             }
-            return new ManagedConnection(connection, handle, fingerprint(profile));
+            return new ManagedConnection(connection, handle, databaseFingerprint(profile));
         } catch (SQLException | RuntimeException e) {
             Exception connectionCleanup = connection == null ? null : close(connection);
             Exception handleCleanup = close(handle);
@@ -87,7 +87,8 @@ public final class DmConnectionFactory {
         return Math.multiplyExact(seconds, 1_000);
     }
 
-    private static String fingerprint(ConnectionProfile profile) {
+    public static String databaseFingerprint(ConnectionProfile profile) {
+        Objects.requireNonNull(profile, "profile");
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             update(digest, profile.driverSha256());

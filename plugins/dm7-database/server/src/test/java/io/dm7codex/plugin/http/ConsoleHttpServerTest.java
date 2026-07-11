@@ -114,6 +114,15 @@ class ConsoleHttpServerTest {
         assertEquals("id-b",backend.lastInput.get("replacementDefaultId"));
     }
 
+    @Test void recoverRouteRequiresPostExactFieldsAndTypedConfirmation() throws Exception {
+        assertEquals(405,call("GET","/api/release/recover",null).statusCode());
+        assertEquals(422,call("POST","/api/release/recover",Map.of("version","v001","confirm","yes")).statusCode());
+        assertEquals(422,call("POST","/api/release/recover",Map.of("version",1,"confirm",true)).statusCode());
+        assertEquals(422,call("POST","/api/release/recover",Map.of("version","v001","confirm",true,"sessionId","other")).statusCode());
+        var response=call("POST","/api/release/recover",Map.of("version","v001","confirm",true));
+        assertEquals(200,response.statusCode());assertEquals("v001",backend.lastInput.get("version"));assertEquals(true,backend.lastInput.get("confirm"));
+    }
+
     @Test void secretBearingClassificationFailureIsSafeAndDoesNotEchoSql() throws Exception {
         String sql="create user demo identified by never-echo-this";
         var response=call("POST","/api/sql/classify",Map.of("sql",sql));

@@ -260,6 +260,7 @@ public final class ExecutionService implements AutoCloseable {
         String fingerprint = "unknown";
         boolean historyStarted = history != null;
         boolean databaseCommitted = false;
+        int releaseVersion = session.version();
         ExecutionStatus currentPhase = ExecutionStatus.CONNECTING;
         DmConnectionFactory.ManagedConnection managed = null;
         ReleaseWriteReservation reservation = null;
@@ -272,6 +273,7 @@ public final class ExecutionService implements AutoCloseable {
             if (history != null) history.connected(executionId, fingerprint);
             if (releaseLog != null) {
                 reservation = releaseLog.reserveWritable(session, fingerprint, command.purpose());
+                releaseVersion = reservation.releaseVersion();
             }
             checkCancelled(executionId);
             currentPhase = ExecutionStatus.PARSING;
@@ -321,7 +323,7 @@ public final class ExecutionService implements AutoCloseable {
                     reservation = null; managed = null;
                     var error = safe(correlationId, ExecutionStatus.EXECUTING, atomicFailure);
                     results.set(results.size() - 1, withError(results.get(results.size() - 1), error));
-                    return finishMutation(session, executionId, correlationId, results,
+                    return finishMutation(session, executionId, correlationId, statements, releaseVersion, results,
                             started, fingerprint, ExecutionStatus.FAILED, Optional.of(error));
                 }
                 publish(session, executionId, ExecutionStatus.COMMITTING);
@@ -346,7 +348,7 @@ public final class ExecutionService implements AutoCloseable {
                             managed = null;
                             var error = safe(correlationId, ExecutionStatus.LOGGING, loggingFailure);
                             results.set(i, markLoggingFailure(results.get(i), error));
-                            return finishMutation(session, executionId, correlationId, results,
+                            return finishMutation(session, executionId, correlationId, statements, releaseVersion, results,
                                     started, fingerprint, ExecutionStatus.FAILED, Optional.of(error));
                         }
                     }
@@ -411,7 +413,7 @@ public final class ExecutionService implements AutoCloseable {
                     reservation = null; managed = null;
                     var terminalSafeError = terminalAggregate(correlationId, results,
                             safe(correlationId, currentPhase, terminalFailure));
-                    return finishMutation(session, executionId, correlationId, results,
+                    return finishMutation(session, executionId, correlationId, statements, releaseVersion, results,
                             started, fingerprint, ExecutionStatus.FAILED,
                             Optional.of(terminalSafeError));
                 }
@@ -422,7 +424,7 @@ public final class ExecutionService implements AutoCloseable {
             }
             managed.close();
             managed = null;
-            return finishMutation(session, executionId, correlationId, results, started,
+            return finishMutation(session, executionId, correlationId, statements, releaseVersion, results, started,
                     fingerprint, ExecutionStatus.COMPLETED, Optional.empty());
         } catch (Exception failure) {
             if (managed != null && command.atomic() && !databaseCommitted) try { managed.connection().rollback(); }
@@ -436,7 +438,7 @@ public final class ExecutionService implements AutoCloseable {
                 managed = null;
             }
             var error = safe(correlationId, currentPhase, asException(failure));
-            return finishMutation(session, executionId, correlationId, results, started,
+            return finishMutation(session, executionId, correlationId, statements, releaseVersion, results, started,
                     fingerprint, ExecutionStatus.FAILED, Optional.of(error));
         } finally {
             if (reservation != null) try { reservation.close(); } catch (Exception ignored) { }
@@ -679,7 +681,8 @@ public final class ExecutionService implements AutoCloseable {
     }
 
     private ExecutionResult finishMutation(SessionState session, UUID executionId,
-            UUID correlationId, List<StatementResult> results, long started, String fingerprint,
+            UUID correlationId, List<io.dm7codex.plugin.sql.ParsedStatement> statements, int releaseVersion,
+            List<StatementResult> results, long started, String fingerprint,
             ExecutionStatus desired, Optional<SafeError> desiredError) {
         ExecutionStatus actual = registry.claimTerminal(executionId, desired);
         Optional<SafeError> actualError = desiredError;
@@ -689,6 +692,8 @@ public final class ExecutionService implements AutoCloseable {
                     desiredError.map(SafeError::restartRequired).orElse(false)));
         }
         publish(session, executionId, actual);
+        try { if(history!=null)history.persistStatementFacts(executionId,session.sessionId(),releaseVersion,statements,results); }
+        catch (SQLException ignored) { }
         try { persistTerminal(executionId, results, actual, actualError); }
         catch (SQLException ignored) { }
         return new ExecutionResult(executionId, actual == ExecutionStatus.COMPLETED, actual,

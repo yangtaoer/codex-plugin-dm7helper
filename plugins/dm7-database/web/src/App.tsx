@@ -10,6 +10,8 @@ import { usePathname } from './hooks/usePathname'
 import { useTheme } from './hooks/useTheme'
 import { ConnectionsPage } from './pages/ConnectionsPage'
 import { SqlConsolePage } from './pages/SqlConsolePage'
+import { ActivityPage } from './pages/ActivityPage'
+import { ReleasePage } from './pages/ReleasePage'
 
 type RuntimeState =
   | { kind: 'loading' }
@@ -129,13 +131,10 @@ function RouteContent({ active, runtime, runtimeStatus, theme, onThemeToggle, na
   if (active === 'settings') return <SettingsPage theme={theme} onThemeToggle={onThemeToggle} />
   if (active === 'connections') return <ConnectionsPage api={api} />
   if (active === 'sql') return <SqlConsolePage api={api} events={events} streamStatus={streamStatus} theme={theme} />
+  if (active === 'activity') return <ActivityPage api={api} events={events} streamStatus={streamStatus} />
+  if (active === 'release') return <ReleasePage api={api} />
   if (active === 'not-found') return <EmptyState title="页面未找到" description="该控制台路由不存在。请从左侧导航继续。" action={<InternalLink className="button-primary" to="/app/overview" navigate={navigate}>返回概览</InternalLink>} />
-  const content = {
-    activity: ['实时执行', '跟踪每个执行阶段与取消状态', Activity, '实时事件通道已就绪，此处将展示任务时间线。'],
-    release: ['发版日志', '检查每个会话的 DDL / DML 发版记录', FileClock, '版本预览与安全导出操作即将接入。'],
-  }[active]!
-  const Icon = content[2]
-  return <><PageHeader eyebrow="WORKSPACE" title={content[0] as string} description={content[1] as string} /><section className="placeholder-panel"><Icon size={30} strokeWidth={1.35} aria-hidden="true" /><div><h2>功能通道已预留</h2><p>{content[3] as string}</p></div><span className="placeholder-code">MODULE / {active.toUpperCase()}</span></section></>
+  return null
 }
 
 function OverviewPage({ runtime, runtimeStatus, navigate }: { runtime?: RuntimeSummary; runtimeStatus: RuntimeState['kind']; navigate: Navigate }) {

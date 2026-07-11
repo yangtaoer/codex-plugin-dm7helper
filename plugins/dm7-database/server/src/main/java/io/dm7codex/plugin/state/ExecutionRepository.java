@@ -13,6 +13,9 @@ import java.util.UUID;
 import java.util.Objects;
 
 public final class ExecutionRepository {
+    private static final java.util.Set<ExecutionStatus> TERMINAL = java.util.Set.of(
+            ExecutionStatus.COMPLETED, ExecutionStatus.FAILED,
+            ExecutionStatus.CANCELLED, ExecutionStatus.REJECTED);
     private final StateDatabase database;
 
     public ExecutionRepository(StateDatabase database) {
@@ -182,7 +185,7 @@ public final class ExecutionRepository {
         var sql = new StringBuilder("SELECT * FROM execution WHERE 1=1");
         var values = new ArrayList<Object>();
         if (filter.sessionId() != null) { sql.append(" AND session_id = ?"); values.add(filter.sessionId()); }
-        if (filter.status() != null) { sql.append(" AND status = ?"); values.add(filter.status().name()); }
+        if (filter.status() != null) { if(TERMINAL.contains(filter.status())){sql.append(" AND status = ?");values.add(filter.status().name());}else{sql.append(" AND status = 'RUNNING' AND phase = ?");values.add(filter.status().name());} }
         if (filter.source() != null) { sql.append(" AND source = ?"); values.add(filter.source().name()); }
         if (filter.purpose() != null) { sql.append(" AND purpose = ?"); values.add(filter.purpose().name()); }
         if (filter.startedAfter() != null) { sql.append(" AND started_at >= ?"); values.add(filter.startedAfter().toString()); }
@@ -212,7 +215,7 @@ public final class ExecutionRepository {
                 UUID.fromString(rows.getString("correlation_id")), rows.getString("session_id"),
                 rows.getString("connection_fingerprint"), ExecutionSource.valueOf(rows.getString("source")),
                 purpose == null ? Optional.empty() : Optional.of(SqlPurpose.valueOf(purpose)),
-                ExecutionStatus.valueOf(rows.getString("status")),
+                ExecutionStatus.valueOf("RUNNING".equals(rows.getString("status"))?rows.getString("phase"):rows.getString("status")),
                 Instant.parse(rows.getString("started_at")), completed == null ? null : Instant.parse(completed),
                 Math.max(0, rows.getLong("affected_row_count")),
                 Math.max(0, rows.getLong("returned_row_count")), rows.getInt("recorded") != 0,
@@ -249,6 +252,48 @@ public final class ExecutionRepository {
         }
     }
 
+    public int countRunning(String sessionId) throws SQLException {
+        try(var connection=database.openConnection();var statement=connection.prepareStatement(
+                "SELECT COUNT(*) FROM execution WHERE session_id=? AND status='RUNNING'")){
+            statement.setString(1,sessionId);try(var rows=statement.executeQuery()){rows.next();return rows.getInt(1);}
+        }
+    }
+
+    public void persistStatementFacts(UUID executionId, String sessionId, int releaseVersion,
+            List<io.dm7codex.plugin.sql.ParsedStatement> parsed, List<StatementResult> results)
+            throws SQLException {
+        Objects.requireNonNull(executionId);Objects.requireNonNull(sessionId);Objects.requireNonNull(parsed);Objects.requireNonNull(results);
+        if(releaseVersion<1)throw new IllegalArgumentException("invalid release version");
+        try(var connection=database.openConnection()){
+            connection.setAutoCommit(false);
+            try{
+                for(var result:results){if(result.kind()!=io.dm7codex.plugin.sql.SqlKind.DDL&&result.kind()!=io.dm7codex.plugin.sql.SqlKind.DML)continue;
+                    var statement=parsed.stream().filter(value->value.index()==result.index()).findFirst().orElseThrow();
+                    String operationId=UUID.nameUUIDFromBytes((executionId+":"+result.index()).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+                    int updated;
+                    try(var update=connection.prepareStatement("""
+                            UPDATE statement_event SET execution_id=?, phase=?, row_count=?, sql_state=?, error_code=?,
+                              exclusion_reason=COALESCE(?,exclusion_reason)
+                            WHERE operation_id=? AND session_id=? AND release_version=?
+                            """)){
+                        update.setString(1,executionId.toString());update.setString(2,result.error().map(e->e.phase().name()).orElse("LOGGING"));update.setLong(3,result.rowCount());
+                        update.setString(4,result.error().map(SafeError::sqlState).orElse(null));setNullableInteger(update,5,result.error().map(SafeError::errorCode).orElse(null));
+                        update.setString(6,result.exclusionReason());update.setString(7,operationId);update.setString(8,sessionId);update.setInt(9,releaseVersion);updated=update.executeUpdate();}
+                    if(updated==0)try(var insert=connection.prepareStatement("""
+                            INSERT INTO statement_event(execution_id,session_id,release_version,statement_index,statement_kind,
+                              status,phase,row_count,sql_state,error_code,recorded,exclusion_reason,raw_sql,replayable_sql,created_at)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?)
+                            """)){
+                        insert.setString(1,executionId.toString());insert.setString(2,sessionId);insert.setInt(3,releaseVersion);insert.setInt(4,result.index());insert.setString(5,result.kind().name());
+                        insert.setString(6,result.success()?(result.committed()?"SUCCEEDED":"ROLLED_BACK"):"FAILED");insert.setString(7,result.error().map(e->e.phase().name()).orElse("COMMITTED"));insert.setLong(8,result.rowCount());
+                        insert.setString(9,result.error().map(SafeError::sqlState).orElse(null));setNullableInteger(insert,10,result.error().map(SafeError::errorCode).orElse(null));insert.setInt(11,result.recorded()?1:0);
+                        insert.setString(12,result.exclusionReason());insert.setString(13,statement.originalSql());insert.setString(14,Instant.now().toString());insert.executeUpdate();}
+                }
+                connection.commit();
+            }catch(SQLException|RuntimeException failure){try{connection.rollback();}catch(SQLException rollback){failure.addSuppressed(rollback);}throw failure;}
+        }
+    }
+
     public List<StatementEventRecord> findStatements(String executionId) throws SQLException {
         try (var connection = database.openConnection();
                 var statement = connection.prepareStatement("""
@@ -264,6 +309,40 @@ public final class ExecutionRepository {
                 return List.copyOf(events);
             }
         }
+    }
+
+    public ReleaseView releaseView(String sessionId, int version, int limit) throws SQLException {
+        Objects.requireNonNull(sessionId, "sessionId");
+        if (version < 1 || limit < 1 || limit > 200) throw new IllegalArgumentException("invalid release view");
+        int recorded; int excluded; int failed; int total;
+        try (var connection = database.openConnection(); var counts = connection.prepareStatement("""
+                SELECT COUNT(*) total,
+                  SUM(CASE WHEN recorded=1 AND status='SUCCEEDED' THEN 1 ELSE 0 END) recorded_count,
+                  SUM(CASE WHEN recorded=0 AND status='SUCCEEDED' THEN 1 ELSE 0 END) excluded_count,
+                  SUM(CASE WHEN status<>'SUCCEEDED' THEN 1 ELSE 0 END) failed_count
+                FROM statement_event WHERE session_id=? AND release_version=?
+                  AND statement_kind IN ('DDL','DML')
+                """)) {
+            counts.setString(1, sessionId); counts.setInt(2, version);
+            try (var rows=counts.executeQuery()) { rows.next(); total=rows.getInt("total");
+                recorded=rows.getInt("recorded_count"); excluded=rows.getInt("excluded_count"); failed=rows.getInt("failed_count"); }
+        }
+        var entries=new ArrayList<ReleaseEntryRecord>();
+        try (var connection=database.openConnection(); var statement=connection.prepareStatement("""
+                SELECT se.*, e.source, e.purpose FROM statement_event se
+                LEFT JOIN execution e ON e.execution_id=se.execution_id
+                WHERE se.session_id=? AND se.release_version=? AND se.statement_kind IN ('DDL','DML')
+                ORDER BY COALESCE(se.sequence_number, 9223372036854775807), se.created_at, se.statement_index
+                LIMIT ?
+                """)) {
+            statement.setString(1,sessionId); statement.setInt(2,version); statement.setInt(3,limit);
+            try(var rows=statement.executeQuery()){while(rows.next()) entries.add(new ReleaseEntryRecord(
+                    nullableLong(rows,"sequence_number"),rows.getInt("statement_index"),rows.getString("statement_kind"),
+                    rows.getString("status"),rows.getString("source"),rows.getString("purpose"),
+                    rows.getInt("recorded")!=0,rows.getString("exclusion_reason"),
+                    rows.getString("raw_sql"),Instant.parse(rows.getString("created_at")))) ;}
+        }
+        return new ReleaseView(recorded,excluded,failed,List.copyOf(entries),total>entries.size());
     }
 
     private static ExecutionRecord readExecution(ResultSet rows) throws SQLException {
@@ -381,4 +460,10 @@ public final class ExecutionRepository {
             String rawSql,
             String replayableSql,
             Instant createdAt) {}
+
+    public record ReleaseEntryRecord(Long sequence, int statementIndex, String kind, String status,
+            String source, String purpose, boolean recorded, String exclusionReason,
+            String rawSql, Instant createdAt) {}
+    public record ReleaseView(int recordedCount, int excludedCount, int failedCount,
+            List<ReleaseEntryRecord> entries, boolean truncated) {}
 }

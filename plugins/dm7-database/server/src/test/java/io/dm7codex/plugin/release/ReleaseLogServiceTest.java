@@ -298,6 +298,15 @@ public class ReleaseLogServiceTest {
         }
     }
 
+    @Test void previewIsBoundedOnACompleteUtf8Boundary() throws Exception {
+        try(var fixture=fixture("bounded-preview")){
+            Files.writeString(fixture.session.activeSql(),"中".repeat(30_000),UTF_8,java.nio.file.StandardOpenOption.APPEND);
+            var snapshot=fixture.service.inspect(fixture.session);
+            assertTrue(snapshot.previewTruncated());assertTrue(snapshot.sqlPreview().getBytes(UTF_8).length<=64*1024);
+            assertFalse(snapshot.sqlPreview().endsWith("\uFFFD"));
+        }
+    }
+
     @Test
     void rejectedSecretBearingSqlDoesNotBindOrAppend() throws Exception {
         try (var fixture = fixture("secret")) {

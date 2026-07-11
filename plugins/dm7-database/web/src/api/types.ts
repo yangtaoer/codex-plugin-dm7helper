@@ -51,6 +51,7 @@ export type HistoryItem = {
   source: ExecutionSource; purpose: SqlPurpose | null; status: ExecutionStatus; startedAt: string
   completedAt: string | null; affectedRows: number; returnedRows: number
   recorded: boolean; exclusionReason: string | null
+  sqlSummary?: string
 }
 export type HistoryPage = { items: HistoryItem[]; offset: number; limit: number; hasMore: boolean }
 export type EventRecord = { id: string; executionId: string; status: Lowercase<ExecutionStatus>; timestamp: string; detail: string }
@@ -77,9 +78,11 @@ export type MetadataQuery = { connectionId?: string; schemaPattern?: string; obj
 export type SchemaColumn = { name: string; jdbcType: number; typeName: string; nullable: boolean; ordinal: number }
 export type SchemaObject = { schema: string; name: string; type: string; columns: SchemaColumn[] }
 export type SchemaPage = { items: SchemaObject[]; offset: number; limit: number; hasMore: boolean }
-export type ExecutionDetail = { summary: Record<string, unknown>; statements: Record<string, unknown>[]; events: { sequence: number; status: string; timestamp: string; detail: string }[] }
+export type ExecutionDetail = { summary: Record<string, unknown> & {sqlSummary?:string}; statements: (Record<string, unknown>&{sqlSummary?:string})[]; events: { sequence: number; status: string; timestamp: string; detail: string }[] }
 export type CancelResult = { executionId: string; cancelRequested: boolean }
-export type ReleaseSnapshot = { currentVersion: string; databaseFingerprint: string | null; statementCount: number; excludedCount: number; failedCount: number; sqlPreview: string; firstSequence: number | null; lastSequence: number | null }
+export type ReleaseEntry={sequence:number|null;index:number;kind:SqlKind;status:string;source:ExecutionSource|null;purpose:SqlPurpose|null;recorded:boolean;exclusionReason:string|null;createdAt:string;sqlSummary:string}
+export type ReleaseArtifact={id:string;state:'SEALED'|'RECOVERY_REQUIRED'|'COMPLETE';version:string;filename:string|null;sha256:string|null;expectedSha256?:string|null;byteLength:number|null;statementCount:number;firstSequence:number|null;lastSequence:number|null;createdAt:string;completedAt:string|null;downloadAvailable:boolean;downloadUrl:string|null;integrityState:string}
+export type ReleaseSnapshot = { sessionShortId:string;currentVersion: string; databaseFingerprint: string | null;bindingState:'UNBOUND'|'MATCH'|'MISMATCH'|'NO_DEFAULT'; statementCount: number; excludedCount: number; failedCount: number; sqlPreview: string;previewTruncated:boolean; firstSequence: number | null; lastSequence: number | null;runningCount:number;entriesTruncated:boolean;entries:ReleaseEntry[];artifacts:ReleaseArtifact[] }
 export type ExportArtifact = { id: string; version: string; newActiveVersion: string; filename: string; byteLength: number; sha256: string; sealedSourceSha256: string; statementCount: number; firstSequence: number | null; lastSequence: number | null; createdAt: string; downloadUrl: string }
 
 export interface ApiClient {
@@ -102,4 +105,5 @@ export interface ApiClient {
   cancelExecution(id: string, signal?: AbortSignal): Promise<CancelResult>
   release(signal?: AbortSignal): Promise<ReleaseSnapshot>
   releaseExport(confirm: true, signal?: AbortSignal): Promise<ExportArtifact>
+  releaseRecover(version:string,confirm:true,signal?:AbortSignal):Promise<ExportArtifact>
 }
