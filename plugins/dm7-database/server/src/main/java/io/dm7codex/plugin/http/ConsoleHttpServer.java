@@ -6,6 +6,10 @@ import io.dm7codex.plugin.runtime.SessionState;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.*;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -19,21 +23,39 @@ public final class ConsoleHttpServer implements AutoCloseable {
     private final ConsoleTokenService tokens; private final Backend backend; private final ExecutionEventBus events;
     private final int maxSseClients; private final Duration pollInterval; private final Duration heartbeatInterval;
     private final Semaphore sseClients;
+    private final int maxDownloadClients;
+    private final Semaphore downloadClients;
+    private final ThreadPoolExecutor requestBodyReaders;
+    private final Duration requestBodyTimeout;
     private final HttpSecurity.BrowserSessions browserSessions = new HttpSecurity.BrowserSessions();
     private final LinkedHashMap<String,SessionState> sessionStates = new LinkedHashMap<>(16,.75f,true);
     private final AtomicBoolean closed = new AtomicBoolean();
     private HttpServer server; private URI base; private HttpSecurity security; private ThreadPoolExecutor executor;
 
     public ConsoleHttpServer(ConsoleTokenService tokens, Backend backend, ExecutionEventBus events) {
-        this(tokens,backend,events,8,Duration.ofMillis(200),Duration.ofSeconds(15));
+        this(tokens,backend,events,8,2,4,Duration.ofMillis(200),Duration.ofSeconds(15),Duration.ofSeconds(3));
     }
     ConsoleHttpServer(ConsoleTokenService tokens, Backend backend, ExecutionEventBus events,
                       int maxSseClients, Duration pollInterval, Duration heartbeatInterval) {
+        this(tokens,backend,events,maxSseClients,2,4,pollInterval,heartbeatInterval,Duration.ofSeconds(3));
+    }
+    ConsoleHttpServer(ConsoleTokenService tokens, Backend backend, ExecutionEventBus events,
+                      int maxSseClients,int maxDownloadClients,Duration pollInterval, Duration heartbeatInterval) {
+        this(tokens,backend,events,maxSseClients,maxDownloadClients,4,pollInterval,heartbeatInterval,Duration.ofSeconds(3));
+    }
+    ConsoleHttpServer(ConsoleTokenService tokens,Backend backend,ExecutionEventBus events,int maxSseClients,
+                      int maxDownloadClients,int maxBodyReaders,Duration pollInterval,Duration heartbeatInterval,
+                      Duration requestBodyTimeout){
         this.tokens=Objects.requireNonNull(tokens); this.backend=Objects.requireNonNull(backend); this.events=Objects.requireNonNull(events);
         if(maxSseClients<1||maxSseClients>64||pollInterval.isNegative()||pollInterval.isZero()
-                ||heartbeatInterval.isNegative()||heartbeatInterval.isZero())throw new IllegalArgumentException("invalid SSE bounds");
+                ||heartbeatInterval.isNegative()||heartbeatInterval.isZero()||maxDownloadClients<1||maxDownloadClients>16
+                ||maxBodyReaders<1||maxBodyReaders>16||requestBodyTimeout.isNegative()||requestBodyTimeout.isZero())throw new IllegalArgumentException("invalid HTTP bounds");
         this.maxSseClients=maxSseClients;this.pollInterval=pollInterval;this.heartbeatInterval=heartbeatInterval;
         this.sseClients=new Semaphore(maxSseClients);
+        this.maxDownloadClients=maxDownloadClients;this.downloadClients=new Semaphore(maxDownloadClients);
+        this.requestBodyTimeout=requestBodyTimeout;
+        this.requestBodyReaders=new ThreadPoolExecutor(maxBodyReaders,maxBodyReaders,0,TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(maxBodyReaders),r->{var t=new Thread(r,"dm7-request-body");t.setDaemon(true);return t;},new ThreadPoolExecutor.AbortPolicy());
     }
 
     public synchronized URI start() throws IOException {
@@ -51,15 +73,26 @@ public final class ConsoleHttpServer implements AutoCloseable {
         catch(RuntimeException failure){candidate.stop(0);executor.shutdownNow();server=null;base=null;throw failure;}
     }
 
-    public Map<String,Object> open(SessionState state) throws IOException {
+    public Map<String,Object> open(SessionState state) throws Exception {
         Objects.requireNonNull(state); URI uri=start();
         synchronized (sessionStates) {
             sessionStates.put(state.sessionId(),state);
             while(sessionStates.size()>128) sessionStates.remove(sessionStates.keySet().iterator().next());
         }
+        Map<String,Object> runtime=backend.call("runtime",Map.of(),state);
+        Map<String,Object> listed=backend.call("connections.list",Map.of(),state);
         String token=tokens.issue(state.sessionId());
-        return Map.of("url",uri+"/console/redeem?token="+token,"sessionShortId",state.sessionId().substring(0,Math.min(12,state.sessionId().length())),
-                "version",String.format("v%03d",state.version()));
+        var result=new LinkedHashMap<String,Object>();result.put("url",uri+"/console/redeem?token="+token);
+        result.put("sessionShortId",state.sessionId().substring(0,Math.min(12,state.sessionId().length())));
+        result.put("currentVersion",runtime.getOrDefault("currentVersion",String.format("v%03d",state.version())));
+        result.put("connection",safeCurrentConnection(listed));return Collections.unmodifiableMap(result);
+    }
+    private static Map<String,Object> safeCurrentConnection(Map<String,Object> listed){
+        Object raw=listed.get("connections");if(!(raw instanceof List<?> values)||values.isEmpty())return Map.of("configured",false,"connected",false);
+        Map<?,?> selected=values.stream().filter(Map.class::isInstance).map(Map.class::cast)
+                .filter(value->Boolean.TRUE.equals(value.get("isDefault"))).findFirst().orElseGet(()->(Map<?,?>)values.get(0));
+        var safe=new LinkedHashMap<String,Object>();for(String key:List.of("id","name","urlSummary","schema","isDefault","configured","connected"))if(selected.containsKey(key))safe.put(key,selected.get(key));
+        safe.putIfAbsent("configured",true);safe.putIfAbsent("connected",false);return Collections.unmodifiableMap(safe);
     }
 
     private void handle(HttpExchange exchange) throws IOException {
@@ -75,8 +108,10 @@ public final class ConsoleHttpServer implements AutoCloseable {
             if(raw.startsWith("/api/")){ SessionState state=authenticate(exchange); api(exchange,raw,state); return; }
             throw new JsonHttp.HttpProblem(404,"NOT_FOUND","资源不存在。");
         } catch(JsonHttp.HttpProblem problem){ safeError(exchange,problem.status(),problem.code(),problem.safeMessage()); }
+        catch(BackendProblem problem){safeError(exchange,problem.status(),problem.code(),problem.safeMessage());}
+        catch(DownloadRejected rejected){safeError(exchange,409,rejected.code(),"导出文件校验失败。");}
         catch(RejectedExecutionException busy){ safeError(exchange,429,"SERVER_BUSY","服务忙，请稍后重试。"); }
-        catch(IllegalArgumentException invalid){ safeError(exchange,422,"INVALID_ARGUMENT","请求参数无效。"); }
+        catch(IllegalArgumentException|ClassCastException|java.time.DateTimeException invalid){ safeError(exchange,422,"INVALID_ARGUMENT","请求参数无效。"); }
         catch(Exception failure){ safeError(exchange,500,"INTERNAL_ERROR","服务器无法完成请求。"); }
         finally { exchange.close(); }
     }
@@ -118,11 +153,11 @@ public final class ConsoleHttpServer implements AutoCloseable {
         else if(path.matches("/api/release/artifacts/[^/]+/download")){ allow(x,"GET"); download(x,segment(path,4),state); return; }
         else if(path.equals("/api/events")){ allow(x,"GET"); if(x.getRequestURI().getRawQuery()!=null)throw new JsonHttp.HttpProblem(400,"UNKNOWN_FIELD","事件请求不允许查询参数。");sse(x,state); return; }
         else throw new JsonHttp.HttpProblem(404,"NOT_FOUND","资源不存在。");
-        validateFields(operation,input);
+        validateFields(operation,input);validateTypes(operation,input);
         json(x,200,backend.call(operation,input,state));
     }
 
-    private Map<String,Object> bodyOrQuery(HttpExchange x) throws IOException,JsonHttp.HttpProblem { return switch(x.getRequestMethod()){case"POST","PUT","PATCH"->JsonHttp.readObject(x,MAX_BODY_BYTES);default->queryObject(x);}; }
+    private Map<String,Object> bodyOrQuery(HttpExchange x) throws IOException,JsonHttp.HttpProblem { return switch(x.getRequestMethod()){case"POST","PUT","PATCH"->JsonHttp.readObject(x,MAX_BODY_BYTES,requestBodyReaders,requestBodyTimeout);default->queryObject(x);}; }
     private static Map<String,Object> withId(Map<String,Object> values,String id){var copy=new LinkedHashMap<>(values); copy.put("id",id); return copy;}
     private static void validateFields(String operation,Map<String,Object> input)throws JsonHttp.HttpProblem{
         Set<String> allowed=switch(operation){
@@ -135,10 +170,32 @@ public final class ConsoleHttpServer implements AutoCloseable {
             case"metadata"->Set.of("connectionId","schemaPattern","objectPattern","offset","limit");
             case"history"->Set.of("status","source","purpose","offset","limit","startedAfter","startedBefore","recorded","correlationId","success","kind");
             case"release.export"->Set.of("confirm"); default->Set.of();};
-        if(!allowed.containsAll(input.keySet()))throw new JsonHttp.HttpProblem(400,"UNKNOWN_FIELD","请求包含不允许的字段。");
+        if(!allowed.containsAll(input.keySet()))throw new JsonHttp.HttpProblem(422,"UNKNOWN_FIELD","请求包含不允许的字段。");
     }
+    private static void validateTypes(String operation,Map<String,Object> input)throws JsonHttp.HttpProblem{
+        if(operation.equals("query")||operation.equals("execute"))requireText(input,"sql");
+        if(operation.equals("execute"))requireText(input,"purpose");
+        if(operation.equals("release.export")&&!(input.get("confirm")instanceof Boolean))invalidType();
+        if(operation.startsWith("connections.")&&!operation.equals("connections.list")&&!operation.equals("connections.create")&&!operation.equals("connections.diagnostics"))requireText(input,"id");
+        for(String key:List.of("name","driverJar","driverClass","jdbcUrl","username","password","schema"))if(input.containsKey(key)&&!(input.get(key)instanceof String))invalidType();
+        for(String key:List.of("connectTimeoutSeconds","socketTimeoutSeconds","queryTimeoutSeconds","maxRows","maxBytes"))if(input.containsKey(key)&&!(input.get(key)instanceof Number))invalidType();
+        if(input.containsKey("isDefault")&&!(input.get("isDefault")instanceof Boolean))invalidType();
+    }
+    private static void requireText(Map<String,Object> input,String key)throws JsonHttp.HttpProblem{if(!(input.get(key)instanceof String text)||text.isBlank())invalidType();}
+    private static void invalidType()throws JsonHttp.HttpProblem{throw new JsonHttp.HttpProblem(422,"INVALID_FIELD_TYPE","请求字段类型无效。");}
     private static String segment(String path,int index){return path.split("/")[index];}
-    private void download(HttpExchange x,String id,SessionState state)throws Exception{var value=backend.download(id,state).orElseThrow(()->new JsonHttp.HttpProblem(404,"NOT_FOUND","导出文件不存在。")); String filename=value.filename().replaceAll("[^A-Za-z0-9._-]","_"); x.getResponseHeaders().set("Content-Type",value.contentType());x.getResponseHeaders().set("Content-Disposition","attachment; filename=\""+filename+"\"");send(x,200,value.bytes());}
+    private void download(HttpExchange x,String id,SessionState state)throws Exception{
+        if(!downloadClients.tryAcquire())throw new JsonHttp.HttpProblem(429,"DOWNLOAD_CLIENT_LIMIT","下载连接已达上限。");
+        try(var value=backend.download(id,state).orElseThrow(()->new JsonHttp.HttpProblem(404,"NOT_FOUND","导出文件不存在。"))){
+            String filename=value.filename().replaceAll("[^A-Za-z0-9._-]","_");
+            x.getResponseHeaders().set("Content-Type",value.contentType());
+            x.getResponseHeaders().set("Content-Disposition","attachment; filename=\""+filename+"\"");
+            x.getResponseHeaders().set("Content-Length",Long.toString(value.length()));
+            x.sendResponseHeaders(200,value.length());
+            try(var out=x.getResponseBody()){value.writeTo(out);}catch(IOException disconnected){/* client disconnected */}
+        }finally{downloadClients.release();}
+    }
+    int activeDownloadClients(){return maxDownloadClients-downloadClients.availablePermits();}
 
     private void staticAsset(HttpExchange x,String path)throws IOException,JsonHttp.HttpProblem{allow(x,"GET","HEAD");String relative=path.substring("/app/".length());boolean asset=relative.contains(".");if(relative.isEmpty()||!asset)relative="index.html";byte[] bytes;try(var in=ConsoleHttpServer.class.getResourceAsStream("/web/"+relative)){if(in==null)throw new JsonHttp.HttpProblem(404,"NOT_FOUND","资源不存在。");bytes=JsonHttp.bounded(in,5*1024*1024);}String type=mime(relative);x.getResponseHeaders().set("Content-Type",type);x.getResponseHeaders().set("Cache-Control","no-cache");if(x.getRequestMethod().equals("HEAD"))x.sendResponseHeaders(200,-1);else send(x,200,bytes);}
     private static String mime(String name){String lower=name.toLowerCase(Locale.ROOT);if(lower.endsWith(".html"))return"text/html; charset=utf-8";if(lower.endsWith(".js")||lower.endsWith(".mjs"))return"text/javascript; charset=utf-8";if(lower.endsWith(".css"))return"text/css; charset=utf-8";if(lower.endsWith(".json"))return"application/json; charset=utf-8";if(lower.endsWith(".svg"))return"image/svg+xml";if(lower.endsWith(".png"))return"image/png";if(lower.endsWith(".ico"))return"image/x-icon";if(lower.endsWith(".woff2"))return"font/woff2";return"application/octet-stream";}
@@ -181,7 +238,36 @@ public final class ConsoleHttpServer implements AutoCloseable {
     private static void safeError(HttpExchange x,int status,String code,String message)throws IOException{String correlation=UUID.randomUUID().toString();json(x,status,Map.of("ok",false,"code",code,"message",message,"correlationId",correlation));}
     private static void send(HttpExchange x,int status,byte[] bytes)throws IOException{x.sendResponseHeaders(status,bytes.length);try(var out=x.getResponseBody()){out.write(bytes);}}
 
-    @Override public synchronized void close(){if(!closed.compareAndSet(false,true))return;if(server!=null)server.stop(0);if(executor!=null)executor.shutdownNow();synchronized(sessionStates){sessionStates.clear();}}
+    @Override public synchronized void close(){if(!closed.compareAndSet(false,true))return;if(server!=null)server.stop(0);if(executor!=null)executor.shutdownNow();requestBodyReaders.shutdownNow();synchronized(sessionStates){sessionStates.clear();}}
     public interface Backend { Map<String,Object> call(String operation,Map<String,Object> input,SessionState session)throws Exception; Optional<Download> download(String id,SessionState session)throws Exception; }
-    public record Download(String filename,String contentType,byte[] bytes){public Download{Objects.requireNonNull(filename);Objects.requireNonNull(contentType);bytes=bytes.clone();}@Override public byte[] bytes(){return bytes.clone();}}
+    public static final class Download implements AutoCloseable {
+        private final String filename;private final String contentType;private final Path temporary;private final FileChannel snapshot;private final long length;
+        private Download(String filename,String contentType,Path temporary,FileChannel snapshot,long length){this.filename=filename;this.contentType=contentType;this.temporary=temporary;this.snapshot=snapshot;this.length=length;}
+        public static Download snapshot(String filename,String contentType,Path source,Path snapshotDirectory,
+                                        String expectedSha256,long maximumBytes)throws IOException,DownloadRejected{
+            Objects.requireNonNull(filename);Objects.requireNonNull(contentType);Objects.requireNonNull(source);Objects.requireNonNull(snapshotDirectory);
+            if(maximumBytes<1||expectedSha256==null||!expectedSha256.matches("[0-9a-fA-F]{64}"))throw new IllegalArgumentException("invalid snapshot limits");
+            Path directory=snapshotDirectory.toAbsolutePath().normalize(),parent=directory.getParent();if(parent==null)throw new DownloadRejected("SNAPSHOT_DIRECTORY_UNSAFE");
+            Path parentReal=parent.toRealPath();try{Files.createDirectory(directory);}catch(FileAlreadyExistsException exists){/* validate below */}
+            if(Files.isSymbolicLink(directory)||!Files.isDirectory(directory,LinkOption.NOFOLLOW_LINKS))throw new DownloadRejected("SNAPSHOT_DIRECTORY_UNSAFE");
+            Path directoryReal=directory.toRealPath();if(!Objects.equals(directoryReal.getParent(),parentReal))throw new DownloadRejected("SNAPSHOT_DIRECTORY_UNSAFE");
+            Path temporary=Files.createTempFile(directoryReal,"download-",".tmp");FileChannel target=null;
+            try(var input=FileChannel.open(source,Set.of(StandardOpenOption.READ,LinkOption.NOFOLLOW_LINKS))){
+                target=FileChannel.open(temporary,Set.of(StandardOpenOption.READ,StandardOpenOption.WRITE,
+                        StandardOpenOption.TRUNCATE_EXISTING,StandardOpenOption.DELETE_ON_CLOSE,LinkOption.NOFOLLOW_LINKS));
+                var digest=MessageDigest.getInstance("SHA-256");var buffer=ByteBuffer.allocate(64*1024);long length=0;
+                while(input.read(buffer)>=0){if(buffer.position()==0)continue;buffer.flip();length+=buffer.remaining();
+                    if(length>maximumBytes)throw new DownloadRejected("ARTIFACT_TOO_LARGE");digest.update(buffer.asReadOnlyBuffer());
+                    while(buffer.hasRemaining())target.write(buffer);buffer.clear();}
+                byte[] expected=HexFormat.of().parseHex(expectedSha256);if(!MessageDigest.isEqual(expected,digest.digest()))throw new DownloadRejected("ARTIFACT_SHA_MISMATCH");
+                target.position(0);return new Download(filename,contentType,temporary,target,length);
+            }catch(java.security.NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}
+            catch(Exception failure){if(target!=null)try{target.close();}catch(IOException close){failure.addSuppressed(close);}try{Files.deleteIfExists(temporary);}catch(IOException cleanup){failure.addSuppressed(cleanup);}if(failure instanceof IOException io)throw io;if(failure instanceof DownloadRejected rejected)throw rejected;if(failure instanceof RuntimeException runtime)throw runtime;throw new IOException("snapshot failed");}
+        }
+        public String filename(){return filename;}public String contentType(){return contentType;}public long length(){return length;}
+        public synchronized void writeTo(OutputStream output)throws IOException{snapshot.position(0);byte[] bytes=new byte[64*1024];var buffer=ByteBuffer.wrap(bytes);long remaining=length;while(remaining>0){buffer.clear();buffer.limit((int)Math.min(bytes.length,remaining));int count=snapshot.read(buffer);if(count<0)throw new EOFException("snapshot truncated");output.write(bytes,0,count);remaining-=count;}}
+        @Override public synchronized void close()throws IOException{try{snapshot.close();}finally{Files.deleteIfExists(temporary);}}
+    }
+    public static final class DownloadRejected extends Exception {private final String code;public DownloadRejected(String code){super(code);this.code=code;}public String code(){return code;}}
+    public static final class BackendProblem extends RuntimeException {private final int status;private final String code;private final String safeMessage;private BackendProblem(int status,String code,String safeMessage){super(code);this.status=status;this.code=code;this.safeMessage=safeMessage;}public static BackendProblem notFound(){return new BackendProblem(404,"NOT_FOUND","资源不存在。");}public static BackendProblem conflict(){return new BackendProblem(409,"CONFLICT","操作与当前状态冲突。");}int status(){return status;}String code(){return code;}String safeMessage(){return safeMessage;}}
 }

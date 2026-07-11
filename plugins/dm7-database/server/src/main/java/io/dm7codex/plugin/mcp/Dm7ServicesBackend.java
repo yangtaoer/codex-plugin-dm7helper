@@ -82,21 +82,18 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
             case "connections.get" -> connection(findProfile(input));
             case "connections.create" -> saveProfile(input,null);
             case "connections.update" -> saveProfile(input,findProfile(input));
-            case "connections.delete" -> { profiles.delete(UUID.fromString(required(input,"id"))); yield Map.of("deleted",true); }
-            case "connections.default" -> connection(profiles.setDefault(UUID.fromString(required(input,"id"))));
-            case "connections.test" -> testConnection(Map.of("connectionId",required(input,"id")));
+            case "connections.delete" -> { var profile=findProfile(input);profiles.delete(profile.id());yield Map.of("deleted",true); }
+            case "connections.default" -> {var profile=findProfile(input);yield connection(profiles.setDefault(profile.id()));}
+            case "connections.test" -> {var profile=findProfile(input);yield testConnection(Map.of("connectionId",profile.id().toString()));}
             case "connections.diagnostics" -> diagnostics(required(input,"jdbcUrl"));
             case "query" -> query(input,session,ExecutionSource.CONSOLE);
             case "execute" -> execute(input,session,ExecutionSource.CONSOLE);
             case "metadata" -> describe(input);
-            case "executions.get" -> getExecution(Map.of("executionId",required(input,"id")),session);
-            case "executions.cancel" -> cancel(Map.of("executionId",required(input,"id")),session);
+            case "executions.get" -> {ensureExecution(input,session);yield getExecution(Map.of("executionId",required(input,"id")),session);}
+            case "executions.cancel" -> {ensureExecution(input,session);yield cancel(Map.of("executionId",required(input,"id")),session);}
             case "history" -> history(input,session);
             case "release.preview" -> convert(releaseLog.inspect(session));
-            case "release.export" -> {
-                if(!Boolean.TRUE.equals(input.get("confirm")))throw new IllegalArgumentException("confirmation required");
-                var result=export(session);result.remove("path");result.put("downloadUrl","/api/release/artifacts/"+result.get("id")+"/download");yield result;
-            }
+            case "release.export" -> consoleExport(input,session);
             default -> callMcp(operation,input,session);
         };
     }
@@ -110,33 +107,40 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
         if(!path.startsWith(exportsRoot)||!java.nio.file.Files.isRegularFile(path,java.nio.file.LinkOption.NOFOLLOW_LINKS))return Optional.empty();
         if(java.nio.file.Files.isSymbolicLink(path))return Optional.empty();
         var real=path.toRealPath();if(!real.startsWith(trustedRoot))return Optional.empty();
-        int maximum=50*1024*1024;byte[] bytes;
-        try(var in=java.nio.file.Files.newInputStream(real);var out=new java.io.ByteArrayOutputStream()){
-            byte[] chunk=new byte[8192];for(int n;(n=in.read(chunk))>=0;){if(out.size()+n>maximum)throw new IllegalStateException("artifact too large");out.write(chunk,0,n);}bytes=out.toByteArray();
-        }
-        return Optional.of(new ConsoleHttpServer.Download(path.getFileName().toString(),"application/sql; charset=utf-8",bytes));
+        return Optional.of(ConsoleHttpServer.Download.snapshot(path.getFileName().toString(),
+                "application/sql; charset=utf-8",real,exportsRoot.resolve(".download-snapshots"),
+                artifact.get().artifactSha256(),50L*1024*1024));
     }
 
     private Map<String,Object> runtime(SessionState session)throws Exception{var release=releaseLog.inspect(session);return Map.of("sessionShortId",session.sessionId().substring(0,Math.min(12,session.sessionId().length())),"currentVersion",release.currentVersion(),"runningCount",registry.activeCount(),"connections",profiles.list().size());}
-    private ConnectionProfile findProfile(Map<String,Object> input){return profiles.find(UUID.fromString(required(input,"id"))).orElseThrow(()->new IllegalArgumentException("not found"));}
+    private ConnectionProfile findProfile(Map<String,Object> input){return profiles.find(UUID.fromString(required(input,"id"))).orElseThrow(ConsoleHttpServer.BackendProblem::notFound);}
+    private void ensureExecution(Map<String,Object> input,SessionState session)throws Exception{var found=history.findExecution(UUID.fromString(required(input,"id")).toString());if(found.isEmpty()||!found.get().sessionId().equals(session.sessionId()))throw ConsoleHttpServer.BackendProblem.notFound();}
+    private Map<String,Object> consoleExport(Map<String,Object> input,SessionState session)throws Exception{
+        if(!Boolean.TRUE.equals(input.get("confirm")))throw new IllegalArgumentException("confirmation required");
+        try{var result=export(session);result.remove("path");result.put("downloadUrl","/api/release/artifacts/"+result.get("id")+"/download");return result;}
+        catch(io.dm7codex.plugin.release.ReleaseExportLockTimeout|io.dm7codex.plugin.release.ReleaseLogConnectionMismatch conflict){throw ConsoleHttpServer.BackendProblem.conflict();}
+    }
     private Map<String,Object> saveProfile(Map<String,Object> input,ConnectionProfile old)throws Exception{
         var allowed=Set.of("id","name","driverJar","driverClass","jdbcUrl","username","password","schema","connectTimeoutSeconds","socketTimeoutSeconds","queryTimeoutSeconds","maxRows","maxBytes","isDefault");
         if(!allowed.containsAll(input.keySet()))throw new IllegalArgumentException("unknown field");
-        UUID id=old==null?UUID.randomUUID():old.id();java.nio.file.Path driver=java.nio.file.Path.of(text(input,"driverJar",old==null?null:old.driverJar().toString())).toAbsolutePath().normalize();
+        UUID id=old==null?UUID.randomUUID():old.id();String requestedName=text(input,"name",old==null?null:old.name());
+        if(profiles.list().stream().anyMatch(existing->!existing.id().equals(id)&&existing.name().equalsIgnoreCase(requestedName)))throw ConsoleHttpServer.BackendProblem.conflict();
+        java.nio.file.Path driver=java.nio.file.Path.of(text(input,"driverJar",old==null?null:old.driverJar().toString())).toAbsolutePath().normalize();
         if(!driver.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")||!java.nio.file.Files.isRegularFile(driver,java.nio.file.LinkOption.NOFOLLOW_LINKS)||java.nio.file.Files.isSymbolicLink(driver))throw new IllegalArgumentException("driverJar invalid");
         String sha=sha256(driver);String password=nullableText(input,"password");char[] secret=password==null?null:password.toCharArray();
         try{
-            var value=new ConnectionProfile(id,text(input,"name",old==null?null:old.name()),driver,sha,
+            var value=new ConnectionProfile(id,requestedName,driver,sha,
                     text(input,"driverClass",old==null?ConnectionProfile.DEFAULT_DRIVER_CLASS:old.driverClass()),
                     text(input,"jdbcUrl",old==null?null:old.jdbcUrl()),text(input,"username",old==null?null:old.username()),
                     input.containsKey("schema")?nullableText(input,"schema"):old==null?null:old.schema(),number(input,"connectTimeoutSeconds",old==null?10:old.connectTimeoutSeconds()).intValue(),
                     number(input,"socketTimeoutSeconds",old==null?30:old.socketTimeoutSeconds()).intValue(),number(input,"queryTimeoutSeconds",old==null?60:old.queryTimeoutSeconds()).intValue(),
                     number(input,"maxRows",old==null?1000:old.maxRows()).intValue(),number(input,"maxBytes",old==null?10L*1024*1024:old.maxBytes()).longValue(),
                     input.containsKey("isDefault")?(Boolean)input.get("isDefault"):old==null||old.isDefault());
-            return connection(profiles.save(value,Optional.ofNullable(secret)));
+            try{return connection(profiles.save(value,Optional.ofNullable(secret)));}
+            catch(IllegalArgumentException invalid){if(profiles.list().stream().anyMatch(existing->!existing.id().equals(id)&&existing.name().equalsIgnoreCase(requestedName)))throw ConsoleHttpServer.BackendProblem.conflict();throw invalid;}
         }finally{if(secret!=null)Arrays.fill(secret,'\0');}
     }
-    private static Map<String,Object> connection(ConnectionProfile p){var m=new LinkedHashMap<String,Object>();m.put("id",p.id().toString());m.put("name",p.name());m.put("driverJar",p.driverJar().toString());m.put("driverSha256",p.driverSha256());m.put("driverClass",p.driverClass());m.put("jdbcUrl",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("username",p.username());m.put("schema",p.schema());m.put("connectTimeoutSeconds",p.connectTimeoutSeconds());m.put("socketTimeoutSeconds",p.socketTimeoutSeconds());m.put("queryTimeoutSeconds",p.queryTimeoutSeconds());m.put("maxRows",p.maxRows());m.put("maxBytes",p.maxBytes());m.put("isDefault",p.isDefault());return m;}
+    private static Map<String,Object> connection(ConnectionProfile p){var m=new LinkedHashMap<String,Object>();m.put("id",p.id().toString());m.put("name",p.name());m.put("driverFileName",p.driverJar().getFileName().toString());m.put("driverSha256",p.driverSha256());m.put("configured",true);m.put("connected",false);m.put("driverClass",p.driverClass());m.put("jdbcUrl",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("urlSummary",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("username",p.username());m.put("schema",p.schema());m.put("connectTimeoutSeconds",p.connectTimeoutSeconds());m.put("socketTimeoutSeconds",p.socketTimeoutSeconds());m.put("queryTimeoutSeconds",p.queryTimeoutSeconds());m.put("maxRows",p.maxRows());m.put("maxBytes",p.maxBytes());m.put("isDefault",p.isDefault());return m;}
     private static Map<String,Object> diagnostics(String url){var inspected=JdbcUrlDiagnostics.inspect(url);return Map.of("urlSummary",JdbcUrlDiagnostics.redact(url),"warnings",inspected.warnings());}
     private static String sha256(java.nio.file.Path path)throws Exception{var digest=java.security.MessageDigest.getInstance("SHA-256");try(var in=java.nio.file.Files.newInputStream(path)){byte[] b=new byte[8192];for(int n;(n=in.read(b))>=0;)digest.update(b,0,n);}return java.util.HexFormat.of().formatHex(digest.digest());}
     private static String text(Map<String,Object> m,String k,String fallback){Object v=m.get(k);if(v==null){if(fallback==null)throw new IllegalArgumentException(k+" required");return fallback;}if(!(v instanceof String s)||s.isBlank())throw new IllegalArgumentException(k+" invalid");return s;}
@@ -180,6 +184,7 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
             item.put("isDefault", profile.isDefault());
             if (profile.schema() != null) item.put("schema", profile.schema());
             item.put("urlSummary", JdbcUrlDiagnostics.redact(profile.jdbcUrl()));
+            item.put("configured", true); item.put("connected", false);
             return Collections.unmodifiableMap(item);
         }).toList();
         return Map.of("connections", values);

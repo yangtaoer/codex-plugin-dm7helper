@@ -156,14 +156,27 @@ class Dm7ServicesBackendTest {
                     "username","operator","password","top-secret"),session);
             assertEquals("达梦中文连接",created.get("name"));
             assertFalse(created.toString().contains("top-secret"));assertTrue(created.get("jdbcUrl").toString().contains("***"));
+            assertFalse(created.toString().contains(driver.toString()));
+            assertEquals(driver.getFileName().toString(),created.get("driverFileName"));
+            assertEquals(true,created.get("configured"));
             String id=(String)created.get("id");
             assertEquals(id,backend.call("connections.get",Map.of("id",id),session).get("id"));
             assertFalse(backend.call("connections.list",Map.of(),session).toString().contains("top-secret"));
+            try(var console=new io.dm7codex.plugin.http.ConsoleHttpServer(
+                    new io.dm7codex.plugin.http.ConsoleTokenService(),backend,backend.eventBus())){
+                var opened=console.open(session);assertEquals("v001",opened.get("currentVersion"));
+                @SuppressWarnings("unchecked") var summary=(Map<String,Object>)opened.get("connection");
+                assertEquals(id,summary.get("id"));assertEquals("达梦中文连接",summary.get("name"));
+                assertEquals(true,summary.get("configured"));assertFalse(opened.toString().contains(driver.toString()));
+                assertFalse(opened.toString().contains("top-secret"));
+            }
             var exported=backend.call("release.export",Map.of("confirm",true),session);
             assertFalse(exported.containsKey("path"));String exportId=(String)exported.get("id");
-            var download=backend.download(exportId,session).orElseThrow();
-            assertEquals("application/sql; charset=utf-8",download.contentType());
-            assertFalse(new String(download.bytes(),StandardCharsets.UTF_8).startsWith("\uFEFF"));
+            try(var download=backend.download(exportId,session).orElseThrow()){
+                assertEquals("application/sql; charset=utf-8",download.contentType());
+                var bytes=new java.io.ByteArrayOutputStream();download.writeTo(bytes);
+                assertFalse(bytes.toString(StandardCharsets.UTF_8).startsWith("\uFEFF"));
+            }
             var other=backend.initialize(new SessionIdentity("other-thread","test","verified"));
             assertTrue(backend.download(exportId,other).isEmpty());
             backend.call("connections.delete",Map.of("id",id),session);

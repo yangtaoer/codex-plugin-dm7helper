@@ -43,6 +43,8 @@ class Dm7McpServerTest {
         assertTrue(tools.get("dm7_get_release_log").annotations().readOnlyHint());
         assertFalse(tools.get("dm7_open_console").annotations().readOnlyHint());
         assertFalse(tools.get("dm7_open_console").annotations().destructiveHint());
+        assertFalse(tools.get("dm7_open_console").description().contains("未提供"));
+        assertTrue(tools.get("dm7_open_console").description().contains("本地"));
         assertTrue(tools.get("dm7_execute").annotations().destructiveHint());
         assertTrue(tools.get("dm7_cancel_execution").annotations().destructiveHint());
         assertTrue(tools.get("dm7_release_export").annotations().destructiveHint());

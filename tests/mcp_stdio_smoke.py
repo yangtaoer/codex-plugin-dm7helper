@@ -181,7 +181,12 @@ def main() -> None:
         console_process.stdin.flush()
         opened = json.loads(console_process.stdout.readline())
         assert opened["result"]["isError"] is False, opened
-        redeem_url = opened["result"]["structuredContent"]["url"]
+        console_content = opened["result"]["structuredContent"]
+        redeem_url = console_content["url"]
+        assert console_content["currentVersion"] == "v001"
+        assert console_content["sessionShortId"]
+        assert console_content["connection"] == {"configured": False, "connected": False}
+        assert "driverJar" not in json.dumps(console_content)
         parsed = urllib.parse.urlsplit(redeem_url)
         origin = f"{parsed.scheme}://{parsed.netloc}"
         opener = urllib.request.build_opener(NoRedirect())

@@ -14,7 +14,7 @@ public final class Dm7ToolSchemas {
 
     public static Map<String, Tool> definitions() {
         var tools = new LinkedHashMap<String, Tool>();
-        add(tools, "dm7_open_console", "打开本地 DM7 管理控制台；当前版本未提供控制台后端。", schema(), false, false, false);
+        add(tools, "dm7_open_console", "启动或复用安全的本地 DM7 管理控制台，返回短期单次兑换 URL、当前会话及脱敏连接摘要。", schema(), false, false, false);
         add(tools, "dm7_list_connections", "列出已保存的连接摘要，不返回密码、完整 JDBC URL 或驱动路径。", schema(), true, false, false);
         add(tools, "dm7_test_connection", "使用已保存凭据测试 DM7 连接；会只读访问外部数据库。",
                 schema(prop("connectionId", string("连接 ID；省略时使用默认连接。"))), true, false, true);

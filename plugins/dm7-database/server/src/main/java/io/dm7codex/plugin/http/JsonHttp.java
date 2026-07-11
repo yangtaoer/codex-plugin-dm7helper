@@ -6,6 +6,8 @@ import com.sun.net.httpserver.HttpExchange;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.time.Duration;
+import java.util.concurrent.*;
 
 final class JsonHttp {
     static final ObjectMapper JSON = new ObjectMapper()
@@ -26,6 +28,17 @@ final class JsonHttp {
         } catch (IOException | IllegalArgumentException malformed) {
             throw new HttpProblem(400, "MALFORMED_JSON", "JSON 请求无效。");
         }
+    }
+
+    static Map<String,Object> readObject(HttpExchange exchange,int maximum,ExecutorService readers,Duration timeout)
+            throws IOException,HttpProblem {
+        Future<Map<String,Object>> future;
+        try { future=readers.submit(()->readObject(exchange,maximum)); }
+        catch(RejectedExecutionException busy){throw new HttpProblem(429,"BODY_READER_LIMIT","请求读取器已达上限。");}
+        try{return future.get(timeout.toMillis(),TimeUnit.MILLISECONDS);}
+        catch(TimeoutException slow){future.cancel(true);if(readers instanceof ThreadPoolExecutor pool)pool.purge();try{exchange.getRequestBody().close();}catch(IOException ignored){}throw new HttpProblem(408,"REQUEST_TIMEOUT","请求体读取超时。");}
+        catch(InterruptedException interrupted){future.cancel(true);Thread.currentThread().interrupt();throw new HttpProblem(400,"REQUEST_INTERRUPTED","请求已中断。");}
+        catch(ExecutionException failure){Throwable cause=failure.getCause();if(cause instanceof HttpProblem problem)throw problem;if(cause instanceof IOException io)throw io;if(cause instanceof RuntimeException runtime)throw runtime;throw new IOException("request body read failed");}
     }
 
     static byte[] bounded(InputStream input, int maximum) throws IOException, HttpProblem {
