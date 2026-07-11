@@ -24,8 +24,15 @@ describe('ExecutionTimeline', () => {
     ]}/>)
     expect(screen.getAllByRole('listitem')).toHaveLength(3)
     expect(screen.getByText(/SEQ 1/)).toBeTruthy()
-    expect(screen.getByText(/\+1,250 ms · 总计 1,250 ms/)).toBeTruthy()
-    expect(screen.getByText(/总耗时 2,000 ms/)).toBeTruthy()
+    expect(screen.getByText(/\+1,250 ms · 已观察 1,250 ms/)).toBeTruthy()
+    expect(screen.getByText(/已观察耗时 2,000 ms/)).toBeTruthy()
     expect(screen.queryByText('迟到活动')).toBeNull()
+  })
+  it('labels authoritative backend elapsed separately from the visible event window', () => {
+    render(<ExecutionTimeline executionId="run" streamStatus="connected" authoritativeElapsedMillis={4321} events={[
+      {id:'9',executionId:'run',status:'completed',timestamp:'2026-01-01T00:00:03Z',detail:'仅看到终态'},
+    ]}/>)
+    expect(screen.getByText(/执行总耗时 4,321 ms/)).toBeTruthy()
+    expect(screen.getByText(/已观察耗时 0 ms/)).toBeTruthy()
   })
 })

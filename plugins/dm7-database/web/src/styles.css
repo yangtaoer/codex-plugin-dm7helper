@@ -244,6 +244,7 @@ th { color: var(--muted); font-size: 11px; }
 .sql-toolbar input, .sql-toolbar select, .mutation-confirm select { min-width: 0; height: 34px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: 11px ui-monospace, monospace; }
 .editor-help { margin: 0; padding: 9px 13px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
 .execution-snapshot { margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--accent); background: var(--accent-quiet); color: var(--text); font: 10px ui-monospace, monospace; }
+.tracking-unknown { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border-bottom: 1px solid var(--warning); background: var(--warning-quiet); color: var(--warning); font-size: 10px; }
 .sql-editor { height: 330px; min-width: 0; overflow: hidden; background: var(--bg); font-size: 12px; }
 .sql-editor .cm-editor { height: 100%; }
 .sql-editor .cm-gutters { border-right: 1px solid var(--border); background: var(--surface-2); color: var(--faint); }
@@ -283,6 +284,7 @@ th { color: var(--muted); font-size: 11px; }
 .execution-timeline li time { color: var(--faint); }
 .execution-timeline li small, .event-sequence { color: var(--muted); font: 9px ui-monospace, monospace; }
 .timeline-total { margin: 10px 0 0; padding: 10px; border-top: 1px solid var(--accent); color: var(--accent); font: 10px ui-monospace, monospace; text-align: right; }
+.timeline-authoritative { margin: 10px 0 0; padding: 10px; border: 1px solid var(--accent); background: var(--accent-quiet); color: var(--text); font: 11px ui-monospace, monospace; }
 .mutation-confirm { display: grid; gap: 12px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .mutation-confirm label { display: flex; align-items: center; gap: 8px; }
 .mutation-confirm label:first-child { display: grid; }

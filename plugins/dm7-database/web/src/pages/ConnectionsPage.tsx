@@ -1,5 +1,5 @@
 import { AlertTriangle, Check, Copy, Database, Eye, EyeOff, FileKey, Gauge, Pencil, Plus, RefreshCw, Star, Trash2, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ApiClient, ConnectionInput, ConnectionTestResult, SafeConnection, UrlDiagnostics } from '../api/types'
 import { ApiError } from '../api/client'
 import { ConfirmDialog } from '../components/ConfirmDialog'
@@ -112,8 +112,8 @@ export function ConnectionsPage({ api }: { api: ApiClient }) {
     return () => { window.clearTimeout(timer); controller.abort() }
   }, [api, drawer, form.jdbcUrl])
 
-  useEffect(() => { if (firstInvalid.current) { document.getElementById(firstInvalid.current)?.focus(); firstInvalid.current = null } }, [fieldErrors])
-  useEffect(() => { drawerErrorRef.current?.focus() }, [drawerError])
+  useLayoutEffect(() => { if (firstInvalid.current) { document.getElementById(firstInvalid.current)?.focus(); firstInvalid.current = null } }, [fieldErrors])
+  useLayoutEffect(() => { drawerErrorRef.current?.focus() }, [drawerError])
 
   const update = (key: keyof Form, value: string | boolean) => setForm((current) => ({ ...current, [key]: value }))
   const validate = () => {
