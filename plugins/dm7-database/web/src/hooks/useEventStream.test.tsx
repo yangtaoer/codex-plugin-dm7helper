@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useEventStream } from './useEventStream'
 
 class FakeEventSource {
@@ -16,7 +16,8 @@ class FakeEventSource {
 }
 
 describe('useEventStream', () => {
-  afterEach(() => { FakeEventSource.instances = []; vi.unstubAllGlobals() })
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => { FakeEventSource.instances = []; vi.unstubAllGlobals(); vi.useRealTimers() })
 
   it('connects same-origin with credentials, bounds events, reports reconnecting, and cleans up', () => {
     vi.stubGlobal('EventSource', FakeEventSource)
@@ -44,5 +45,51 @@ describe('useEventStream', () => {
     const source = FakeEventSource.instances[0]
     act(() => source.listeners.get('executing')?.(new MessageEvent('executing', { data: JSON.stringify({ executionId: 'dm7-1', status: 'executing', timestamp: '2026-01-01T00:00:00Z', detail: '正在执行' }), lastEventId: '8' })))
     expect(result.current.events[0]).toMatchObject({ id: '8', executionId: 'dm7-1', status: 'executing' })
+  })
+
+  it('lets a transient native reconnect retain Last-Event-ID without replacing the source', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    const resync = vi.fn().mockResolvedValue(undefined)
+    const { result } = renderHook(() => useEventStream({ recoveryGraceMs: 1_000, resync }))
+    const source = FakeEventSource.instances[0]
+    act(() => source.onerror?.(new Event('error')))
+    expect(result.current.status).toBe('reconnecting')
+    await act(async () => { vi.advanceTimersByTime(500); source.onopen?.(new Event('open')); await Promise.resolve() })
+    vi.advanceTimersByTime(2_000)
+    expect(FakeEventSource.instances).toHaveLength(1)
+    expect(source.closed).toBe(false)
+    expect(resync).not.toHaveBeenCalled()
+    expect(result.current.status).toBe('connected')
+  })
+
+  it('recovers a replay-missed equivalent persistent error with REST resync and a fresh stream', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    const resync = vi.fn().mockResolvedValue(undefined)
+    const { result } = renderHook(() => useEventStream({ recoveryGraceMs: 100, retryBaseMs: 50, maximumBackoffMs: 200, resync }))
+    const first = FakeEventSource.instances[0]
+    act(() => { first.onerror?.(new Event('error')); first.onerror?.(new Event('error')) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+    expect(first.closed).toBe(true)
+    expect(resync).toHaveBeenCalledTimes(1)
+    expect(result.current.status).toBe('resyncing')
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    expect(FakeEventSource.instances).toHaveLength(2)
+    expect(FakeEventSource.instances[1]).not.toBe(first)
+  })
+
+  it('deduplicates replayed events and leaves no timer or source after unmount', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    const resync = vi.fn().mockResolvedValue(undefined)
+    const { result, unmount } = renderHook(() => useEventStream({ recoveryGraceMs: 100, resync }))
+    const source = FakeEventSource.instances[0]
+    const replay = new MessageEvent('executing', { data: JSON.stringify({ executionId: 'same', status: 'executing', timestamp: '2026-01-01T00:00:00Z', detail: '重放' }), lastEventId: '9' })
+    act(() => { source.listeners.get('executing')?.(replay); source.listeners.get('executing')?.(replay); source.onerror?.(new Event('error')) })
+    expect(result.current.events).toHaveLength(1)
+    unmount()
+    await vi.runAllTimersAsync()
+    expect(source.closed).toBe(true)
+    expect(FakeEventSource.instances).toHaveLength(1)
+    expect(resync).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

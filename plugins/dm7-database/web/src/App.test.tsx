@@ -1,14 +1,19 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App'
 import type { ApiClient, RuntimeSummary } from './api/types'
 import './styles.css'
 
+const stream = vi.hoisted(() => ({ status: 'connected', options: undefined as undefined | { resync?: () => Promise<void> } }))
+vi.mock('./hooks/useEventStream', () => ({
+  useEventStream: (options: { resync?: () => Promise<void> }) => { stream.options = options; return { status: stream.status, events: [] } },
+}))
+
 const runtime: RuntimeSummary = { sessionShortId: '019f4a71中文', currentVersion: 'v001', runningCount: 2, connections: 1 }
-const api = (overrides: Partial<ApiClient> = {}): ApiClient => ({ runtime: vi.fn().mockResolvedValue(runtime), ...overrides } as ApiClient)
+const api = (overrides: Partial<ApiClient> = {}): ApiClient => ({ runtime: vi.fn().mockResolvedValue(runtime), listConnections: vi.fn().mockResolvedValue({ connections: [] }), ...overrides } as ApiClient)
 
 describe('DM7 console shell', () => {
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => { vi.restoreAllMocks(); stream.status = 'connected'; stream.options = undefined })
 
   it('renders exactly six destinations and the active runtime summary', async () => {
     render(<App api={api()} />)
@@ -43,6 +48,25 @@ describe('DM7 console shell', () => {
     expect(screen.getByRole('navigation', { name: '主导航' })).toBeTruthy()
   })
 
+  it('routes overview and not-found CTAs through History without consuming modifier clicks', async () => {
+    render(<App api={api()} />)
+    const next = await screen.findByRole('link', { name: /继续/ })
+    next.setAttribute('target', '_blank')
+    const modified = new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true })
+    next.dispatchEvent(modified)
+    expect(modified.defaultPrevented).toBe(false)
+    expect(location.pathname).toBe('/app/')
+    next.removeAttribute('target')
+    fireEvent.click(next)
+    expect(location.pathname).toBe('/app/sql')
+
+    history.pushState(null, '', '/app/missing')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    const back = await screen.findByRole('link', { name: '返回概览' })
+    fireEvent.click(back)
+    expect(location.pathname).toBe('/app/overview')
+  })
+
   it('shows loading, no-connection, failure and retry states truthfully', async () => {
     let resolve!: (value: RuntimeSummary) => void
     const pending = new Promise<RuntimeSummary>((done) => { resolve = done })
@@ -75,6 +99,7 @@ describe('DM7 console shell', () => {
     expect(document.documentElement.dataset.theme).toBe('dark')
     fireEvent.click(screen.getByRole('button', { name: '切换为浅色主题' }))
     expect(document.documentElement.dataset.theme).toBe('light')
+    expect(document.documentElement.getAttribute('style')).toBeNull()
     expect(Object.keys(localStorage)).toEqual(['dm7-console-theme'])
     expect(localStorage.getItem('dm7-console-theme')).toBe('light')
   })
@@ -98,5 +123,47 @@ describe('DM7 console shell', () => {
     render(<App api={api()} />)
     expect(screen.getByRole('link', { name: '跳到主要内容' }).getAttribute('href')).toBe('#main-content')
     expect(screen.getByRole('main').id).toBe('main-content')
+  })
+
+  it('describes loopback isolation separately from encrypted credential storage', async () => {
+    render(<App api={api()} />)
+    expect(screen.getByText('本地回环隔离')).toBeTruthy()
+    fireEvent.click(screen.getByRole('link', { name: '设置' }))
+    expect(await screen.findByText('凭据加密存储')).toBeTruthy()
+  })
+
+  it('marks runtime state stale during SSE loss and authoritatively refreshes it during recovery', async () => {
+    const runtimeCall = vi.fn()
+      .mockResolvedValueOnce(runtime)
+      .mockResolvedValueOnce({ ...runtime, currentVersion: 'v002', runningCount: 0 })
+    const listConnections = vi.fn().mockResolvedValue({ connections: [] })
+    const client = api({ runtime: runtimeCall, listConnections })
+    const { rerender } = render(<App api={client} />)
+    await screen.findAllByText('v001')
+
+    stream.status = 'reconnecting'
+    rerender(<App api={client} />)
+    expect(await screen.findByText('实时状态可能已过期')).toBeTruthy()
+    expect(screen.queryByText('状态已同步')).toBeNull()
+
+    stream.status = 'resyncing'
+    rerender(<App api={client} />)
+    expect(await screen.findByText('正在重新同步')).toBeTruthy()
+    await act(async () => { await stream.options?.resync?.() })
+    expect(await screen.findAllByText('v002')).toHaveLength(2)
+    expect(screen.getByText('0 个任务')).toBeTruthy()
+    expect(screen.queryByText('状态已同步')).toBeNull()
+    expect(screen.getByText('正在重新同步')).toBeTruthy()
+    stream.status = 'connected'
+    rerender(<App api={client} />)
+    expect(await screen.findByText('状态已同步')).toBeTruthy()
+  })
+
+  it('does not claim synchronization before the initial live stream opens', async () => {
+    stream.status = 'connecting'
+    render(<App api={api()} />)
+    await screen.findAllByText('v001')
+    expect(screen.getByText('实时通道连接中')).toBeTruthy()
+    expect(screen.queryByText('状态已同步')).toBeNull()
   })
 })

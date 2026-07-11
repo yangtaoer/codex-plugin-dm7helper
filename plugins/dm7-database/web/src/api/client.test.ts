@@ -29,9 +29,10 @@ describe('same-origin API client', () => {
     await expect(createApiClient({ fetcher }).runtime()).rejects.toMatchObject({ status, code: 'SAFE_CODE', message: '安全提示', correlationId: 'corr-safe' })
   })
 
-  it('distinguishes 204, downloads, malformed JSON, and aborts', async () => {
-    const noContent = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
-    await expect(createApiClient({ fetcher: noContent }).removeConnection('safe-id')).resolves.toBeUndefined()
+  it('matches the real 200 delete shape and distinguishes downloads, malformed JSON, and aborts', async () => {
+    const deleted = vi.fn().mockResolvedValue(response({ deleted: true }))
+    const deletion = await createApiClient({ fetcher: deleted }).removeConnection('safe-id')
+    expect(deletion.deleted).toBe(true)
 
     const malformed = vi.fn().mockResolvedValue(new Response('{broken', { headers: { 'Content-Type': 'application/json' } }))
     await expect(createApiClient({ fetcher: malformed }).runtime()).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
@@ -67,7 +68,7 @@ describe('same-origin API client', () => {
     await client.setDefaultConnection('connection-1')
     await client.testConnection('connection-1')
     await client.query({ sql: 'SELECT 1' })
-    await client.execute({ sql: 'UPDATE T SET A=1', purpose: 'SCHEMA_CHANGE', atomic: true })
+    await client.execute({ sql: 'UPDATE T SET A=1', purpose: 'PRODUCTION_CHANGE', atomic: true })
     await client.cancelExecution('execution-1')
     await client.releaseExport(true)
     expect(fetcher.mock.calls.map(([path]) => path)).toEqual([
@@ -80,5 +81,31 @@ describe('same-origin API client', () => {
     }
     expect(JSON.parse(fetcher.mock.calls[0][1].body)).toMatchObject({ name: '本地库', password: 'secret' })
     expect(JSON.parse(fetcher.mock.calls[6][1].body)).toEqual({ confirm: true })
+  })
+
+  it('preserves safe download error envelopes and classifies actionable statuses', async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ ok: false, code: 'ARTIFACT_CONFLICT', message: '导出物已变更', correlationId: 'download-corr' }, { status: 409 }))
+    await expect(createApiClient({ fetcher }).downloadArtifact('artifact-1')).rejects.toMatchObject({
+      status: 409, code: 'ARTIFACT_CONFLICT', message: '导出物已变更', correlationId: 'download-corr', category: 'CONFLICT',
+    })
+  })
+
+  it.each([
+    [401, 'UNAUTHENTICATED'],
+    [429, 'RATE_LIMITED'],
+  ] as const)('uses a safe non-JSON download fallback for %s as %s', async (status, category) => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('private backend body', { status, headers: { 'Content-Type': 'text/plain' } }))
+    const logger = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    await expect(createApiClient({ fetcher }).downloadArtifact('artifact-1')).rejects.toMatchObject({ status, code: category, category })
+    expect(logger).not.toHaveBeenCalled()
+  })
+
+  it('distinguishes download timeout from caller abort', async () => {
+    const timedOut = vi.fn((_path: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('deadline', 'TimeoutError')))
+    }))
+    await expect(createApiClient({ fetcher: timedOut, timeoutMs: 1 }).downloadArtifact('artifact-1')).rejects.toMatchObject({ code: 'TIMEOUT', category: 'TIMEOUT' })
+    const aborted = vi.fn().mockRejectedValue(new DOMException('caller', 'AbortError'))
+    await expect(createApiClient({ fetcher: aborted }).downloadArtifact('artifact-1')).rejects.toMatchObject({ code: 'ABORTED', category: 'ABORTED' })
   })
 })

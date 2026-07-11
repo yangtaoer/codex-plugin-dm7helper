@@ -7,10 +7,11 @@
   --surface-3: #e3e4dc;
   --text: #1f2421;
   --muted: #66706a;
-  --faint: #8b938d;
+  --faint: #58635c;
   --border: #d5d9d3;
   --border-strong: #bbc2bc;
   --accent: #147d64;
+  --on-accent: #ffffff;
   --accent-quiet: #dcece6;
   --success: #147d64;
   --warning: #a96200;
@@ -38,10 +39,11 @@
   --surface-3: #282d29;
   --text: #edf1ed;
   --muted: #a5aea7;
-  --faint: #788078;
+  --faint: #a8b2aa;
   --border: #303630;
   --border-strong: #444c45;
   --accent: #43b894;
+  --on-accent: #061a13;
   --accent-quiet: #173c31;
   --warning: #e5a64f;
   --warning-quiet: #44321b;
@@ -60,7 +62,7 @@ code, .nav-index, .metric-index, .placeholder-code, .brand span, .instrument-lab
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
-.skip-link { position: fixed; top: 8px; left: 8px; z-index: 100; padding: 10px 14px; color: #fff; background: var(--accent); transform: translateY(-150%); }
+.skip-link { position: fixed; top: 8px; left: 8px; z-index: 100; padding: 10px 14px; color: var(--on-accent); background: var(--accent); transform: translateY(-150%); }
 .skip-link:focus { transform: translateY(0); }
 .app-shell { min-height: 100vh; }
 .app-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 20; display: flex; width: var(--sidebar); flex-direction: column; border-right: 1px solid var(--border-strong); background: var(--surface); }
@@ -148,7 +150,7 @@ h1, h2, p { overflow-wrap: anywhere; }
 .settings-section p { max-width: 750px; color: var(--muted); font-size: 12px; line-height: 1.8; }
 .theme-control, .button-primary, .button-secondary { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: 8px; padding: 0 15px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); cursor: pointer; text-decoration: none; }
 .theme-control:hover, .button-secondary:hover { border-color: var(--accent); }
-.button-primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+.button-primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
 .parameter-list { margin: 16px 0 0; }
 .parameter-list div { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 20px; border-top: 1px solid var(--border); }
 .parameter-list dt { color: var(--muted); font-size: 11px; }
