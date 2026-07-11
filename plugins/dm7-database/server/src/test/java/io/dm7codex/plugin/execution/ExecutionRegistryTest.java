@@ -30,6 +30,17 @@ class ExecutionRegistryTest {
         assertTrue(connection.isClosed());
     }
 
+    @Test void terminalClaimAtomicallyResolvesCancellationRace() {
+        try (var registry = new ExecutionRegistry()) {
+            UUID completed = UUID.randomUUID(); registry.register(completed);
+            assertTrue(registry.claimTerminal(completed));
+            assertFalse(registry.cancel(completed));
+            UUID cancelled = UUID.randomUUID(); registry.register(cancelled);
+            assertTrue(registry.cancel(cancelled));
+            assertFalse(registry.claimTerminal(cancelled));
+        }
+    }
+
     @Test void blockingCancelCannotStarveForceCloseExecutor() throws Exception {
         var releaseCancel = new CountDownLatch(1);
         var closeCalled = new CountDownLatch(1);

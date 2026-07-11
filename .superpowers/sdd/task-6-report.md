@@ -45,3 +45,9 @@ Final clean verification after remediation: 226 tests, zero failures, zero error
 - Binary mapping uses `Base64.Encoder.wrap` over a pre-sized bounded StringBuilder sink and 12 KiB fixed input buffer. Metadata labels and scalar/null values are budgeted; oversized metadata returns a safe result-limit error with empty columns/rows.
 - Per-statement errors remain distinct, while terminal restart requirements aggregate recursively. Execution history uses a transactional, idempotent finish update so commit/reservation/close failures persist final committed/recorded/exclusion facts before terminal status.
 - Metadata offsets are long-valued, overflow-checked, and bound with `setLong`. Additional DM types and unmatched-reader-surrogate handling are covered, and model defensive-copy/page/terminal invariants were strengthened.
+
+## Terminal race closure
+
+- Every statement retains its original safe error. Overall failure uses the first statement error's phase/message/SQLState/vendor code and only aggregates `restartRequired` across later errors.
+- Unknown binary streams start with at most a small 12 KiB-derived Base64 capacity; byte arrays size capacity from their actual bounded length. Large configured limits no longer cause eager budget-sized allocation.
+- Registry terminal claims atomically resolve cancellation versus completion. Cancellation checks surround open, reservation, attachment, execution, commit, logging, close, and terminal publication boundaries. Commit-before-cancel facts finish required logging and return `CANCELLED`; completion-before-cancel makes later cancellation return false.

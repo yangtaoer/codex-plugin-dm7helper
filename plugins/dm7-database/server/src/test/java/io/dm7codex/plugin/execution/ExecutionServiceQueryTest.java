@@ -38,6 +38,16 @@ class ExecutionServiceQueryTest {
         }
     }
 
+    @Test void oneByteBlobWithMaximumBudgetDoesNotRequireBudgetSizedOutput() throws Exception {
+        var opener = new TestJdbc.Opener().queryRows(
+                List.of(List.of(new SerialBlob(new byte[]{1}))), List.of("B"));
+        var result = TestJdbc.service(opener).query(TestJdbc.session(),
+                new QueryCommand(UUID.randomUUID(), "SELECT B FROM T", 1,
+                        ExecutionModels.MAX_BYTES, 30));
+        assertEquals("base64:AQ==", result.rows().get(0).get("B"));
+        assertTrue(result.bytes() < 32);
+    }
+
     @Test void closeFailureHistoryRetainsRowsReadBeforeTerminalFailure() throws Exception {
         var fixture = historyFixture("query-close-history");
         try (fixture.database) {

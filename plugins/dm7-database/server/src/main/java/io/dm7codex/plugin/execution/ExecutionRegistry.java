@@ -61,6 +61,7 @@ public final class ExecutionRegistry implements AutoCloseable {
         boolean issueCancel = false;
         boolean scheduleClose = false;
         synchronized (entry) {
+            if (entry.terminal) return false;
             entry.cancelled = true;
             statement = entry.statement;
             connection = entry.connection;
@@ -82,6 +83,17 @@ public final class ExecutionRegistry implements AutoCloseable {
         var entry = entries.get(executionId);
         if (entry == null) return false;
         synchronized (entry) { return entry.cancelled; }
+    }
+
+    /** Atomically claims terminal completion. False means cancellation won the race. */
+    public boolean claimTerminal(UUID executionId) {
+        var entry = entries.get(executionId);
+        if (entry == null) return false;
+        synchronized (entry) {
+            if (entry.terminal) return !entry.cancelled;
+            entry.terminal = true;
+            return !entry.cancelled;
+        }
     }
 
     public void complete(UUID executionId) { entries.remove(executionId); }
@@ -149,6 +161,7 @@ public final class ExecutionRegistry implements AutoCloseable {
         private boolean cancelled;
         private boolean cancelIssued;
         private boolean forceCloseScheduled;
+        private boolean terminal;
         private Connection connection;
         private Statement statement;
     }

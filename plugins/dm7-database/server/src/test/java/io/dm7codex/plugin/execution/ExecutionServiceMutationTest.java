@@ -31,6 +31,29 @@ class ExecutionServiceMutationTest {
         assertEquals(0, opener.openCount());
     }
 
+    @Test void continueOnErrorPreservesEachStatementErrorAndTerminalUsesFirstError() throws Exception {
+        try (var fixture = releaseFixture("multi-error", ReleaseLogService.RecordStage.AFTER_PENDING)) {
+            var opener = new TestJdbc.Opener().fingerprint("db-a").failOnStatement(2);
+            try (var service = executionWithRelease(opener, fixture.release)) {
+                var result = service.execute(fixture.session, new ExecuteCommand(UUID.randomUUID(),
+                        "UPDATE A SET C=1; UPDATE B SET C=2", SqlPurpose.MIGRATION,
+                        false, true, 60));
+                var first = result.statements().get(0).error().orElseThrow();
+                var second = result.statements().get(1).error().orElseThrow();
+                assertEquals(ExecutionStatus.LOGGING, first.phase());
+                assertNull(first.sqlState());
+                assertEquals(ExecutionStatus.EXECUTING, second.phase());
+                assertEquals("HY000", second.sqlState());
+                assertEquals(7001, second.errorCode());
+                var terminal = result.error().orElseThrow();
+                assertEquals(first.phase(), terminal.phase());
+                assertEquals(first.message(), terminal.message());
+                assertEquals(first.sqlState(), terminal.sqlState());
+                assertEquals(first.errorCode(), terminal.errorCode());
+            }
+        }
+    }
+
     @Test void historyFinishAggregatesOnlyCommittedRows() throws Exception {
         var paths = RuntimePaths.forTest(tempDir.resolve("committed-aggregate"));
         try (var database = StateDatabase.open(paths.stateDatabase())) {

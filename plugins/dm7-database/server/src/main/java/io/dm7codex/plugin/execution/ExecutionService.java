@@ -178,6 +178,14 @@ public final class ExecutionService implements AutoCloseable {
             }
             managed.close();
             managed = null;
+            if (!registry.claimTerminal(executionId)) {
+                var cancelled = new SafeError(correlationId, currentPhase,
+                        "Execution was cancelled", "DM7APP", 70004, false);
+                publish(session, executionId, ExecutionStatus.CANCELLED);
+                terminalHistory(executionId, ExecutionStatus.CANCELLED, Optional.of(cancelled));
+                return new QueryResult(executionId, List.of(), List.of(), false, 0, 0,
+                        elapsed(started), fingerprint, Optional.of(cancelled));
+            }
             publish(session, executionId, ExecutionStatus.COMPLETED);
             if (history != null) {
                 history.queryFinished(executionId, successful.returnedRows());
@@ -185,7 +193,8 @@ public final class ExecutionService implements AutoCloseable {
             }
             return successful;
         } catch (Exception failure) {
-            var terminal = registry.isCancelled(executionId) ? ExecutionStatus.CANCELLED : ExecutionStatus.FAILED;
+            var terminal = registry.claimTerminal(executionId)
+                    ? ExecutionStatus.FAILED : ExecutionStatus.CANCELLED;
             publish(session, executionId, terminal);
             if (managed != null) {
                 try { managed.close(); } catch (Exception cleanup) { failure.addSuppressed(cleanup); }
@@ -260,6 +269,7 @@ public final class ExecutionService implements AutoCloseable {
             if (releaseLog != null) {
                 reservation = releaseLog.reserveWritable(session, fingerprint, command.purpose());
             }
+            checkCancelled(executionId);
             currentPhase = ExecutionStatus.PARSING;
             publish(session, executionId, ExecutionStatus.PARSING);
             if (history != null) history.progress(executionId, ExecutionStatus.PARSING);
@@ -385,16 +395,8 @@ public final class ExecutionService implements AutoCloseable {
                 if (anyFailure) {
                     closeForTerminal(reservation, managed, terminalFailure);
                     reservation = null; managed = null;
-                    ExecutionStatus errorPhase = results.stream().filter(r -> r.error().isPresent())
-                            .map(r -> r.error().orElseThrow().phase()).findFirst()
-                            .orElse(ExecutionStatus.EXECUTING);
-                    var terminalSafeError = safe(correlationId, errorPhase, terminalFailure);
-                    for (int i = 0; i < results.size(); i++) {
-                        if (results.get(i).error().isPresent()) {
-                            results.set(i, withError(results.get(i), terminalSafeError));
-                            break;
-                        }
-                    }
+                    var terminalSafeError = terminalAggregate(correlationId, results,
+                            safe(correlationId, currentPhase, terminalFailure));
                     publish(session, executionId, ExecutionStatus.FAILED);
                     persistTerminal(executionId, results, ExecutionStatus.FAILED,
                             Optional.of(terminalSafeError));
@@ -409,6 +411,14 @@ public final class ExecutionService implements AutoCloseable {
             }
             managed.close();
             managed = null;
+            if (!registry.claimTerminal(executionId)) {
+                var cancelled = new SafeError(correlationId, currentPhase,
+                        "Execution was cancelled", "DM7APP", 70004, false);
+                publish(session, executionId, ExecutionStatus.CANCELLED);
+                persistTerminal(executionId, results, ExecutionStatus.CANCELLED, Optional.of(cancelled));
+                return new ExecutionResult(executionId, false, ExecutionStatus.CANCELLED, results,
+                        elapsed(started), fingerprint, Optional.of(cancelled));
+            }
             publish(session, executionId, ExecutionStatus.COMPLETED);
             if (history != null) {
                 for (var result : results) history.statementFinished(executionId, result);
@@ -427,7 +437,8 @@ public final class ExecutionService implements AutoCloseable {
                 try { managed.close(); } catch (Exception cleanup) { failure.addSuppressed(cleanup); }
                 managed = null;
             }
-            var status = registry.isCancelled(executionId) ? ExecutionStatus.CANCELLED : ExecutionStatus.FAILED;
+            var status = registry.claimTerminal(executionId)
+                    ? ExecutionStatus.FAILED : ExecutionStatus.CANCELLED;
             publish(session, executionId, status);
             var error = safe(correlationId, currentPhase, asException(failure));
             if (history != null && historyStarted) try {
@@ -553,7 +564,7 @@ public final class ExecutionService implements AutoCloseable {
         if (value == null) { budget.requireScalar("null"); return null; }
         if (value instanceof byte[] bytes) return budget.binary(bytes);
         if (value instanceof Blob blob) {
-            try (InputStream input = blob.getBinaryStream()) { return budget.binary(input); }
+            try (InputStream input = blob.getBinaryStream()) { return budget.binary(input, -1); }
             finally { blob.free(); }
         }
         if (value instanceof NClob nclob) {
@@ -659,6 +670,16 @@ public final class ExecutionService implements AutoCloseable {
                 value.elapsedMillis(), Optional.of(error));
     }
 
+    private static SafeError terminalAggregate(UUID correlationId, List<StatementResult> results,
+            SafeError fallback) {
+        SafeError first = results.stream().flatMap(result -> result.error().stream())
+                .findFirst().orElse(fallback);
+        boolean restart = fallback.restartRequired() || results.stream()
+                .flatMap(result -> result.error().stream()).anyMatch(SafeError::restartRequired);
+        return new SafeError(correlationId, first.phase(), first.message(), first.sqlState(),
+                first.errorCode(), restart);
+    }
+
     private void persistTerminal(UUID executionId, List<StatementResult> results,
             ExecutionStatus status, Optional<SafeError> error) throws SQLException {
         if (history == null) return;
@@ -724,16 +745,18 @@ public final class ExecutionService implements AutoCloseable {
             return result.toString();
         }
         private String binary(byte[] bytes) {
-            try { return binary(new java.io.ByteArrayInputStream(bytes)); }
+            try { return binary(new java.io.ByteArrayInputStream(bytes), bytes.length); }
             catch (Exception impossible) { throw new IllegalStateException(impossible); }
         }
-        private String binary(InputStream input) throws Exception {
+        private String binary(InputStream input, long knownLength) throws Exception {
             String marker = "base64:";
             requireMetadata(marker);
             long remaining = limit - used;
             long rawMax = (remaining / 4) * 3;
-            int encodedCapacity = Math.toIntExact(Math.min(Integer.MAX_VALUE - marker.length(),
-                    (rawMax / 3) * 4));
+            long initialRaw = knownLength >= 0 ? Math.min(knownLength, rawMax)
+                    : Math.min(rawMax, 12L * 1024);
+            int encodedCapacity = Math.toIntExact(Math.min(16L * 1024 - marker.length(),
+                    ((initialRaw + 2) / 3) * 4));
             var result = new StringBuilder(marker.length() + encodedCapacity).append(marker);
             var sink = new AsciiBuilderOutputStream(result);
             var encoder = Base64.getEncoder().wrap(sink);
