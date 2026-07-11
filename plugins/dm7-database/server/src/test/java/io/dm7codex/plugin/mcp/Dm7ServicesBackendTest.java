@@ -183,4 +183,27 @@ class Dm7ServicesBackendTest {
             assertEquals(Map.of("connections",java.util.List.of()),backend.call("connections.list",Map.of(),session));
         }
     }
+
+    @Test void consoleConnectionPasswordContractPreservesReplacesAndClearsWithoutDisclosure() throws Exception {
+        Path driver=temporary.resolve("credential-contract.jar");Files.writeString(driver,"fixture",StandardCharsets.UTF_8);
+        try(var backend=Dm7ServicesBackend.open(RuntimePaths.forTest(temporary))){
+            var session=backend.initialize(new SessionIdentity("password-contract","test","verified"));
+            var created=backend.call("connections.create",Map.of("name","凭据契约","driverJar",driver.toString(),
+                    "jdbcUrl","jdbc:dm7://localhost:5236","username","operator","password","first-value"),session);
+            assertEquals(true,created.get("hasPassword"));
+            String id=(String)created.get("id");
+            var preserved=backend.call("connections.update",Map.of("id",id,"name","凭据契约-更新"),session);
+            assertEquals(true,preserved.get("hasPassword"));
+            var blank=backend.call("connections.update",Map.of("id",id,"password","   "),session);
+            assertEquals(true,blank.get("hasPassword"));
+            var cleared=backend.call("connections.update",Map.of("id",id,"clearPassword",true),session);
+            assertEquals(false,cleared.get("hasPassword"));
+            assertThrows(IllegalArgumentException.class,()->backend.call("connections.update",
+                    Map.of("id",id,"password","replacement","clearPassword",true),session));
+            assertThrows(IllegalArgumentException.class,()->backend.call("connections.create",Map.of("name","无意义清除",
+                    "driverJar",driver.toString(),"jdbcUrl","jdbc:dm7://localhost:5236","username","operator","clearPassword",true),session));
+            String output=backend.call("connections.list",Map.of(),session).toString();
+            assertFalse(output.contains("first-value"));assertFalse(output.contains("replacement"));
+        }
+    }
 }

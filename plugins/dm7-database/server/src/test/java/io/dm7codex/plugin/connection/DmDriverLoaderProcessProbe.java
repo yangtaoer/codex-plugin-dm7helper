@@ -87,6 +87,7 @@ public final class DmDriverLoaderProcessProbe {
                         && System.nanoTime() < deadline) Thread.onSpinWait();
                 throw new IllegalStateException("fixture credential failure");
             }
+            @Override public boolean contains(UUID id) { return false; }
             @Override public void delete(UUID id) {}
         } : realVault;
         ConnectionConfigRepository repository = ConnectionConfigRepository.open(paths.configDirectory(), secrets);

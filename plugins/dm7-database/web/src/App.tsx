@@ -8,6 +8,7 @@ import { StatusBadge } from './components/StatusBadge'
 import { useEventStream, type StreamStatus } from './hooks/useEventStream'
 import { usePathname } from './hooks/usePathname'
 import { useTheme } from './hooks/useTheme'
+import { ConnectionsPage } from './pages/ConnectionsPage'
 
 type RuntimeState =
   | { kind: 'loading' }
@@ -104,7 +105,7 @@ export function App({ api }: { api: ApiClient }) {
       </header>
       <main id="main-content" tabIndex={-1}>
         <RuntimeFeedback state={runtime} streamStatus={stream.status} onRetry={() => void refreshSnapshot('loading')} />
-        <RouteContent active={active} runtime={runtimeValue} runtimeStatus={runtime.kind} theme={theme} onThemeToggle={toggle} navigate={navigate} />
+        <RouteContent active={active} runtime={runtimeValue} runtimeStatus={runtime.kind} theme={theme} onThemeToggle={toggle} navigate={navigate} api={api} />
       </main>
     </div>
     <ToastRegion />
@@ -122,15 +123,15 @@ function RuntimeFeedback({ state, streamStatus, onRetry }: { state: RuntimeState
   return <button className="refresh-runtime" aria-label="刷新运行状态" onClick={onRetry}><RefreshCw size={14} aria-hidden="true" />状态已同步</button>
 }
 
-function RouteContent({ active, runtime, runtimeStatus, theme, onThemeToggle, navigate }: { active: Route | 'not-found'; runtime?: RuntimeSummary; runtimeStatus: RuntimeState['kind']; theme: string; onThemeToggle(): void; navigate: Navigate }) {
+function RouteContent({ active, runtime, runtimeStatus, theme, onThemeToggle, navigate, api }: { active: Route | 'not-found'; runtime?: RuntimeSummary; runtimeStatus: RuntimeState['kind']; theme: string; onThemeToggle(): void; navigate: Navigate; api: ApiClient }) {
   if (active === 'overview') return <OverviewPage runtime={runtime} runtimeStatus={runtimeStatus} navigate={navigate} />
   if (active === 'settings') return <SettingsPage theme={theme} onThemeToggle={onThemeToggle} />
+  if (active === 'connections') return <ConnectionsPage api={api} />
   if (active === 'not-found') return <EmptyState title="页面未找到" description="该控制台路由不存在。请从左侧导航继续。" action={<InternalLink className="button-primary" to="/app/overview" navigate={navigate}>返回概览</InternalLink>} />
   const content = {
     sql: ['SQL 控制台', '编辑、审核并执行 DM7 SQL', TerminalSquare, '完整编辑器与结果表格将在下一阶段接入。'],
     activity: ['实时执行', '跟踪每个执行阶段与取消状态', Activity, '实时事件通道已就绪，此处将展示任务时间线。'],
     release: ['发版日志', '检查每个会话的 DDL / DML 发版记录', FileClock, '版本预览与安全导出操作即将接入。'],
-    connections: ['连接管理', '本地管理驱动、账号与默认连接', Cable, '连接信息只在本地加密保存，编辑工作流将在后续阶段提供。'],
   }[active]!
   const Icon = content[2]
   return <><PageHeader eyebrow="WORKSPACE" title={content[0] as string} description={content[1] as string} /><section className="placeholder-panel"><Icon size={30} strokeWidth={1.35} aria-hidden="true" /><div><h2>功能通道已预留</h2><p>{content[3] as string}</p></div><span className="placeholder-code">MODULE / {active.toUpperCase()}</span></section></>

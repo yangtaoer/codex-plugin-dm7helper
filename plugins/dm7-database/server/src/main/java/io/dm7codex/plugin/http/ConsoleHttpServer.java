@@ -162,7 +162,7 @@ public final class ConsoleHttpServer implements AutoCloseable {
     private static void validateFields(String operation,Map<String,Object> input)throws JsonHttp.HttpProblem{
         Set<String> allowed=switch(operation){
             case"runtime","connections.list","release.preview"->Set.of();
-            case"connections.create","connections.update"->Set.of("id","name","driverJar","driverClass","jdbcUrl","username","password","schema","connectTimeoutSeconds","socketTimeoutSeconds","queryTimeoutSeconds","maxRows","maxBytes","isDefault");
+            case"connections.create","connections.update"->Set.of("id","name","driverJar","driverClass","jdbcUrl","username","password","clearPassword","schema","connectTimeoutSeconds","socketTimeoutSeconds","queryTimeoutSeconds","maxRows","maxBytes","isDefault");
             case"connections.get","connections.delete","connections.default","connections.test","executions.get","executions.cancel"->Set.of("id");
             case"connections.diagnostics"->Set.of("jdbcUrl");
             case"query"->Set.of("connectionId","executionId","sql","parameters","maxRows","maxBytes","timeoutSeconds");
@@ -178,6 +178,7 @@ public final class ConsoleHttpServer implements AutoCloseable {
         if(operation.equals("release.export")&&!(input.get("confirm")instanceof Boolean))invalidType();
         if(operation.startsWith("connections.")&&!operation.equals("connections.list")&&!operation.equals("connections.create")&&!operation.equals("connections.diagnostics"))requireText(input,"id");
         for(String key:List.of("name","driverJar","driverClass","jdbcUrl","username","password","schema"))if(input.containsKey(key)&&!(input.get(key)instanceof String))invalidType();
+        if(input.containsKey("clearPassword")&&!(input.get("clearPassword")instanceof Boolean))invalidType();
         for(String key:List.of("connectTimeoutSeconds","socketTimeoutSeconds","queryTimeoutSeconds","maxRows","maxBytes"))if(input.containsKey(key)&&!(input.get(key)instanceof Number))invalidType();
         if(input.containsKey("isDefault")&&!(input.get("isDefault")instanceof Boolean))invalidType();
     }

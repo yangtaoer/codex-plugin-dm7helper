@@ -12,6 +12,7 @@ export type SafeConnection = {
   driverSha256?: string
   configured: boolean
   connected: boolean
+  hasPassword: boolean
   driverClass?: string
   jdbcUrl?: string
   urlSummary: string
@@ -57,7 +58,7 @@ export type DownloadArtifact = { filename: string; blob: Blob }
 export type DeleteConnectionResult = { deleted: true }
 export type ConnectionInput = {
   name: string; driverJar: string; driverClass?: string; jdbcUrl: string; username: string
-  password?: string; schema?: string | null; connectTimeoutSeconds?: number; socketTimeoutSeconds?: number
+  password?: string; clearPassword?: boolean; schema?: string | null; connectTimeoutSeconds?: number; socketTimeoutSeconds?: number
   queryTimeoutSeconds?: number; maxRows?: number; maxBytes?: number; isDefault?: boolean
 }
 export type ConnectionTestResult = { success: boolean; latencyMs: number; driverVersion: string; serverVersion: string; actualUser: string; actualSchema: string; chineseRoundTrip: boolean; restartRequired: boolean; warnings: string[] }

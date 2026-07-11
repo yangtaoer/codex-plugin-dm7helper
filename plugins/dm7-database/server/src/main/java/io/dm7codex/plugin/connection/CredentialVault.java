@@ -129,6 +129,13 @@ public final class CredentialVault implements SecretStore {
         }
     }
 
+    @Override
+    public boolean contains(UUID connectionId) {
+        synchronized (processLock) {
+            return readEntries().containsKey(Objects.requireNonNull(connectionId, "connectionId"));
+        }
+    }
+
     private Optional<char[]> readLocked(UUID connectionId) {
         Objects.requireNonNull(connectionId, "connectionId");
         VaultEntry entry = readEntries().get(connectionId);

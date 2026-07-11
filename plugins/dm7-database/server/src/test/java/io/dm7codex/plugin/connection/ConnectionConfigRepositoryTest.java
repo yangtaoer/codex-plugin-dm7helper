@@ -13,6 +13,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.HashMap;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -48,6 +50,45 @@ class ConnectionConfigRepositoryTest {
         repository.delete(id);
         assertTrue(vault.read(id).isEmpty());
         assertTrue(repository.list().isEmpty());
+    }
+
+    @Test void reportsCredentialPresenceWithoutReadingAndSupportsExplicitClear() throws Exception {
+        CredentialVault vault = CredentialVault.open(tempDir.resolve("presence-secrets"));
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(tempDir.resolve("presence-config"), vault);
+        UUID id = UUID.randomUUID();
+        ConnectionProfile profile = profile(id, "密码状态", false);
+        assertFalse(repository.hasPassword(id));
+        repository.save(profile, Optional.of("temporary-value".toCharArray()));
+        assertTrue(repository.hasPassword(id));
+        repository.save(profile, Optional.of("replacement-value".toCharArray()));
+        assertArrayEquals("replacement-value".toCharArray(), vault.read(id).orElseThrow());
+        repository.save(profile, Optional.empty(), true);
+        assertFalse(repository.hasPassword(id));
+    }
+
+    @Test void replacementAndClearAreMutuallyExclusive() throws Exception {
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(
+                tempDir.resolve("conflict-config"), CredentialVault.open(tempDir.resolve("conflict-secrets")));
+        assertThrows(IllegalArgumentException.class, () -> repository.save(
+                profile(UUID.randomUUID(), "冲突", false), Optional.of("replacement".toCharArray()), true));
+    }
+
+    @Test void failedConfigurationWriteRestoresReplacedCredential() throws Exception {
+        RecordingSecretStore secrets = new RecordingSecretStore();
+        Path config = tempDir.resolve("save-rollback-config");
+        ConnectionConfigRepository repository = ConnectionConfigRepository.open(config, secrets);
+        UUID id = UUID.randomUUID();
+        ConnectionProfile saved = repository.save(profile(id, "回滚凭据", false), Optional.of("old-value".toCharArray()));
+        AtomicBoolean once = new AtomicBoolean();
+        secrets.beforePut = () -> {
+            if (!once.compareAndSet(false, true)) return;
+            try {
+                Path file = config.resolve("connections.json");
+                Files.delete(file); Files.createDirectory(file);
+            } catch (Exception e) { throw new IllegalStateException(e); }
+        };
+        assertThrows(IllegalStateException.class, () -> repository.save(saved, Optional.of("new-value".toCharArray())));
+        assertArrayEquals("old-value".toCharArray(), secrets.read(id).orElseThrow());
     }
 
     @Test void validatesOperationalBounds() {
@@ -177,15 +218,19 @@ class ConnectionConfigRepositoryTest {
 
     private static final class RecordingSecretStore implements SecretStore {
         private final AtomicInteger deleteCalls = new AtomicInteger();
+        private final java.util.Map<UUID,char[]> values = new HashMap<>();
         private RuntimeException deleteFailure;
+        private Runnable beforePut = () -> {};
         private Runnable beforeDelete = () -> {};
 
-        @Override public void put(UUID connectionId, char[] secret) {}
-        @Override public Optional<char[]> read(UUID connectionId) { return Optional.empty(); }
+        @Override public void put(UUID connectionId, char[] secret) { beforePut.run(); values.put(connectionId, secret.clone()); }
+        @Override public Optional<char[]> read(UUID connectionId) { return Optional.ofNullable(values.get(connectionId)).map(char[]::clone); }
+        @Override public boolean contains(UUID connectionId) { return values.containsKey(connectionId); }
         @Override public void delete(UUID connectionId) {
             deleteCalls.incrementAndGet();
             beforeDelete.run();
             if (deleteFailure != null) throw deleteFailure;
+            values.remove(connectionId);
         }
     }
 }

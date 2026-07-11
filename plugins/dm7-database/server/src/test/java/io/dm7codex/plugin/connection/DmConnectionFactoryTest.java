@@ -106,6 +106,7 @@ class DmConnectionFactoryTest {
         SecretStore secrets = new SecretStore() {
             @Override public void put(UUID id, char[] value) {}
             @Override public Optional<char[]> read(UUID id) { throw new IllegalStateException("credential-secret"); }
+            @Override public boolean contains(UUID id) { return false; }
             @Override public void delete(UUID id) {}
         };
         ConnectionConfigRepository repository = ConnectionConfigRepository.open(

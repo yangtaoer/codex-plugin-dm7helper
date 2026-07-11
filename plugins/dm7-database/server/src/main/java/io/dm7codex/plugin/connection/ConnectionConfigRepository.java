@@ -68,8 +68,15 @@ public final class ConnectionConfigRepository {
     }
 
     public ConnectionProfile save(ConnectionProfile profile, Optional<char[]> newPassword) {
+        return save(profile, newPassword, false);
+    }
+
+    public ConnectionProfile save(ConnectionProfile profile, Optional<char[]> newPassword, boolean clearPassword) {
         Objects.requireNonNull(profile, "profile");
         Objects.requireNonNull(newPassword, "newPassword");
+        if (clearPassword && newPassword.isPresent()) {
+            throw new IllegalArgumentException("Password replacement and clearing are mutually exclusive");
+        }
         synchronized (lock) {
             Map<UUID, ConnectionProfile> profiles = readProfiles();
             rejectDuplicateName(profiles, profile);
@@ -81,17 +88,25 @@ public final class ConnectionConfigRepository {
             enforceOneDefault(profiles);
 
             Optional<char[]> previous = Optional.empty();
-            if (newPassword.isPresent()) previous = vault.read(normalized.id());
+            if (newPassword.isPresent() || clearPassword) previous = vault.read(normalized.id());
             try {
                 newPassword.ifPresent(value -> vault.put(normalized.id(), value));
+                if (clearPassword) vault.delete(normalized.id());
                 writeProfiles(profiles);
             } catch (RuntimeException e) {
-                if (newPassword.isPresent()) restoreSecret(normalized.id(), previous);
+                if (newPassword.isPresent() || clearPassword) restoreSecret(normalized.id(), previous);
                 throw e;
             } finally {
                 previous.ifPresent(value -> Arrays.fill(value, '\0'));
             }
             return profiles.get(normalized.id());
+        }
+    }
+
+    public boolean hasPassword(UUID id) {
+        Objects.requireNonNull(id, "id");
+        synchronized (lock) {
+            return vault.contains(id);
         }
     }
 

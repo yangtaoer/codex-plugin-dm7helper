@@ -121,13 +121,18 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
         catch(io.dm7codex.plugin.release.ReleaseExportLockTimeout|io.dm7codex.plugin.release.ReleaseLogConnectionMismatch conflict){throw ConsoleHttpServer.BackendProblem.conflict();}
     }
     private Map<String,Object> saveProfile(Map<String,Object> input,ConnectionProfile old)throws Exception{
-        var allowed=Set.of("id","name","driverJar","driverClass","jdbcUrl","username","password","schema","connectTimeoutSeconds","socketTimeoutSeconds","queryTimeoutSeconds","maxRows","maxBytes","isDefault");
+        var allowed=Set.of("id","name","driverJar","driverClass","jdbcUrl","username","password","clearPassword","schema","connectTimeoutSeconds","socketTimeoutSeconds","queryTimeoutSeconds","maxRows","maxBytes","isDefault");
         if(!allowed.containsAll(input.keySet()))throw new IllegalArgumentException("unknown field");
+        boolean clearPassword=Boolean.TRUE.equals(input.get("clearPassword"));
+        if(old==null&&clearPassword)throw new IllegalArgumentException("clearPassword is not valid when creating a connection");
         UUID id=old==null?UUID.randomUUID():old.id();String requestedName=text(input,"name",old==null?null:old.name());
         if(profiles.list().stream().anyMatch(existing->!existing.id().equals(id)&&existing.name().equalsIgnoreCase(requestedName)))throw ConsoleHttpServer.BackendProblem.conflict();
         java.nio.file.Path driver=java.nio.file.Path.of(text(input,"driverJar",old==null?null:old.driverJar().toString())).toAbsolutePath().normalize();
         if(!driver.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")||!java.nio.file.Files.isRegularFile(driver,java.nio.file.LinkOption.NOFOLLOW_LINKS)||java.nio.file.Files.isSymbolicLink(driver))throw new IllegalArgumentException("driverJar invalid");
-        String sha=sha256(driver);String password=nullableText(input,"password");char[] secret=password==null?null:password.toCharArray();
+        String sha=sha256(driver);String password=nullableText(input,"password");
+        if(password!=null&&password.isBlank())password=null;
+        if(clearPassword&&password!=null)throw new IllegalArgumentException("Password replacement and clearing are mutually exclusive");
+        char[] secret=password==null?null:password.toCharArray();
         try{
             var value=new ConnectionProfile(id,requestedName,driver,sha,
                     text(input,"driverClass",old==null?ConnectionProfile.DEFAULT_DRIVER_CLASS:old.driverClass()),
@@ -136,11 +141,11 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
                     number(input,"socketTimeoutSeconds",old==null?30:old.socketTimeoutSeconds()).intValue(),number(input,"queryTimeoutSeconds",old==null?60:old.queryTimeoutSeconds()).intValue(),
                     number(input,"maxRows",old==null?1000:old.maxRows()).intValue(),number(input,"maxBytes",old==null?10L*1024*1024:old.maxBytes()).longValue(),
                     input.containsKey("isDefault")?(Boolean)input.get("isDefault"):old==null||old.isDefault());
-            try{return connection(profiles.save(value,Optional.ofNullable(secret)));}
+            try{return connection(profiles.save(value,Optional.ofNullable(secret),clearPassword));}
             catch(IllegalArgumentException invalid){if(profiles.list().stream().anyMatch(existing->!existing.id().equals(id)&&existing.name().equalsIgnoreCase(requestedName)))throw ConsoleHttpServer.BackendProblem.conflict();throw invalid;}
         }finally{if(secret!=null)Arrays.fill(secret,'\0');}
     }
-    private static Map<String,Object> connection(ConnectionProfile p){var m=new LinkedHashMap<String,Object>();m.put("id",p.id().toString());m.put("name",p.name());m.put("driverFileName",p.driverJar().getFileName().toString());m.put("driverSha256",p.driverSha256());m.put("configured",true);m.put("connected",false);m.put("driverClass",p.driverClass());m.put("jdbcUrl",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("urlSummary",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("username",p.username());m.put("schema",p.schema());m.put("connectTimeoutSeconds",p.connectTimeoutSeconds());m.put("socketTimeoutSeconds",p.socketTimeoutSeconds());m.put("queryTimeoutSeconds",p.queryTimeoutSeconds());m.put("maxRows",p.maxRows());m.put("maxBytes",p.maxBytes());m.put("isDefault",p.isDefault());return m;}
+    private Map<String,Object> connection(ConnectionProfile p){var m=new LinkedHashMap<String,Object>();m.put("id",p.id().toString());m.put("name",p.name());m.put("driverFileName",p.driverJar().getFileName().toString());m.put("driverSha256",p.driverSha256());m.put("configured",true);m.put("connected",false);m.put("hasPassword",profiles.hasPassword(p.id()));m.put("driverClass",p.driverClass());m.put("jdbcUrl",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("urlSummary",JdbcUrlDiagnostics.redact(p.jdbcUrl()));m.put("username",p.username());m.put("schema",p.schema());m.put("connectTimeoutSeconds",p.connectTimeoutSeconds());m.put("socketTimeoutSeconds",p.socketTimeoutSeconds());m.put("queryTimeoutSeconds",p.queryTimeoutSeconds());m.put("maxRows",p.maxRows());m.put("maxBytes",p.maxBytes());m.put("isDefault",p.isDefault());return m;}
     private static Map<String,Object> diagnostics(String url){var inspected=JdbcUrlDiagnostics.inspect(url);return Map.of("urlSummary",JdbcUrlDiagnostics.redact(url),"warnings",inspected.warnings());}
     private static String sha256(java.nio.file.Path path)throws Exception{var digest=java.security.MessageDigest.getInstance("SHA-256");try(var in=java.nio.file.Files.newInputStream(path)){byte[] b=new byte[8192];for(int n;(n=in.read(b))>=0;)digest.update(b,0,n);}return java.util.HexFormat.of().formatHex(digest.digest());}
     private static String text(Map<String,Object> m,String k,String fallback){Object v=m.get(k);if(v==null){if(fallback==null)throw new IllegalArgumentException(k+" required");return fallback;}if(!(v instanceof String s)||s.isBlank())throw new IllegalArgumentException(k+" invalid");return s;}
@@ -177,16 +182,7 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
     }
 
     private Map<String, Object> listConnections() {
-        var values = profiles.list().stream().map(profile -> {
-            var item = new LinkedHashMap<String, Object>();
-            item.put("id", profile.id().toString());
-            item.put("name", profile.name());
-            item.put("isDefault", profile.isDefault());
-            if (profile.schema() != null) item.put("schema", profile.schema());
-            item.put("urlSummary", JdbcUrlDiagnostics.redact(profile.jdbcUrl()));
-            item.put("configured", true); item.put("connected", false);
-            return Collections.unmodifiableMap(item);
-        }).toList();
+        var values = profiles.list().stream().map(this::connection).map(Collections::unmodifiableMap).toList();
         return Map.of("connections", values);
     }
 
