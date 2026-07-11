@@ -63,11 +63,38 @@ public final class ExecutionRepository {
 
     public void started(UUID executionId, String sessionId, String connectionFingerprint,
                         ExecutionSource source, Optional<SqlPurpose> purpose, String sql) throws SQLException {
+        started(executionId, UUID.randomUUID(), sessionId, connectionFingerprint, source, purpose, sql);
+    }
+
+    public void started(UUID executionId, UUID correlationId, String sessionId,
+                        String connectionFingerprint, ExecutionSource source,
+                        Optional<SqlPurpose> purpose, String sql) throws SQLException {
         var now = Instant.now();
-        saveExecution(new ExecutionRecord(executionId.toString(), UUID.randomUUID().toString(),
+        saveExecution(new ExecutionRecord(executionId.toString(), correlationId.toString(),
                 sessionId, connectionFingerprint, source.name(),
                 purpose.map(Enum::name).orElse(null), sql, ExecutionStatus.CONNECTING.name(),
                 "RUNNING", now, null, null, null, null, null, null, false, null));
+    }
+
+    public void connected(UUID executionId, String fingerprint) throws SQLException {
+        try (var connection = database.openConnection();
+             var statement = connection.prepareStatement(
+                     "UPDATE execution SET connection_fingerprint = ? WHERE execution_id = ?")) {
+            statement.setString(1, fingerprint);
+            statement.setString(2, executionId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    public void queryFinished(UUID executionId, long returnedRows) throws SQLException {
+        if (returnedRows < 0) throw new IllegalArgumentException("returnedRows must not be negative");
+        try (var connection = database.openConnection();
+             var statement = connection.prepareStatement(
+                     "UPDATE execution SET returned_row_count = ? WHERE execution_id = ?")) {
+            statement.setLong(1, returnedRows);
+            statement.setString(2, executionId.toString());
+            statement.executeUpdate();
+        }
     }
 
     public void progress(UUID executionId, ExecutionStatus phase) throws SQLException {
@@ -104,7 +131,7 @@ public final class ExecutionRepository {
                          sql_state = ?, error_code = ?, error_message = ?
                      WHERE execution_id = ?
                      """)) {
-            statement.setString(1, status.name());
+            statement.setString(1, error.map(value -> value.phase().name()).orElse(status.name()));
             statement.setString(2, status.name());
             statement.setString(3, Instant.now().toString());
             statement.setString(4, error.map(SafeError::sqlState).orElse(null));

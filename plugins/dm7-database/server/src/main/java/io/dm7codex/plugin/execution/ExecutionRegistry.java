@@ -24,13 +24,22 @@ public final class ExecutionRegistry implements AutoCloseable {
     public void attach(UUID executionId, Connection connection, Statement statement) {
         Objects.requireNonNull(connection); Objects.requireNonNull(statement);
         var entry = entries.computeIfAbsent(Objects.requireNonNull(executionId), ignored -> new Entry());
-        boolean cancelled;
+        boolean issueCancel = false;
+        boolean scheduleClose = false;
         synchronized (entry) {
             entry.connection = connection;
             entry.statement = statement;
-            cancelled = entry.cancelled;
+            if (entry.cancelled && !entry.cancelIssued) {
+                entry.cancelIssued = true;
+                issueCancel = true;
+            }
+            if (entry.cancelled && !entry.forceCloseScheduled) {
+                entry.forceCloseScheduled = true;
+                scheduleClose = true;
+            }
         }
-        if (cancelled) cancelAndClose(statement, connection, true);
+        if (issueCancel) issueCancel(statement);
+        if (scheduleClose) scheduleClose(statement, connection);
     }
 
     public boolean cancel(UUID executionId) {
@@ -38,12 +47,23 @@ public final class ExecutionRegistry implements AutoCloseable {
         if (entry == null) return false;
         Statement statement;
         Connection connection;
+        boolean issueCancel = false;
+        boolean scheduleClose = false;
         synchronized (entry) {
             entry.cancelled = true;
             statement = entry.statement;
             connection = entry.connection;
+            if (statement != null && !entry.cancelIssued) {
+                entry.cancelIssued = true;
+                issueCancel = true;
+            }
+            if (statement != null && !entry.forceCloseScheduled) {
+                entry.forceCloseScheduled = true;
+                scheduleClose = true;
+            }
         }
-        if (statement != null) cancelAndClose(statement, connection, false);
+        if (issueCancel) issueCancel(statement);
+        if (scheduleClose) scheduleClose(statement, connection);
         return true;
     }
 
@@ -55,19 +75,42 @@ public final class ExecutionRegistry implements AutoCloseable {
 
     public void complete(UUID executionId) { entries.remove(executionId); }
 
-    private void cancelAndClose(Statement statement, Connection connection, boolean immediately) {
+    private static void issueCancel(Statement statement) {
         try { statement.cancel(); } catch (Exception ignored) { }
-        Runnable close = () -> {
-            try { statement.close(); } catch (Exception ignored) { }
-            if (connection != null) try { connection.close(); } catch (Exception ignored) { }
-        };
-        if (immediately) close.run(); else closer.schedule(close, 2, TimeUnit.SECONDS);
     }
 
-    @Override public void close() { closer.shutdownNow(); }
+    private void scheduleClose(Statement statement, Connection connection) {
+        closer.schedule(() -> {
+            try { statement.close(); } catch (Exception ignored) { }
+            if (connection != null) try { connection.close(); } catch (Exception ignored) { }
+        }, 2, TimeUnit.SECONDS);
+    }
+
+    public void cancelAll() { entries.keySet().forEach(this::cancel); }
+
+    public void forceCloseAll() {
+        for (var entry : entries.values()) {
+            synchronized (entry) {
+                if (entry.statement != null) try { entry.statement.close(); } catch (Exception ignored) { }
+                if (entry.connection != null) try { entry.connection.close(); } catch (Exception ignored) { }
+            }
+        }
+    }
+
+    public int activeCount() { return entries.size(); }
+
+    @Override public void close() {
+        cancelAll();
+        forceCloseAll();
+        closer.shutdownNow();
+        try { closer.awaitTermination(2, TimeUnit.SECONDS); }
+        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+    }
 
     private static final class Entry {
         private boolean cancelled;
+        private boolean cancelIssued;
+        private boolean forceCloseScheduled;
         private Connection connection;
         private Statement statement;
     }

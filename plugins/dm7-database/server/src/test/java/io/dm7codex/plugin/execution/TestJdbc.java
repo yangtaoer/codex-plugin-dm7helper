@@ -19,6 +19,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 final class TestJdbc {
+    private static final java.util.Map<Statement, AtomicInteger> CANCEL_COUNTS =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
     static SessionState session() {
         return new SessionState("session", "hash", 1, "unbound", Path.of("active.sql"), Instant.now());
     }
@@ -35,15 +37,29 @@ final class TestJdbc {
 
     static Statement statement() { return statement(List.of(), List.of()); }
 
+    static Statement failingQueryStatement() {
+        AtomicBoolean closed = new AtomicBoolean();
+        return (Statement) Proxy.newProxyInstance(TestJdbc.class.getClassLoader(),
+                new Class<?>[]{Statement.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "executeQuery" -> throw new SQLException("query failed", "HY000", 77);
+                    case "close" -> { closed.set(true); yield null; }
+                    case "isClosed" -> closed.get();
+                    case "setQueryTimeout", "setMaxRows", "setFetchSize", "cancel" -> null;
+                    default -> defaultValue(method.getReturnType());
+                });
+    }
+
     static Statement statement(List<List<Object>> rows, List<String> labels) {
         return statement(rows, labels, new AtomicInteger(), new AtomicInteger(), new AtomicInteger());
     }
     static Statement statement(List<List<Object>> rows, List<String> labels, AtomicInteger timeout,
             AtomicInteger maxRows, AtomicInteger fetchSize) {
         AtomicBoolean closed = new AtomicBoolean();
-        return (Statement) Proxy.newProxyInstance(TestJdbc.class.getClassLoader(),
+        AtomicInteger cancels = new AtomicInteger();
+        Statement result = (Statement) Proxy.newProxyInstance(TestJdbc.class.getClassLoader(),
                 new Class<?>[]{Statement.class}, (proxy, method, args) -> switch (method.getName()) {
-                    case "close", "cancel" -> { closed.set(true); yield null; }
+                    case "close" -> { closed.set(true); yield null; }
+                    case "cancel" -> { cancels.incrementAndGet(); yield null; }
                     case "isClosed" -> closed.get();
                     case "executeQuery", "getResultSet" -> resultSet(rows, labels);
                     case "execute" -> true;
@@ -54,7 +70,10 @@ final class TestJdbc {
                     case "isWrapperFor" -> false;
                     default -> defaultValue(method.getReturnType());
                 });
+        CANCEL_COUNTS.put(result, cancels);
+        return result;
     }
+    static int cancelCount(Statement statement) { return CANCEL_COUNTS.get(statement).get(); }
 
     static ResultSet resultSet(List<List<Object>> rows, List<String> labels) {
         AtomicInteger cursor = new AtomicInteger(-1);
@@ -73,6 +92,7 @@ final class TestJdbc {
                     case "next" -> cursor.incrementAndGet() < rows.size();
                     case "getMetaData" -> metadata;
                     case "getObject", "getString" -> rows.get(cursor.get()).get((Integer) args[0] - 1);
+                    case "getInt" -> ((Number) rows.get(cursor.get()).get((Integer) args[0] - 1)).intValue();
                     case "close" -> { closed.set(true); yield null; }
                     case "isClosed" -> closed.get();
                     case "wasNull" -> false;

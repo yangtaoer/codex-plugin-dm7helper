@@ -78,16 +78,23 @@ public final class MetadataService {
     private static List<SchemaObject> fallbackObjects(java.sql.Connection connection,
             MetadataRequest request) throws SQLException {
         String sql = """
-                SELECT OWNER, OBJECT_NAME, OBJECT_TYPE FROM ALL_TABLES
-                WHERE (? IS NULL OR OWNER LIKE ?) AND (? IS NULL OR OBJECT_NAME LIKE ?)
-                ORDER BY OWNER, OBJECT_NAME OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+                SELECT OWNER, OBJECT_NAME, OBJECT_TYPE FROM (
+                  SELECT ordered_objects.*, ROWNUM AS RN FROM (
+                    SELECT OWNER, OBJECT_NAME, OBJECT_TYPE FROM (
+                      SELECT OWNER, TABLE_NAME AS OBJECT_NAME, 'TABLE' AS OBJECT_TYPE FROM ALL_TABLES
+                      UNION ALL
+                      SELECT OWNER, VIEW_NAME AS OBJECT_NAME, 'VIEW' AS OBJECT_TYPE FROM ALL_VIEWS
+                    ) WHERE (? IS NULL OR OWNER LIKE ?) AND (? IS NULL OR OBJECT_NAME LIKE ?)
+                    ORDER BY OWNER, OBJECT_NAME
+                  ) ordered_objects WHERE ROWNUM <= ?
+                ) WHERE RN > ?
                 """;
         var objects = new ArrayList<SchemaObject>();
         try (var statement = connection.prepareStatement(sql)) {
             bindPattern(statement, 1, request.schemaPattern());
             bindPattern(statement, 3, request.objectPattern());
-            statement.setInt(5, request.offset());
-            statement.setInt(6, request.limit() + 1);
+            statement.setInt(5, request.offset() + request.limit() + 1);
+            statement.setInt(6, request.offset());
             try (var rows = statement.executeQuery()) {
                 while (rows.next()) {
                     String schema = rows.getString(1);
@@ -103,7 +110,7 @@ public final class MetadataService {
     private static List<SchemaColumn> fallbackColumns(java.sql.Connection connection,
             String schema, String table) throws SQLException {
         String sql = """
-                SELECT COLUMN_NAME, DATA_TYPE, DATA_TYPE_NAME, NULLABLE, COLUMN_ID
+                SELECT COLUMN_NAME, DATA_TYPE, NULLABLE, COLUMN_ID
                 FROM ALL_TAB_COLUMNS WHERE OWNER = ? AND TABLE_NAME = ? ORDER BY COLUMN_ID
                 """;
         var columns = new ArrayList<SchemaColumn>();
@@ -112,15 +119,36 @@ public final class MetadataService {
             statement.setString(2, table);
             try (var rows = statement.executeQuery()) {
                 while (rows.next()) {
-                    int jdbcType;
-                    try { jdbcType = rows.getInt(2); }
-                    catch (SQLException incompatible) { jdbcType = Types.OTHER; }
-                    columns.add(new SchemaColumn(rows.getString(1), jdbcType, rows.getString(3),
-                            !"N".equalsIgnoreCase(rows.getString(4)), rows.getInt(5)));
+                    String typeName = rows.getString(2);
+                    columns.add(new SchemaColumn(rows.getString(1), dmJdbcType(typeName), typeName,
+                            !"N".equalsIgnoreCase(rows.getString(3)), rows.getInt(4)));
                 }
             }
         }
         return List.copyOf(columns);
+    }
+
+    static int dmJdbcType(String typeName) {
+        if (typeName == null) return Types.OTHER;
+        String type = typeName.toUpperCase(java.util.Locale.ROOT);
+        if (type.startsWith("VARCHAR")) return Types.VARCHAR;
+        if (type.startsWith("CHAR")) return Types.CHAR;
+        if (type.startsWith("NVARCHAR")) return Types.NVARCHAR;
+        if (type.startsWith("NCHAR")) return Types.NCHAR;
+        if (type.startsWith("NUMBER") || type.startsWith("DECIMAL") || type.startsWith("NUMERIC")) return Types.NUMERIC;
+        if (type.startsWith("BIGINT")) return Types.BIGINT;
+        if (type.startsWith("INT") || type.startsWith("INTEGER")) return Types.INTEGER;
+        if (type.startsWith("SMALLINT")) return Types.SMALLINT;
+        if (type.startsWith("DOUBLE")) return Types.DOUBLE;
+        if (type.startsWith("FLOAT")) return Types.FLOAT;
+        if (type.startsWith("DATE")) return Types.DATE;
+        if (type.startsWith("TIMESTAMP")) return Types.TIMESTAMP;
+        if (type.startsWith("TIME")) return Types.TIME;
+        if (type.startsWith("BLOB")) return Types.BLOB;
+        if (type.startsWith("CLOB") || type.startsWith("TEXT")) return Types.CLOB;
+        if (type.startsWith("BINARY") || type.startsWith("VARBINARY") || type.startsWith("RAW")) return Types.VARBINARY;
+        if (type.startsWith("BIT") || type.startsWith("BOOLEAN")) return Types.BOOLEAN;
+        return Types.OTHER;
     }
 
     private static void bindPattern(java.sql.PreparedStatement statement, int index, String value)
@@ -154,10 +182,26 @@ public final class MetadataService {
     }
 
     public record SchemaObject(String schema, String name, String type, List<SchemaColumn> columns) {
-        public SchemaObject { columns = List.copyOf(columns); }
+        public SchemaObject {
+            schema = require(schema, "schema"); name = require(name, "name");
+            type = require(type, "type"); columns = List.copyOf(columns);
+        }
     }
-    public record SchemaColumn(String name, int jdbcType, String typeName, boolean nullable, int ordinal) {}
+    public record SchemaColumn(String name, int jdbcType, String typeName, boolean nullable, int ordinal) {
+        public SchemaColumn {
+            name = require(name, "name"); typeName = require(typeName, "typeName");
+            if (ordinal < 1) throw new IllegalArgumentException("ordinal must be positive");
+        }
+    }
     public record SchemaPage(List<SchemaObject> items, int offset, int limit, boolean hasMore) {
-        public SchemaPage { items = List.copyOf(items); }
+        public SchemaPage {
+            items = List.copyOf(items);
+            if (offset < 0 || limit < 1 || limit > 200) throw new IllegalArgumentException("invalid schema page");
+        }
+    }
+    private static String require(String value, String name) {
+        Objects.requireNonNull(value, name);
+        if (value.isBlank()) throw new IllegalArgumentException(name + " is blank");
+        return value;
     }
 }

@@ -23,3 +23,17 @@ No business-database outbox was added. A process crash between database commit a
 The five required test classes contain 29 tests covering validation before connection, transaction rollback and independent DDL commit behavior, duplicate SQL executions, cross-database preflight, Unicode and large-value limits, profile clamps, event order and isolation, bounded queue rejection, cancellation races/grace close, close-time restart propagation and redaction, sanitized history, secret non-persistence, and metadata fallback.
 
 Verification commands and final results are recorded in the task handoff after the final clean run.
+
+## Formal review remediation
+
+The follow-up review was addressed in a separate fix commit:
+
+- Release logging failures after autocommit or plugin commit no longer rewrite database facts. Statement results retain success, commit state, row count, and commit behavior while exposing `recorded=false` and a `LOGGING`-phase safe error. Release fault injection covers DML, DDL, and atomic multi-statement commits.
+- Query rows now preserve SQL NULL and insertion order. `QueryColumn` carries output/original labels, original name, JDBC type, and type name; duplicate suffixes affect only output labels.
+- Execution history starts before connection with the service-generated correlation ID and `unknown` fingerprint, updates after connection, records true failure phase, and stores query returned rows separately from affected rows.
+- Cancellation issues one driver cancel and one delayed force-close per execution, including cancel-before-attach. Future interruption and service shutdown cancel active work with bounded waits and ordered resource shutdown.
+- Byte budgeting includes output labels and scalar/null values. Incomplete scalar rows are omitted atomically. Binary values are streamed through a fixed-size buffer into bounded Base64 output without materializing a second large byte array.
+- DM metadata fallback now uses a fixed `ALL_TABLES`/`ALL_VIEWS` union, parameterized `ROWNUM` paging, real `ALL_TAB_COLUMNS` fields, and explicit DM type-name to `java.sql.Types` mapping.
+- Driver isolation restart requirements are discovered recursively through cause and suppressed exception graphs. Event session histories use bounded LRU retention, and low-cost record invariants/defensive copies were added.
+
+Final clean verification after remediation: 226 tests, zero failures, zero errors, Java 17 target.

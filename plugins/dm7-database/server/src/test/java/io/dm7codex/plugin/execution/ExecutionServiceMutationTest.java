@@ -29,6 +29,74 @@ class ExecutionServiceMutationTest {
         assertEquals(0, opener.openCount());
     }
 
+    @Test void mutationBusinessFailureWithSuppressedIsolationStillRequiresRestart() {
+        var statement = TestJdbc.mutationStatement(new java.util.concurrent.atomic.AtomicInteger(), 1);
+        var connection = TestJdbc.connection(statement);
+        DmConnectionFactory.ConnectionOpener opener = id -> new DmConnectionFactory.ManagedConnection(
+                connection, () -> { throw DriverIsolationFixture.restartRequired(); }, "fp");
+        ExecutionResult result;
+        try (var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                null, null, new ExecutionEventBus(20), new ExecutionRegistry())) {
+            result = service.execute(TestJdbc.session(), new ExecuteCommand(UUID.randomUUID(),
+                    "UPDATE T SET C=1", SqlPurpose.TEST, true, false, 30));
+        }
+        assertFalse(result.success());
+        assertTrue(result.error().orElseThrow().restartRequired());
+        assertEquals("HY000", result.error().orElseThrow().sqlState());
+        assertFalse(result.statements().get(0).success());
+    }
+
+    @Test void nonAtomicLoggingFailurePreservesCommittedDmlFact() throws Exception {
+        try (var fixture = releaseFixture("logging-dml", ReleaseLogService.RecordStage.AFTER_PENDING)) {
+            var opener = new TestJdbc.Opener().fingerprint("db-a").failOnStatement(Integer.MAX_VALUE);
+            try (var service = executionWithRelease(opener, fixture.release)) {
+                var result = service.execute(fixture.session, new ExecuteCommand(UUID.randomUUID(),
+                        "UPDATE T SET C=1", SqlPurpose.MIGRATION, false, false, 60));
+                assertFalse(result.success());
+                var statement = result.statements().get(0);
+                assertTrue(statement.success());
+                assertTrue(statement.committed());
+                assertEquals(1, statement.rowCount());
+                assertFalse(statement.recorded());
+                assertEquals(ExecutionStatus.LOGGING, statement.error().orElseThrow().phase());
+            }
+        }
+    }
+
+    @Test void nonAtomicLoggingFailurePreservesDatabaseManagedDdlFact() throws Exception {
+        try (var fixture = releaseFixture("logging-ddl", ReleaseLogService.RecordStage.BEFORE_FINALIZE)) {
+            var opener = new TestJdbc.Opener().fingerprint("db-a").failOnStatement(Integer.MAX_VALUE);
+            try (var service = executionWithRelease(opener, fixture.release)) {
+                var result = service.execute(fixture.session, new ExecuteCommand(UUID.randomUUID(),
+                        "CREATE TABLE T(ID INT)", SqlPurpose.MIGRATION, false, false, 60));
+                var statement = result.statements().get(0);
+                assertTrue(statement.success()); assertTrue(statement.committed());
+                assertEquals("database_managed", statement.commitBehavior());
+                assertFalse(statement.recorded());
+                assertEquals(ExecutionStatus.LOGGING, statement.error().orElseThrow().phase());
+            }
+        }
+    }
+
+    @Test void atomicLoggingFailurePreservesEveryCommittedStatementFact() throws Exception {
+        try (var fixture = releaseFixture("logging-atomic", ReleaseLogService.RecordStage.AFTER_PENDING)) {
+            var opener = new TestJdbc.Opener().fingerprint("db-a").failOnStatement(Integer.MAX_VALUE);
+            try (var service = executionWithRelease(opener, fixture.release)) {
+                var result = service.execute(fixture.session, new ExecuteCommand(UUID.randomUUID(),
+                        "UPDATE A SET C=1; UPDATE B SET C=2", SqlPurpose.MIGRATION, true, false, 60));
+                assertFalse(result.success());
+                assertEquals(2, result.statements().size());
+                assertTrue(result.statements().stream().allMatch(StatementResult::success));
+                assertTrue(result.statements().stream().allMatch(StatementResult::committed));
+                assertFalse(result.statements().get(0).recorded());
+                assertEquals(ExecutionStatus.LOGGING,
+                        result.statements().get(0).error().orElseThrow().phase());
+                assertTrue(opener.committed());
+                assertFalse(opener.rolledBack());
+            }
+        }
+    }
+
     @Test void driverIsolationFailureDuringSuccessfulMutationCloseRequiresRestart() {
         var statement = TestJdbc.mutationStatement(new java.util.concurrent.atomic.AtomicInteger(),
                 Integer.MAX_VALUE);
@@ -109,6 +177,18 @@ class ExecutionServiceMutationTest {
                 new SessionIdentity("thread-" + name, "codex_thread", "verified"));
         return new ReleaseFixture(database, session,
                 new ReleaseLogService(paths, sessions, Duration.ofSeconds(2)));
+    }
+
+    private ReleaseFixture releaseFixture(String name, ReleaseLogService.RecordStage failStage)
+            throws Exception {
+        var paths = RuntimePaths.forTest(tempDir.resolve(name));
+        var database = StateDatabase.open(paths.stateDatabase());
+        var sessions = new SessionRepository(database, paths.sessionsDirectory());
+        var session = new SessionInitializer(paths, sessions).initialize(
+                new SessionIdentity("thread-" + name, "codex_thread", "verified"));
+        var release = new ReleaseLogService(paths, sessions, Duration.ofSeconds(2),
+                new SqlSecurityPolicy(), stage -> { if (stage == failStage) throw new java.io.IOException("fault"); });
+        return new ReleaseFixture(database, session, release);
     }
 
     private record ReleaseFixture(StateDatabase database, SessionState session,

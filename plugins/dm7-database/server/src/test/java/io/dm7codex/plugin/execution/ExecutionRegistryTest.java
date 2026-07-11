@@ -16,9 +16,14 @@ class ExecutionRegistryTest {
         assertTrue(registry.register(id));
         assertTrue(registry.cancel(id));
         registry.attach(id, connection, statement);
+        assertEquals(1, TestJdbc.cancelCount(statement));
+        assertFalse(statement.isClosed());
+        assertFalse(connection.isClosed());
+        assertTrue(registry.cancel(id));
+        assertEquals(1, TestJdbc.cancelCount(statement));
+        Thread.sleep(2_200);
         assertTrue(statement.isClosed());
         assertTrue(connection.isClosed());
-        assertTrue(registry.cancel(id));
     }
 
     @Test void attachedCancelForcesCloseAfterGracePeriod() throws Exception {
@@ -29,6 +34,8 @@ class ExecutionRegistryTest {
             registry.register(id);
             registry.attach(id, connection, statement);
             assertTrue(registry.cancel(id));
+            assertTrue(registry.cancel(id));
+            assertEquals(1, TestJdbc.cancelCount(statement));
             assertFalse(connection.isClosed());
             Thread.sleep(2_200);
             assertTrue(statement.isClosed());

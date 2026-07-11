@@ -45,13 +45,16 @@ class MetadataServiceTest {
                 new MetadataService.MetadataRequest("SYSTEM", "T%", 0, 50));
         assertEquals(1, page.items().size());
         assertTrue(sql.stream().anyMatch(value -> value.contains("ALL_TABLES")));
+        assertTrue(sql.stream().anyMatch(value -> value.contains("ALL_VIEWS")));
+        assertTrue(sql.stream().anyMatch(value -> value.contains("ROWNUM")));
+        assertEquals(Types.NUMERIC, page.items().get(0).columns().get(0).jdbcType());
         assertTrue(sql.stream().allMatch(value -> value.contains("?")));
     }
 
     private static PreparedStatement preparedCatalogResult(String sql) {
         ResultSet rows = sql.contains("ALL_TAB_COLUMNS")
-                ? TestJdbc.resultSet(List.of(List.of("ID", Types.INTEGER, "INTEGER", "N", 1)),
-                        List.of("COLUMN_NAME", "DATA_TYPE", "DATA_TYPE_NAME", "NULLABLE", "COLUMN_ID"))
+                ? TestJdbc.resultSet(List.of(List.of("ID", "NUMBER(10)", "N", 1)),
+                        List.of("COLUMN_NAME", "DATA_TYPE", "NULLABLE", "COLUMN_ID"))
                 : TestJdbc.resultSet(List.of(List.of("SYSTEM", "T1", "TABLE")),
                         List.of("OWNER", "OBJECT_NAME", "OBJECT_TYPE"));
         return (PreparedStatement) Proxy.newProxyInstance(MetadataServiceTest.class.getClassLoader(),

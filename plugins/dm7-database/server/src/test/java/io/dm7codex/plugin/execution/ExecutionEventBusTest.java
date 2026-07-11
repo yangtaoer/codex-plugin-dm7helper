@@ -25,6 +25,18 @@ class ExecutionEventBusTest {
         assertEquals(1, bus.events("b", 0).size());
     }
 
+    @Test void sessionHistoryUsesBoundedLru() {
+        var bus = new ExecutionEventBus(2, 2);
+        UUID id = UUID.randomUUID();
+        bus.publish("old", id, ExecutionStatus.QUEUED, Instant.now(), null);
+        bus.publish("keep", id, ExecutionStatus.QUEUED, Instant.now(), null);
+        bus.events("keep", 0);
+        bus.publish("new", id, ExecutionStatus.QUEUED, Instant.now(), null);
+        assertEquals(2, bus.sessionCount());
+        assertTrue(bus.events("old", 0).isEmpty());
+        assertEquals(1, bus.events("keep", 0).size());
+    }
+
     @Test void queryPublishesExactApplicableOrder() {
         var opener = new TestJdbc.Opener().queryRows(List.of(List.of("一")), List.of("V"));
         try (var service = TestJdbc.service(opener)) {

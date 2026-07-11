@@ -5,6 +5,8 @@ import io.dm7codex.plugin.sql.SqlPurpose;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.Collections;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -62,13 +64,28 @@ public final class ExecutionModels {
         }
     }
 
-    public record QueryResult(UUID executionId, List<String> columns, List<Map<String, Object>> rows,
+    public record QueryColumn(String outputLabel, String originalLabel, String originalName,
+                              int jdbcType, String typeName) {
+        public QueryColumn {
+            outputLabel = text(outputLabel, "outputLabel", 1024);
+            originalLabel = text(originalLabel, "originalLabel", 1024);
+            originalName = text(originalName, "originalName", 1024);
+            typeName = typeName == null ? "" : typeName;
+        }
+    }
+
+    public record QueryResult(UUID executionId, List<QueryColumn> columns, List<Map<String, Object>> rows,
                               boolean truncated, long returnedRows, long bytes, long elapsedMillis,
                               String databaseFingerprint, Optional<SafeError> error) {
         public QueryResult {
             Objects.requireNonNull(executionId, "executionId");
             columns = List.copyOf(columns);
-            rows = rows.stream().map(Map::copyOf).toList();
+            Objects.requireNonNull(rows, "rows");
+            rows = rows.stream().map(row -> Collections.unmodifiableMap(
+                    new LinkedHashMap<String, Object>(row))).toList();
+            if (returnedRows < 0 || bytes < 0 || bytes > MAX_BYTES || elapsedMillis < 0)
+                throw new IllegalArgumentException("invalid query result counts");
+            if (returnedRows != rows.size()) throw new IllegalArgumentException("returnedRows must match rows");
             Objects.requireNonNull(databaseFingerprint, "databaseFingerprint");
             error = error == null ? Optional.empty() : error;
         }
@@ -81,6 +98,8 @@ public final class ExecutionModels {
         public StatementResult {
             if (index < 0 || rowCount < 0 || elapsedMillis < 0) throw new IllegalArgumentException("negative statement result field");
             Objects.requireNonNull(kind, "kind");
+            if (committed && !success) throw new IllegalArgumentException("committed statement must be successful");
+            if (recorded && !committed) throw new IllegalArgumentException("recorded statement must be committed");
             commitBehavior = text(commitBehavior, "commitBehavior", 64);
             error = error == null ? Optional.empty() : error;
         }
@@ -93,8 +112,13 @@ public final class ExecutionModels {
             Objects.requireNonNull(executionId, "executionId");
             Objects.requireNonNull(status, "status");
             statements = List.copyOf(statements);
+            if (elapsedMillis < 0) throw new IllegalArgumentException("elapsedMillis must not be negative");
             Objects.requireNonNull(databaseFingerprint, "databaseFingerprint");
             error = error == null ? Optional.empty() : error;
+            if (success && (status != ExecutionStatus.COMPLETED || error.isPresent()))
+                throw new IllegalArgumentException("successful execution must be completed without error");
+            if (!success && status == ExecutionStatus.COMPLETED)
+                throw new IllegalArgumentException("failed execution cannot be completed");
         }
     }
 
@@ -145,7 +169,7 @@ public final class ExecutionModels {
     public record Page<T>(List<T> items, int offset, int limit, boolean hasMore) {
         public Page {
             items = List.copyOf(items);
-            if (offset < 0 || limit < 1) throw new IllegalArgumentException("invalid page");
+            if (offset < 0 || limit < 1 || limit > 200) throw new IllegalArgumentException("invalid page");
         }
     }
 
