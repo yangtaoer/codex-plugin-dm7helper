@@ -181,8 +181,9 @@ class ConnectionConfigRepositoryTest {
         ConnectionConfigRepository repository = ConnectionConfigRepository.open(tempDir.resolve("delete-rollback"), secrets);
         ConnectionProfile saved = repository.save(profile(UUID.randomUUID(), "must-survive", false), Optional.empty());
         secrets.deleteFailure = new IllegalStateException("injected secret failure");
-        IllegalStateException failure = assertThrows(IllegalStateException.class, () -> repository.delete(saved.id()));
-        assertEquals("injected secret failure", failure.getMessage());
+        CredentialStateException failure = assertThrows(CredentialStateException.class, () -> repository.delete(saved.id()));
+        assertEquals(CredentialStateException.State.UNCERTAIN, failure.state());
+        assertEquals("injected secret failure", failure.getCause().getMessage());
         assertTrue(repository.find(saved.id()).isPresent());
     }
 
@@ -264,6 +265,62 @@ class ConnectionConfigRepositoryTest {
                 () -> repository.save(saved, Optional.of("new".toCharArray())));
         assertEquals(CredentialStateException.State.UNCERTAIN, failure.state());
         assertTrue(failure.getCause().getSuppressed().length >= 2);
+    }
+
+    @Test void replacementPutThatMutatesThenThrowsRestoresOldCredential() throws Exception {
+        ScriptedSecretStore secrets=new ScriptedSecretStore();Path config=tempDir.resolve("put-after-mutate");
+        ConnectionConfigRepository repository=ConnectionConfigRepository.open(config,secrets);UUID id=UUID.randomUUID();
+        ConnectionProfile saved=repository.save(profile(id,"写后异常",false),Optional.of("old".toCharArray()));
+        secrets.onPut=call->{if(call==2){secrets.values.put(id,"new".toCharArray());throw new IllegalStateException("acl after put");}};
+        assertThrows(IllegalStateException.class,()->repository.save(saved,Optional.of("new".toCharArray())));
+        assertArrayEquals("old".toCharArray(),secrets.read(id).orElseThrow());assertTrue(allZero(secrets.restoreArgument));
+    }
+
+    @Test void clearDeleteThatMutatesThenThrowsRestoresOldCredential() throws Exception {
+        ScriptedSecretStore secrets=new ScriptedSecretStore();Path config=tempDir.resolve("clear-after-mutate");
+        ConnectionConfigRepository repository=ConnectionConfigRepository.open(config,secrets);UUID id=UUID.randomUUID();
+        ConnectionProfile saved=repository.save(profile(id,"删后异常",false),Optional.of("old".toCharArray()));
+        secrets.onDelete=call->{if(call==1){secrets.values.remove(id);throw new IllegalStateException("acl after delete");}};
+        assertThrows(IllegalStateException.class,()->repository.save(saved,Optional.empty(),true));
+        assertArrayEquals("old".toCharArray(),secrets.read(id).orElseThrow());assertTrue(allZero(secrets.restoreArgument));
+    }
+
+    @Test void profileDeleteThatMutatesThenThrowsRestoresConfigAndCredential() throws Exception {
+        ScriptedSecretStore secrets=new ScriptedSecretStore();Path config=tempDir.resolve("profile-delete-restore");
+        ConnectionConfigRepository repository=ConnectionConfigRepository.open(config,secrets);UUID id=UUID.randomUUID();
+        repository.save(profile(id,"删除恢复",false),Optional.of("old".toCharArray()));
+        secrets.onDelete=call->{if(call==1){secrets.values.remove(id);throw new IllegalStateException("delete mutated");}};
+        assertThrows(IllegalStateException.class,()->repository.delete(id));
+        assertTrue(repository.find(id).isPresent());assertArrayEquals("old".toCharArray(),secrets.read(id).orElseThrow());assertTrue(allZero(secrets.restoreArgument));
+    }
+
+    @Test void profileDeleteSecretRestoreFailureFallsBackClosedAndRequiresRecovery() throws Exception {
+        ScriptedSecretStore secrets=new ScriptedSecretStore();Path config=tempDir.resolve("profile-delete-recovery");
+        ConnectionConfigRepository repository=ConnectionConfigRepository.open(config,secrets);UUID id=UUID.randomUUID();
+        repository.save(profile(id,"删除需恢复",false),Optional.of("old".toCharArray()));
+        secrets.onDelete=call->{if(call==1){secrets.values.remove(id);throw new IllegalStateException("delete mutated");}};
+        secrets.onPut=call->{if(call==2)throw new IllegalStateException("restore put failed");};
+        CredentialStateException failure=assertThrows(CredentialStateException.class,()->repository.delete(id));
+        assertEquals(CredentialStateException.State.RECOVERY_REQUIRED,failure.state());assertTrue(repository.find(id).isPresent());assertFalse(secrets.contains(id));assertTrue(allZero(secrets.restoreArgument));
+    }
+
+    @Test void profileDeleteSecretRestoreAndFailClosedFailureIsUncertain() throws Exception {
+        ScriptedSecretStore secrets=new ScriptedSecretStore();Path config=tempDir.resolve("profile-delete-uncertain");
+        ConnectionConfigRepository repository=ConnectionConfigRepository.open(config,secrets);UUID id=UUID.randomUUID();
+        repository.save(profile(id,"删除不确定",false),Optional.of("old".toCharArray()));
+        secrets.onDelete=call->{secrets.values.remove(id);throw new IllegalStateException(call==1?"delete mutated":"fail close failed");};
+        secrets.onPut=call->{if(call==2)throw new IllegalStateException("restore put failed");};
+        CredentialStateException failure=assertThrows(CredentialStateException.class,()->repository.delete(id));
+        assertEquals(CredentialStateException.State.UNCERTAIN,failure.state());assertTrue(failure.getCause().getSuppressed().length>=2);assertTrue(allZero(secrets.restoreArgument));
+    }
+
+    @Test void profileDeleteConfigRollbackFailureIsUncertainEvenWhenSecretRestores() throws Exception {
+        ScriptedSecretStore secrets=new ScriptedSecretStore();Path config=tempDir.resolve("profile-config-uncertain");
+        ConnectionConfigRepository repository=ConnectionConfigRepository.open(config,secrets);UUID id=UUID.randomUUID();
+        repository.save(profile(id,"配置不确定",false),Optional.of("old".toCharArray()));
+        secrets.onDelete=call->{if(call==1){breakConfiguration(config);secrets.values.remove(id);throw new IllegalStateException("delete mutated");}};
+        CredentialStateException failure=assertThrows(CredentialStateException.class,()->repository.delete(id));
+        assertEquals(CredentialStateException.State.UNCERTAIN,failure.state());assertTrue(failure.getCause().getSuppressed().length>=1);assertTrue(allZero(secrets.restoreArgument));
     }
 
     @Test void deletingDefaultRequiresExplicitReplacementOrExplicitNoDefault() throws Exception {

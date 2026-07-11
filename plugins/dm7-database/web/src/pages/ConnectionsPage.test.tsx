@@ -107,6 +107,7 @@ describe('ConnectionsPage', () => {
     await screen.findByText('生产主库');fireEvent.click(screen.getByRole('button',{name:'复制生产主库'}))
     fireEvent.change(screen.getByLabelText(/^驱动 JAR/),{target:{value:'C:\\driver.jar'}})
     fireEvent.change(screen.getByLabelText(/^JDBC URL/),{target:{value:'jdbc:dm7://copy'}})
+    fireEvent.change(screen.getByLabelText('密码'),{target:{value:'   '}})
     fireEvent.click(screen.getByRole('button',{name:'保存连接'}))
     expect(createConnection).not.toHaveBeenCalled();expect(screen.getByLabelText('密码')).toBe(document.activeElement)
     expect(screen.getByText('请输入新密码')).toBeTruthy()

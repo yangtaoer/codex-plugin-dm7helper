@@ -120,45 +120,70 @@ public final class ConnectionConfigRepository {
         synchronized (lock) {
             Map<UUID, ConnectionProfile> profiles = readProfiles();
             Map<UUID, ConnectionProfile> original = new LinkedHashMap<>(profiles);
-            ConnectionProfile removed = profiles.remove(id);
-            if (removed != null) {
-                if (!removed.isDefault() && (replacementDefaultId.isPresent() || leaveWithoutDefault)) {
-                    throw new IllegalArgumentException("Default replacement is only valid when deleting the default connection");
-                }
-                if (removed.isDefault() && !profiles.isEmpty()) {
-                    if (replacementDefaultId.isPresent() == leaveWithoutDefault) {
-                        throw new IllegalArgumentException("Choose one default replacement disposition");
-                    }
-                    if (replacementDefaultId.isPresent()) {
-                        UUID replacement = replacementDefaultId.get();
-                        if (replacement.equals(id) || !profiles.containsKey(replacement)) {
-                            throw new IllegalArgumentException("Replacement connection was not found");
-                        }
-                        profiles.replaceAll((profileId, profile) -> withDefault(profile, profileId.equals(replacement)));
-                    } else {
-                        profiles.replaceAll((profileId, profile) -> withDefault(profile, false));
-                    }
-                } else if (replacementDefaultId.isPresent() || leaveWithoutDefault) {
-                    throw new IllegalArgumentException("Default replacement is not required");
-                }
-                enforceAtMostOneDefault(profiles);
-                writeProfiles(profiles);
-            }
+            Optional<char[]> previous = vault.read(id);
             try {
-                vault.delete(id);
-            } catch (RuntimeException failure) {
+                ConnectionProfile removed = profiles.remove(id);
                 if (removed != null) {
-                    try {
-                        writeProfiles(original);
-                    } catch (RuntimeException rollbackFailure) {
-                        failure.addSuppressed(rollbackFailure);
-                        throw new CredentialStateException(CredentialStateException.State.UNCERTAIN,
-                                "Connection deletion state could not be recovered", failure);
+                    if (!removed.isDefault() && (replacementDefaultId.isPresent() || leaveWithoutDefault)) {
+                        throw new IllegalArgumentException("Default replacement is only valid when deleting the default connection");
                     }
+                    if (removed.isDefault() && !profiles.isEmpty()) {
+                        if (replacementDefaultId.isPresent() == leaveWithoutDefault) {
+                            throw new IllegalArgumentException("Choose one default replacement disposition");
+                        }
+                        if (replacementDefaultId.isPresent()) {
+                            UUID replacement = replacementDefaultId.get();
+                            if (replacement.equals(id) || !profiles.containsKey(replacement)) {
+                                throw new IllegalArgumentException("Replacement connection was not found");
+                            }
+                            profiles.replaceAll((profileId, profile) -> withDefault(profile, profileId.equals(replacement)));
+                        } else {
+                            profiles.replaceAll((profileId, profile) -> withDefault(profile, false));
+                        }
+                    } else if (replacementDefaultId.isPresent() || leaveWithoutDefault) {
+                        throw new IllegalArgumentException("Default replacement is not required");
+                    }
+                    enforceAtMostOneDefault(profiles);
+                    writeProfiles(profiles);
                 }
-                throw failure;
+                try {
+                    vault.delete(id);
+                } catch (RuntimeException failure) {
+                    recoverDeletedConnection(id, original, removed != null, previous, failure);
+                    throw failure;
+                }
+            } finally {
+                previous.ifPresent(value -> Arrays.fill(value, '\0'));
             }
         }
+    }
+
+    private void recoverDeletedConnection(UUID id, Map<UUID, ConnectionProfile> original,
+            boolean configChanged, Optional<char[]> previous, RuntimeException primary) {
+        boolean configRecovered = true;
+        boolean secretRecovered = true;
+        if (configChanged) {
+            try { writeProfiles(original); }
+            catch (RuntimeException rollbackFailure) { suppress(primary, rollbackFailure); configRecovered = false; }
+        }
+        try {
+            if (previous.isPresent()) vault.put(id, previous.get()); else vault.delete(id);
+        } catch (RuntimeException restoreFailure) {
+            suppress(primary, restoreFailure);
+            secretRecovered = false;
+        }
+        if (configRecovered && secretRecovered) return;
+        boolean failedClosed = true;
+        try { vault.delete(id); }
+        catch (RuntimeException failClosedFailure) { suppress(primary, failClosedFailure); failedClosed = false; }
+        CredentialStateException.State state = !configRecovered || !failedClosed
+                ? CredentialStateException.State.UNCERTAIN
+                : CredentialStateException.State.RECOVERY_REQUIRED;
+        throw new CredentialStateException(state,
+                state == CredentialStateException.State.RECOVERY_REQUIRED
+                        ? "Saved credential was removed after a deletion recovery failure"
+                        : "Connection deletion state could not be recovered",
+                primary);
     }
 
     public ConnectionProfile setDefault(UUID id) {
@@ -267,17 +292,23 @@ public final class ConnectionConfigRepository {
             if (previous.isPresent()) vault.put(id, previous.get()); else vault.delete(id);
             return;
         } catch (RuntimeException restoreFailure) {
-            primary.addSuppressed(restoreFailure);
+            suppress(primary, restoreFailure);
         }
         try {
             vault.delete(id);
         } catch (RuntimeException failClosedFailure) {
-            primary.addSuppressed(failClosedFailure);
+            suppress(primary, failClosedFailure);
             throw new CredentialStateException(CredentialStateException.State.UNCERTAIN,
                     "Credential state could not be recovered", primary);
         }
         throw new CredentialStateException(CredentialStateException.State.RECOVERY_REQUIRED,
                 "Saved credential was removed after a persistence failure", primary);
+    }
+
+    private static void suppress(RuntimeException primary, RuntimeException secondary) {
+        primary.addSuppressed(primary == secondary
+                ? new IllegalStateException("Credential recovery repeated the original failure")
+                : secondary);
     }
 
     private static ConnectionProfile withDefault(ConnectionProfile profile, boolean value) {

@@ -120,7 +120,7 @@ export function ConnectionsPage({ api }: { api: ApiClient }) {
     const issues: Record<string, string> = {}
     const required = (key: 'name' | 'driverJar' | 'jdbcUrl' | 'username', label: string, condition = true) => { if (condition && !form[key].trim()) issues[key] = `请输入${label}` }
     required('name', '连接名称'); required('driverJar', '驱动 JAR 本地路径', drawer?.mode !== 'edit'); required('jdbcUrl', 'JDBC URL', drawer?.mode !== 'edit'); required('username', '用户名')
-    if(drawer?.mode==='copy'&&drawer.source?.hasPassword&&!form.password)issues.password='请输入新密码'
+    if(drawer?.mode==='copy'&&drawer.source?.hasPassword&&!form.password.trim())issues.password='请输入新密码'
     const bounded = (key: keyof Form, label: string, min: number, max: number) => { const value = Number(form[key]); if (!Number.isInteger(value) || value < min || value > max) issues[key] = `${label}应在 ${min}–${max} 之间` }
     bounded('connectTimeoutSeconds', '连接超时', 1, 300); bounded('socketTimeoutSeconds', '网络超时', 1, 600); bounded('queryTimeoutSeconds', '查询超时', 1, 3600); bounded('maxRows', '最大行数', 1, 10000); bounded('maxBytesMiB', '最大结果', 1, 50)
     const first=Object.keys(issues)[0]??null
