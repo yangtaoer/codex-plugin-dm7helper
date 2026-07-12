@@ -30,6 +30,11 @@ function Initialize-Java {
 
 Initialize-Java
 
+if ([string]::IsNullOrWhiteSpace($env:SOURCE_DATE_EPOCH)) {
+  $env:SOURCE_DATE_EPOCH = '315532800'
+}
+if ($env:SOURCE_DATE_EPOCH -notmatch '^\d+$') { throw 'SOURCE_DATE_EPOCH must be a Unix timestamp' }
+
 if (-not (Get-Command node.exe -ErrorAction SilentlyContinue) -and -not (Get-Command node -ErrorAction SilentlyContinue)) {
   $node = Get-ChildItem -Path (Join-Path $env:USERPROFILE '.cache\codex-runtimes\*\dependencies\node\bin\node.exe') -File -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1

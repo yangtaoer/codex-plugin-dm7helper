@@ -146,13 +146,32 @@ class PluginScriptsTest(unittest.TestCase):
             self.skipTest("JDK 21 test runtime is unavailable")
         with tempfile.TemporaryDirectory(prefix="dm7 launcher ") as temporary:
             codex_home = Path(temporary) / "codex home"
-            root = codex_home / "plugins" / "cache" / "test market" / "dm7-database" / "0.1.0"
+            plugin_version = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text("utf-8"))["version"]
+            root = codex_home / "plugins" / "cache" / "test market" / "dm7-database" / plugin_version
             (root / "scripts").mkdir(parents=True)
             (root / "lib").mkdir()
             (root / ".codex-plugin").mkdir()
             shutil.copy2(PLUGIN / "scripts" / "launch-mcp.ps1", root / "scripts")
             shutil.copy2(PLUGIN / "lib" / "dm7-codex-plugin.jar", root / "lib")
             shutil.copy2(PLUGIN / ".codex-plugin" / "plugin.json", root / ".codex-plugin")
+            self.assertEqual(
+                hashlib.sha256((PLUGIN / "scripts" / "launch-mcp.ps1").read_bytes()).hexdigest(),
+                hashlib.sha256((root / "scripts" / "launch-mcp.ps1").read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                hashlib.sha256((PLUGIN / "lib" / "dm7-codex-plugin.jar").read_bytes()).hexdigest(),
+                hashlib.sha256((root / "lib" / "dm7-codex-plugin.jar").read_bytes()).hexdigest(),
+            )
+            decoy_root = codex_home / "plugins" / "cache" / "decoy market" / "dm7-database" / plugin_version
+            decoy = decoy_root / "scripts"
+            decoy.mkdir(parents=True)
+            (decoy_root / "lib").mkdir()
+            (decoy_root / ".codex-plugin").mkdir()
+            marker = Path(temporary) / "decoy-executed"
+            (decoy / "launch-mcp.ps1").write_text(
+                f"[IO.File]::WriteAllText('{marker}', 'unsafe')\n", encoding="utf-8")
+            shutil.copy2(PLUGIN / "lib" / "dm7-codex-plugin.jar", decoy_root / "lib")
+            shutil.copy2(PLUGIN / ".codex-plugin" / "plugin.json", decoy_root / ".codex-plugin")
             mcp = json.loads((PLUGIN / ".mcp.json").read_text("utf-8"))["mcpServers"]["dm7"]
             arguments = list(mcp["args"])
             environment = self.clean_environment()
@@ -183,6 +202,7 @@ class PluginScriptsTest(unittest.TestCase):
             self.assertEqual([1], [frame.get("id") for frame in frames])
             self.assertNotIn("java version", result.stderr.lower())
             self.assertEqual("JAVA_EXIT_0", diagnostic.read_text("utf-8").strip())
+            self.assertFalse(marker.exists(), "bootstrap executed a higher-version decoy cache")
 
     def make_fake_command(self, directory: Path, name: str) -> None:
         (directory / f"{name}.cmd").write_text(
@@ -440,6 +460,7 @@ class PluginScriptsTest(unittest.TestCase):
         self.assertIn("FirstJarHash", package)
         self.assertIn("SecondJarHash", package)
         self.assertIn("SOURCE_DATE_EPOCH", package)
+        self.assertIn("315532800", build + tests + package)
         self.assertIn("verify-package-security.py", package)
         self.assertIn("DM7_CODEX_JAVA17_HOME", package + extracted)
         self.assertIn("DM7_SMOKE_PLUGIN_ROOT", package + extracted)

@@ -73,10 +73,7 @@ function Copy-RuntimeFile([string]$Relative, [bool]$Required = $true) {
 Push-Location $repoRoot
 try {
   if ([string]::IsNullOrWhiteSpace($env:SOURCE_DATE_EPOCH)) {
-    if (Test-Path -LiteralPath (Join-Path $repoRoot '.git')) {
-      $derivedEpoch = git -C $repoRoot log -1 --format=%ct
-      $env:SOURCE_DATE_EPOCH = if ($LASTEXITCODE -eq 0 -and $derivedEpoch) { $derivedEpoch.Trim() } else { '315532800' }
-    } else { $env:SOURCE_DATE_EPOCH = '315532800' }
+    $env:SOURCE_DATE_EPOCH = '315532800'
   }
   if ($env:SOURCE_DATE_EPOCH -notmatch '^\d+$') { throw 'SOURCE_DATE_EPOCH must be a Unix timestamp' }
   & (Join-Path $PSScriptRoot 'verify-extracted.ps1') -CheckJava17Only

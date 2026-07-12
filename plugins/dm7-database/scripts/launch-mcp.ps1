@@ -5,7 +5,7 @@ $OutputEncoding = [Console]::OutputEncoding
 
 $diagnosticFile = $env:DM7_MCP_DIAGNOSTIC_FILE
 if (-not $diagnosticFile) {
-  try { $diagnosticFile = Join-Path ([IO.Path]::GetTempPath()) 'dm7-mcp-launcher-status.log' }
+  try { $diagnosticFile = Join-Path ([IO.Path]::GetTempPath()) ("dm7-mcp-launcher-status-$PID.log") }
   catch { $diagnosticFile = $null }
 }
 function Write-LaunchStatus([string]$status) {
@@ -76,8 +76,12 @@ foreach ($candidate in $candidates) {
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $start
     if (-not $process.Start()) { continue }
+    if (-not $process.WaitForExit(5000)) {
+      try { $process.Kill() } catch { }
+      Write-LaunchStatus 'JAVA_PROBE_TIMEOUT'
+      continue
+    }
     $versionText = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
     if ($process.ExitCode -ne 0) { continue }
     $match = [regex]::Match($versionText, 'version\s+"(?<major>[0-9]+)')
     if ($match.Success -and [int]$match.Groups['major'].Value -ge 17) {

@@ -64,7 +64,7 @@ Initialize-Node
 $pnpm = Resolve-PnpmCommand
 $maven = Resolve-CommandPath @('mvn.cmd', 'mvn') @('C:\tool\apache-maven-3.9.16\bin\mvn.cmd')
 if ([string]::IsNullOrWhiteSpace($env:SOURCE_DATE_EPOCH)) {
-  $env:SOURCE_DATE_EPOCH = (git -C $repoRoot log -1 --format=%ct).Trim()
+  $env:SOURCE_DATE_EPOCH = '315532800'
 }
 if ($env:SOURCE_DATE_EPOCH -notmatch '^\d+$') { throw 'SOURCE_DATE_EPOCH must be a Unix timestamp' }
 

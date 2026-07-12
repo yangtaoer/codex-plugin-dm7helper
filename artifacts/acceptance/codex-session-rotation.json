@@ -14,5 +14,15 @@
   "taskASealedVersionExists": true,
   "taskBSealedVersionExists": false,
   "taskBUnchanged": true,
-  "crossSessionPreviewAccessObserved": false
+  "installationRoute": "repo_marketplace_to_user_cache",
+  "toolDiscoveryProvenance": "installed_cache_mcp_stdio",
+  "crossSessionAccessCheck": {
+    "performedAt": "2026-07-12T06:41:42.1609942Z",
+    "tool": "dm7_get_release_log",
+    "attemptedSelector": "sessionId",
+    "expectedCode": "INVALID_ARGUMENT",
+    "actualCode": "INVALID_ARGUMENT",
+    "selectorAccepted": false,
+    "resultScopedToCaller": true
+  }
 }
