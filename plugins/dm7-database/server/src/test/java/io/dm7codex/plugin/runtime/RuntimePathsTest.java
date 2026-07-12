@@ -14,28 +14,34 @@ class RuntimePathsTest {
     Path tempDir;
 
     @Test
-    void missingPluginDataUsesPrivateCodexHomeFallback() {
+    void missingPluginDataUsesSandboxWritableUserTempFallback() {
         var pluginRoot = tempDir.resolve("read-only-plugin");
-        var codexHome = tempDir.resolve("codex home");
+        var userTemp = tempDir.resolve("user temp");
 
         var paths = RuntimePaths.fromEnvironment(
-                Map.of("CODEX_HOME", codexHome.toString()), pluginRoot);
+                Map.of("TEMP", userTemp.toString(), "CODEX_HOME", tempDir.resolve("read-only-home").toString()),
+                pluginRoot);
 
-        assertEquals(codexHome.resolve("plugin-data/dm7-database").toAbsolutePath().normalize(),
+        assertEquals(userTemp.resolve("dm7-codex-plugin-data").toAbsolutePath().normalize(),
                 paths.pluginData());
         assertTrue(paths.stateDatabase().startsWith(paths.pluginData()));
     }
 
     @Test
-    void missingPluginDataAndCodexHomeUsesUserHomeFallback() {
+    void missingPluginDataAndTempUsesJvmTempFallback() {
         var pluginRoot = tempDir.resolve("read-only-plugin");
-        var userHome = tempDir.resolve("user home");
+        var original = System.getProperty("java.io.tmpdir");
+        var jvmTemp = tempDir.resolve("jvm temp");
+        System.setProperty("java.io.tmpdir", jvmTemp.toString());
+        try {
+            var paths = RuntimePaths.fromEnvironment(Map.of(), pluginRoot);
 
-        var paths = RuntimePaths.fromEnvironment(
-                Map.of("USERPROFILE", userHome.toString()), pluginRoot);
-
-        assertEquals(userHome.resolve(".codex/plugin-data/dm7-database").toAbsolutePath().normalize(),
-                paths.pluginData());
+            assertEquals(jvmTemp.resolve("dm7-codex-plugin-data").toAbsolutePath().normalize(),
+                    paths.pluginData());
+        } finally {
+            if (original == null) System.clearProperty("java.io.tmpdir");
+            else System.setProperty("java.io.tmpdir", original);
+        }
     }
 
     @Test

@@ -17,17 +17,14 @@ public final class RuntimePaths {
         Objects.requireNonNull(environment, "environment");
         var configuredData = environment.get("PLUGIN_DATA");
         if (configuredData == null || configuredData.isBlank()) {
-            var codexHome = environment.get("CODEX_HOME");
-            if (codexHome == null || codexHome.isBlank()) {
-                var userHome = environment.get("USERPROFILE");
-                if (userHome == null || userHome.isBlank()) userHome = environment.get("HOME");
-                if (userHome == null || userHome.isBlank()) userHome = System.getProperty("user.home");
-                if (userHome == null || userHome.isBlank()) {
-                    throw new IllegalStateException("A writable Codex data home is required");
-                }
-                codexHome = Path.of(userHome).resolve(".codex").toString();
+            var userTemp = environment.get("TEMP");
+            if (userTemp == null || userTemp.isBlank()) userTemp = environment.get("TMP");
+            if (userTemp == null || userTemp.isBlank()) userTemp = environment.get("TMPDIR");
+            if (userTemp == null || userTemp.isBlank()) userTemp = System.getProperty("java.io.tmpdir");
+            if (userTemp == null || userTemp.isBlank()) {
+                throw new IllegalStateException("A sandbox-writable temporary directory is required");
             }
-            configuredData = Path.of(codexHome).resolve("plugin-data").resolve("dm7-database").toString();
+            configuredData = Path.of(userTemp).resolve("dm7-codex-plugin-data").toString();
         }
         return new RuntimePaths(pluginRoot, Path.of(configuredData));
     }

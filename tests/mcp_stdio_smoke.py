@@ -325,14 +325,14 @@ def main() -> None:
 
         fallback_env = os.environ.copy()
         fallback_env.pop("PLUGIN_DATA", None)
-        fallback_env["CODEX_HOME"] = str(data / "codex home")
+        fallback_env["TEMP"] = str(data / "user temp")
         fallback_env["CODEX_THREAD_ID"] = "fallback-thread"
         fallback = subprocess.run(
             [JAVA, "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
             cwd=PLUGIN_ROOT, env=fallback_env, input="", capture_output=True,
             text=True, encoding="utf-8", errors="replace", timeout=30)
         assert fallback.returncode == 0 and fallback.stdout == "" and fallback.stderr == ""
-        fallback_sessions = list((data / "codex home" / "plugin-data" / "dm7-database" / "sessions").glob("*/active.sql"))
+        fallback_sessions = list((data / "user temp" / "dm7-codex-plugin-data" / "sessions").glob("*/active.sql"))
         assert len(fallback_sessions) == 0
 
     print("MCP STDIO smoke passed")

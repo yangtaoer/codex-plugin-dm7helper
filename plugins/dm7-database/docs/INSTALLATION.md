@@ -14,6 +14,10 @@ Open the console with `dm7_open_console`, create a connection, and choose the dr
 
 The driver path and encrypted credential state are local to the current user and are never included when the plugin is shared.
 
+## Runtime storage
+
+When Codex provides `PLUGIN_DATA`, all writable state is confined to that directory. Current Windows Codex builds expose plugin MCP processes through a restricted sandbox without injecting that variable; in that case the plugin uses the current user's sandbox-writable temporary directory under `dm7-codex-plugin-data`. The same private directory is reused across plugin process restarts, and the plugin applies user-only access controls to sensitive state. Operating-system temporary-directory cleanup can remove this fallback data, so copy required release exports to durable storage after downloading them from the console.
+
 ## Update lifecycle
 
 During source development, run the plugin-creator `update_plugin_cachebuster.py <plugin-path>` helper; do not hand-edit `marketplace.json`. Re-run `codex plugin add dm7-database@dm7-database-local`, then start a **new task** so Codex picks up the new cachebuster, skill, and MCP process. Existing tasks can retain the previous plugin process and must not be used as pickup evidence.
