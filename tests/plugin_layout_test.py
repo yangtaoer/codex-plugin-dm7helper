@@ -15,7 +15,10 @@ class PluginLayoutTest(unittest.TestCase):
         self.assertEqual("dm7-database", manifest["name"])
         self.assertRegex(manifest["version"], r"^0\.1\.0(?:\+codex\.[0-9A-Za-z.-]+)?$")
         self.assertEqual("./.mcp.json", manifest["mcpServers"])
-        self.assertEqual("powershell.exe", mcp["mcpServers"]["dm7"]["command"])
+        self.assertEqual(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            mcp["mcpServers"]["dm7"]["command"],
+        )
         self.assertIn("${PLUGIN_ROOT}/scripts/launch-mcp.ps1", mcp["mcpServers"]["dm7"]["args"])
         self.assertEqual("dm7-database", market["plugins"][0]["name"])
         self.assertEqual("./plugins/dm7-database", market["plugins"][0]["source"]["path"])
