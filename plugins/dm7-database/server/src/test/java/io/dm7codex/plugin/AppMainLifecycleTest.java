@@ -16,10 +16,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class AppMainLifecycleTest {
+    private static final ObjectMapper JSON = new ObjectMapper();
     static {
         System.setProperty("org.slf4j.simpleLogger.log.io.modelcontextprotocol.spec.McpTransport", "off");
     }
@@ -75,6 +77,36 @@ class AppMainLifecycleTest {
         assertEquals("IOException -> IllegalStateException\n", text);
         assertFalse(text.contains("password"));
         assertFalse(text.contains("jdbc"));
+    }
+
+    @Test void unwritableRuntimeDoesNotPreventMcpHandshake() throws Exception {
+        var blocker = temporary.resolve("not-a-directory");
+        java.nio.file.Files.writeString(blocker, "block");
+        var environment = Map.of(
+                "PLUGIN_DATA", blocker.resolve("child").toString(),
+                "CODEX_THREAD_ID", "lazy-startup-thread");
+        var input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{" +
+                "\"protocolVersion\":\"2025-06-18\",\"capabilities\":{}," +
+                "\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}\n";
+        var output = new ByteArrayOutputStream();
+        var inbound = new java.io.PipedInputStream();
+        var writer = new java.io.PipedOutputStream(inbound);
+        var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        var server = executor.submit(() -> {
+            AppMain.runStdio(environment, inbound, output);
+            return null;
+        });
+        writer.write(input.getBytes(StandardCharsets.UTF_8));
+        writer.flush();
+        for (int attempt = 0; output.size() == 0 && attempt < 500; attempt++) Thread.sleep(10);
+        assertTrue(output.size() > 0, "initialize response was not emitted");
+        writer.close();
+        server.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        executor.shutdownNow();
+
+        var lines = output.toString(StandardCharsets.UTF_8).lines().toList();
+        assertEquals(1, lines.size());
+        assertEquals(1, JSON.readTree(lines.get(0)).path("id").asInt());
     }
 
     private Map<String, String> environment(String name) {

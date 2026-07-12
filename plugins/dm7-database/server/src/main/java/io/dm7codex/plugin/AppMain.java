@@ -78,9 +78,8 @@ public final class AppMain {
     static void runStdio(Map<String, String> environment, InputStream stdin, java.io.OutputStream stdout)
             throws Exception {
         RuntimePaths paths = RuntimePaths.fromEnvironment(environment, pluginRoot());
-        try (var backend = Dm7ServicesBackend.open(paths);
-             var console = new ConsoleHttpServer(new ConsoleTokenService(), backend, backend.eventBus())) {
-            var adapter = adapter(environment, backend, console);
+        try (var runtime = new LazyRuntime(paths)) {
+            var adapter = adapter(environment, runtime);
             var input = new ProtocolGuardInputStream(stdin, stdout);
             var defaults = McpJsonDefaults.getMapper();
             if (!(defaults instanceof JacksonMcpJsonMapper jacksonDefaults)) {
@@ -108,6 +107,62 @@ public final class AppMain {
     static Dm7McpServer adapter(Map<String,String> environment,Dm7ServicesBackend backend,ConsoleHttpServer console) {
         return new Dm7McpServer(() -> SessionIdentityResolver.resolve(environment), backend::initialize,
                 backend, console::open);
+    }
+
+    private static Dm7McpServer adapter(Map<String,String> environment, LazyRuntime runtime) {
+        return new Dm7McpServer(() -> SessionIdentityResolver.resolve(environment), runtime::initialize,
+                runtime::call, runtime::openConsole);
+    }
+
+    private static final class LazyRuntime implements AutoCloseable {
+        private final RuntimePaths paths;
+        private Bundle bundle;
+
+        private LazyRuntime(RuntimePaths paths) { this.paths = Objects.requireNonNull(paths); }
+
+        private io.dm7codex.plugin.runtime.SessionState initialize(
+                io.dm7codex.plugin.runtime.SessionIdentity identity) throws Exception {
+            return bundle().backend().initialize(identity);
+        }
+
+        private Map<String,Object> call(String operation, Map<String,Object> arguments,
+                io.dm7codex.plugin.runtime.SessionState session) throws Exception {
+            return bundle().backend().call(operation, arguments, session);
+        }
+
+        private Map<String,Object> openConsole(io.dm7codex.plugin.runtime.SessionState session)
+                throws Exception {
+            return bundle().console().open(session);
+        }
+
+        private synchronized Bundle bundle() throws Exception {
+            if (bundle != null) return bundle;
+            Dm7ServicesBackend backend = Dm7ServicesBackend.open(paths);
+            try {
+                var console = new ConsoleHttpServer(new ConsoleTokenService(), backend, backend.eventBus());
+                bundle = new Bundle(backend, console);
+                return bundle;
+            } catch (Exception failure) {
+                backend.close();
+                throw failure;
+            }
+        }
+
+        @Override public synchronized void close() throws Exception {
+            if (bundle == null) return;
+            Exception failure = null;
+            try { bundle.console().close(); }
+            catch (Exception closeFailure) { failure = closeFailure; }
+            try { bundle.backend().close(); }
+            catch (Exception closeFailure) {
+                if (failure == null) failure = closeFailure;
+                else failure.addSuppressed(closeFailure);
+            }
+            bundle = null;
+            if (failure != null) throw failure;
+        }
+
+        private record Bundle(Dm7ServicesBackend backend, ConsoleHttpServer console) {}
     }
 
     private static Path pluginRoot() throws URISyntaxException {
