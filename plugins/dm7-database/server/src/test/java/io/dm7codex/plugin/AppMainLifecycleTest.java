@@ -63,6 +63,20 @@ class AppMainLifecycleTest {
         assertFalse(diagnostic.contains("jdbc"));
     }
 
+    @Test void startupFailureFileContainsOnlySafeKinds() throws Exception {
+        var environment = Map.of("PLUGIN_DATA", temporary.resolve("diagnostics").toString());
+        var sensitive = new IOException("password=never-print-this",
+                new IllegalStateException("jdbc:dm7://private-host"));
+
+        AppMain.writeStartupDiagnostic(environment, temporary.resolve("plugin-root"), sensitive);
+
+        var text = java.nio.file.Files.readString(
+                temporary.resolve("diagnostics/logs/startup-failure.log"), StandardCharsets.UTF_8);
+        assertEquals("IOException -> IllegalStateException\n", text);
+        assertFalse(text.contains("password"));
+        assertFalse(text.contains("jdbc"));
+    }
+
     private Map<String, String> environment(String name) {
         return Map.of("PLUGIN_DATA", temporary.resolve(name).toString(), "CODEX_THREAD_ID", "lifecycle-" + name);
     }

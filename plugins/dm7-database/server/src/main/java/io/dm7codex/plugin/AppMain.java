@@ -43,6 +43,8 @@ public final class AppMain {
         } catch (Throwable startupFailure) {
             System.err.println("DM7 MCP server could not start safely.");
             System.err.println("Failure kinds: " + safeFailureKinds(startupFailure));
+            try { writeStartupDiagnostic(System.getenv(), pluginRoot(), startupFailure); }
+            catch (Throwable ignored) { /* stderr remains the safe fallback */ }
             System.exit(1);
         }
     }
@@ -60,6 +62,17 @@ public final class AppMain {
             current = next;
         }
         return kinds.toString();
+    }
+
+    static void writeStartupDiagnostic(Map<String, String> environment, Path root, Throwable failure)
+            throws IOException {
+        Path logs = RuntimePaths.fromEnvironment(environment, root).logsDirectory();
+        java.nio.file.Files.createDirectories(logs);
+        java.nio.file.Files.writeString(logs.resolve("startup-failure.log"),
+                safeFailureKinds(failure) + "\n", UTF_8,
+                java.nio.file.StandardOpenOption.CREATE,
+                java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
+                java.nio.file.StandardOpenOption.WRITE);
     }
 
     static void runStdio(Map<String, String> environment, InputStream stdin, java.io.OutputStream stdout)
