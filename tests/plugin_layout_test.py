@@ -1,4 +1,5 @@
 from pathlib import Path
+import base64
 import json
 import unittest
 
@@ -19,7 +20,9 @@ class PluginLayoutTest(unittest.TestCase):
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
             mcp["mcpServers"]["dm7"]["command"],
         )
-        self.assertIn("./scripts/launch-mcp.ps1", mcp["mcpServers"]["dm7"]["args"])
+        self.assertIn("-EncodedCommand", mcp["mcpServers"]["dm7"]["args"])
+        bootstrap = base64.b64decode(mcp["mcpServers"]["dm7"]["args"][-1]).decode("utf-16le")
+        self.assertIn("launch-mcp.ps1", bootstrap)
         self.assertEqual("dm7-database", market["plugins"][0]["name"])
         self.assertEqual("./plugins/dm7-database", market["plugins"][0]["source"]["path"])
         self.assertEqual("AVAILABLE", market["plugins"][0]["policy"]["installation"])

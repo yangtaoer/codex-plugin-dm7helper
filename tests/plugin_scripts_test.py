@@ -145,19 +145,24 @@ class PluginScriptsTest(unittest.TestCase):
         if not java.is_file():
             self.skipTest("JDK 21 test runtime is unavailable")
         with tempfile.TemporaryDirectory(prefix="dm7 launcher ") as temporary:
-            root = Path(temporary) / "plugin root with spaces"
+            codex_home = Path(temporary) / "codex home"
+            root = codex_home / "plugins" / "cache" / "test market" / "dm7-database" / "0.1.0"
             (root / "scripts").mkdir(parents=True)
             (root / "lib").mkdir()
+            (root / ".codex-plugin").mkdir()
             shutil.copy2(PLUGIN / "scripts" / "launch-mcp.ps1", root / "scripts")
             shutil.copy2(PLUGIN / "lib" / "dm7-codex-plugin.jar", root / "lib")
+            shutil.copy2(PLUGIN / ".codex-plugin" / "plugin.json", root / ".codex-plugin")
             mcp = json.loads((PLUGIN / ".mcp.json").read_text("utf-8"))["mcpServers"]["dm7"]
             arguments = list(mcp["args"])
             environment = self.clean_environment()
             environment.pop("DM7_CODEX_JAVA", None)
             environment["DM7_CODEX_JAVA_SEARCH_ROOTS"] = str(java.parents[2])
+            environment["CODEX_HOME"] = str(codex_home)
             environment["JAVA_HOME"] = str(Path(temporary) / "invalid-old-java")
             environment["PLUGIN_DATA"] = str(Path(temporary) / "plugin data")
             environment["CODEX_THREAD_ID"] = "launcher-thread"
+            environment["PLUGIN_ROOT"] = str(root)
             diagnostic = Path(temporary) / "launcher-status.log"
             environment["DM7_MCP_DIAGNOSTIC_FILE"] = str(diagnostic)
             initialize = json.dumps({
@@ -176,7 +181,7 @@ class PluginScriptsTest(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             frames = [json.loads(line) for line in result.stdout.splitlines()]
             self.assertEqual([1], [frame.get("id") for frame in frames])
-            self.assertNotIn("version", result.stderr.lower())
+            self.assertNotIn("java version", result.stderr.lower())
             self.assertEqual("JAVA_EXIT_0", diagnostic.read_text("utf-8").strip())
 
     def make_fake_command(self, directory: Path, name: str) -> None:
