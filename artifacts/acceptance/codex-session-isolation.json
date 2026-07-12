@@ -1,0 +1,17 @@
+{
+  "taskA": {
+    "threadHash": "dfcbe5f991c34afcab05d5d5ab4ac227896240615edda15c219ed086e71578d2",
+    "processId": 30616,
+    "releaseDirectoryHash": "dfcbe5f991c34afcab05d5d5ab4ac227896240615edda15c219ed086e71578d2",
+    "version": "v001",
+    "activeFileSha256": "66d7e6c20a9873b2be181fe6c1aa5e64811755979509b2c52c721cfa1546f491"
+  },
+  "taskB": {
+    "threadHash": "ffb8f94ceb035210b136031e348e11ecf58fc15f5b1209227b59a3cd4ed0962c",
+    "processId": 14280,
+    "releaseDirectoryHash": "ffb8f94ceb035210b136031e348e11ecf58fc15f5b1209227b59a3cd4ed0962c",
+    "version": "v001",
+    "activeFileSha256": "66d7e6c20a9873b2be181fe6c1aa5e64811755979509b2c52c721cfa1546f491"
+  },
+  "directoriesDiffer": true
+}

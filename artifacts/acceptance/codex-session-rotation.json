@@ -1,0 +1,18 @@
+{
+  "taskAThreadHash": "dfcbe5f991c34afcab05d5d5ab4ac227896240615edda15c219ed086e71578d2",
+  "taskBThreadHash": "ffb8f94ceb035210b136031e348e11ecf58fc15f5b1209227b59a3cd4ed0962c",
+  "identitySource": "mcp_request_meta",
+  "identityIsolation": "verified",
+  "taskABeforeVersion": "v001",
+  "taskAAfterVersion": "v002",
+  "taskBAfterVersion": "v001",
+  "exportedVersion": "v001",
+  "exportExists": true,
+  "exportByteLength": 338,
+  "exportSha256": "ee499d1231b1acad1db3185ec8168e77c93477dc0094dfca884cff8584c37b80",
+  "sealedSourceSha256": "66d7e6c20a9873b2be181fe6c1aa5e64811755979509b2c52c721cfa1546f491",
+  "taskASealedVersionExists": true,
+  "taskBSealedVersionExists": false,
+  "taskBUnchanged": true,
+  "crossSessionPreviewAccessObserved": false
+}
