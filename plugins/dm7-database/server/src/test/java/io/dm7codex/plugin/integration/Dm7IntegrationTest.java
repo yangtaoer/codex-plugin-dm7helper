@@ -144,20 +144,24 @@ final class Dm7IntegrationTest {
                 });
 
                 timed(cases, "non-atomic-mixed-failure", () -> {
-                    assertExecution(exec(backend,session,activeProfileId,"CREATE TABLE " + mixedQualified + " (\"ID\" INT)","TEST",false,false));
                     Map<String,Object> result=exec(backend,session,activeProfileId,
-                            "INSERT INTO " + mixedQualified + " VALUES (1); INSERT INTO " + missingQualified + " VALUES (1)",
+                            "CREATE TABLE " + mixedQualified + " (\"ID\" INT); INSERT INTO " + mixedQualified +
+                                    " VALUES (1); INSERT INTO " + missingQualified + " VALUES (1)",
                             "TEST",false,true);
                     @SuppressWarnings("unchecked") var statements=(List<Map<String,Object>>)result.get("statements");
-                    assertEquals(2,statements.size());assertEquals(true,statements.get(0).get("success"));assertEquals(false,statements.get(1).get("success"));
+                    assertEquals(false,result.get("success"));assertEquals("FAILED",result.get("status"));assertEquals(3,statements.size());
+                    assertEquals(List.of("DDL","DML","DML"),statements.stream().map(value->value.get("kind")).toList());
+                    assertEquals(List.of(true,true,false),statements.stream().map(value->value.get("success")).toList());
+                    assertEquals(1L,((Number)statements.get(1).get("rowCount")).longValue());assertNotNull(statements.get(2).get("error"));
+                    assertTrue(statements.stream().noneMatch(value->Boolean.TRUE.equals(value.get("recorded"))));
                     Map<String,Object> query=query(backend,session,activeProfileId,"SELECT COUNT(*) AS \"C\" FROM "+mixedQualified,1,1024,4);
                     @SuppressWarnings("unchecked") var rows=(List<Map<String,Object>>)query.get("rows");
                     assertEquals(1L,((Number)rows.get(0).get("C")).longValue());assertReleaseZero(backend,session);
                 });
 
+                timed(cases,"production-query-timeout",()->{assertProductionQueryTimeout(backend,session,activeProfileId);assertReleaseZero(backend,session);});
                 long cancellationStarted=System.nanoTime();
                 Capability capability=rawCapabilityProbe(config,runtime,schema);
-                assertTrue(capability.queryTimeoutEnforced(),"bounded query timeout was not enforced");
                 cases.add(caseResult("cancellation-capability",elapsed(cancellationStarted),capability.cancellationSupported()));
 
                 timed(cases,"test-purpose-release-exclusion",()->{
@@ -178,7 +182,8 @@ final class Dm7IntegrationTest {
             } finally {
                 long cleanupStarted=System.nanoTime();
                 Throwable cleanupFailure=null;
-                try{exactCleanupConfirmed[0]=rawCleanupAndVerify(config,runtime,schema,List.of(table,mixedTable,atomicTable));}
+                try{exactCleanupConfirmed[0]=rawCleanupAndVerify(config,runtime,schema,List.of(table,mixedTable,atomicTable));
+                    if(exactCleanupConfirmed[0])writeCleanupManifest(List.of(table,mixedTable,atomicTable));}
                 catch(Throwable failure){cleanupFailure=merge(cleanupFailure,failure);}
                 try{if(profileId!=null)backend.call("connections.delete",Map.of("id",profileId),session);}
                 catch(Throwable failure){cleanupFailure=merge(cleanupFailure,failure);}
@@ -192,7 +197,6 @@ final class Dm7IntegrationTest {
             }
         }
         assertTrue(mainSucceeded,"integration cases did not complete");
-        writeCleanupManifest(List.of(table,mixedTable,atomicTable));
         writeCandidate(config,driverVersion,serverVersion,fingerprint,cases,exactCleanupConfirmed[0]);
     }
 
@@ -220,20 +224,22 @@ final class Dm7IntegrationTest {
 
     private static Capability rawCapabilityProbe(Config c,Path runtime,String schema)throws Exception{
         ConnectionProfile p=c.profile(schema);try(var handle=new DmDriverLoader(RuntimePaths.forTest(runtime)).load(p)){
-            var props=c.properties();try{return new Capability(timeoutProbe(handle.connect(c.url(),props)),cancelProbe(handle.connect(c.url(),props)));}
+            var props=c.properties();try{return new Capability(cancelProbe(handle.connect(c.url(),props)));}
             finally{props.clear();}
         }
     }
-    private static boolean timeoutProbe(java.sql.Connection connection)throws Exception{
-        String bounded="SELECT SUM(SQRT(N)) FROM (SELECT LEVEL AS N FROM DUAL CONNECT BY LEVEL <= 100000000)";boolean timeout=false;
-        try{
-            try(var calibration=connection.createStatement();var rows=calibration.executeQuery("SELECT COUNT(*) FROM (SELECT LEVEL FROM DUAL CONNECT BY LEVEL <= 1000)")){assertTrue(rows.next());assertEquals(1000L,rows.getLong(1));}
-            var executor=Executors.newSingleThreadExecutor();var statement=connection.createStatement();
-            try{statement.setQueryTimeout(1);var future=executor.submit(()->{try(var rows=statement.executeQuery(bounded)){while(rows.next()){}return false;}catch(java.sql.SQLException terminal){return true;}});
-                try{timeout=future.get(5,TimeUnit.SECONDS);}catch(TimeoutException watchdog){try{statement.cancel();}catch(Exception ignored){}future.cancel(true);throw new IllegalStateException("bounded query timeout watchdog expired");}
-            }finally{executor.shutdownNow();if(!executor.awaitTermination(5,TimeUnit.SECONDS))throw new IllegalStateException("bounded timeout worker did not terminate");try{statement.close();}catch(java.sql.SQLException close){if(!timeout)throw close;}}
-            return timeout;
-        }finally{try{connection.close();}catch(java.sql.SQLException close){if(!timeout)throw close;}}
+    private static void assertProductionQueryTimeout(Dm7ServicesBackend backend,SessionState session,String profileId)throws Exception{
+        String bounded="SELECT SUM(SQRT(N)) FROM (SELECT LEVEL AS N FROM DUAL CONNECT BY LEVEL <= 100000000)";
+        var executor=Executors.newSingleThreadExecutor();long started=System.nanoTime();String executionId=UUID.randomUUID().toString();
+        try{var future=executor.submit(()->backend.call("dm7_query",Map.of("connectionId",profileId,"executionId",executionId,
+                    "sql",bounded,"maxRows",1,"maxBytes",1024,"timeoutSeconds",1),session));Map<String,Object> result;
+            try{result=future.get(5,TimeUnit.SECONDS);}catch(TimeoutException watchdog){future.cancel(true);throw new IllegalStateException("production query timeout watchdog expired");}
+            assertEquals(false,result.get("success"));assertTrue(elapsed(started)<5_000);
+            @SuppressWarnings("unchecked") var error=(Map<String,Object>)result.get("error");assertNotNull(error);assertEquals("EXECUTING",error.get("phase"));
+            Map<String,Object> facts=backend.call("executions.get",Map.of("id",executionId),session);
+            @SuppressWarnings("unchecked") var summary=(Map<String,Object>)facts.get("summary");
+            assertEquals("FAILED",summary.get("status"));assertEquals("Execution timed out",error.get("message"));assertNotNull(summary.get("completedAt"));
+        }finally{executor.shutdownNow();if(!executor.awaitTermination(5,TimeUnit.SECONDS))throw new IllegalStateException("production timeout worker did not terminate");}
     }
     private static boolean cancelProbe(java.sql.Connection connection)throws Exception{
         String bounded="SELECT SUM(SQRT(N)) FROM (SELECT LEVEL AS N FROM DUAL CONNECT BY LEVEL <= 100000000)";boolean cancelled=false,terminalObserved=false;
@@ -289,7 +295,7 @@ final class Dm7IntegrationTest {
     private static String randomSuffix(){byte[] bytes=new byte[8];RANDOM.nextBytes(bytes);return HexFormat.of().formatHex(bytes).toUpperCase(Locale.ROOT);}
     private static String sha256(Path path)throws Exception{var digest=MessageDigest.getInstance("SHA-256");try(var input=Files.newInputStream(path)){byte[] buffer=new byte[8192];for(int read;(read=input.read(buffer))>=0;)digest.update(buffer,0,read);}return HexFormat.of().formatHex(digest.digest());}
     @FunctionalInterface interface Throwing{void run()throws Exception;}@FunctionalInterface interface ThrowingValue<T>{T run()throws Exception;}
-    record Capability(boolean queryTimeoutEnforced,boolean cancellationSupported){}
+    record Capability(boolean cancellationSupported){}
 
     record Config(String url,String username,String password,Path driverJar,String driverSha256Lower){
         static Config fromEnvironment(Map<String,String> env)throws Exception{var values=new ArrayList<String>();for(String name:ENV){String value=env.get(name);if(value==null||value.isBlank())throw new IllegalStateException("integration environment is incomplete");values.add(value);}Path driver=Path.of(values.get(3)).toAbsolutePath().normalize();if(!Files.isRegularFile(driver)||Files.isSymbolicLink(driver))throw new IllegalStateException("integration driver is invalid");if(!values.get(0).startsWith("jdbc:dm7:"))throw new IllegalStateException("integration URL is invalid");return new Config(values.get(0),values.get(1),values.get(2),driver,sha256(driver));}

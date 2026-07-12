@@ -24,6 +24,9 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.Types;
 import java.nio.file.Files;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 class ExecutionServiceMutationTest {
     @TempDir Path tempDir;
@@ -64,6 +67,135 @@ class ExecutionServiceMutationTest {
             assertEquals("中文", bound.get());
             assertTrue(Files.readString(session.activeSql()).contains("VALUES (N'中文')"));
         }
+    }
+
+    @Test void mutationUsesProfileWallClockDeadlineAndForceClosesIgnoredJdbcCancellation() throws Exception {
+        var released = new CountDownLatch(1); var jdbcTimeout = new AtomicInteger();
+        var statement = (java.sql.Statement) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{java.sql.Statement.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "executeUpdate" -> { released.await(10, TimeUnit.SECONDS); throw new java.sql.SQLException("stopped"); }
+                    case "cancel" -> null;
+                    case "close" -> { released.await(10, TimeUnit.SECONDS); yield null; }
+                    case "setQueryTimeout" -> { jdbcTimeout.set((Integer)args[0]); yield null; }
+                    default -> null;
+                });
+        var connection = (Connection) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{Connection.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "createStatement" -> statement;
+                    case "close" -> { released.countDown(); yield null; }
+                    case "getAutoCommit" -> true;
+                    case "setAutoCommit", "commit", "rollback" -> null;
+                    case "isClosed" -> false;
+                    default -> null;
+                });
+        DmConnectionFactory.ConnectionOpener opener = new DmConnectionFactory.ConnectionOpener() {
+            @Override public DmConnectionFactory.ManagedConnection open(UUID id) {
+                return new DmConnectionFactory.ManagedConnection(connection, () -> {}, "fp");
+            }
+            @Override public DmConnectionFactory.ConnectionLimits limits(UUID id) {
+                return new DmConnectionFactory.ConnectionLimits(10, 1_000, 1);
+            }
+        };
+        var registry = new ExecutionRegistry(); long started = System.nanoTime();
+        ExecutionResult result;
+        try (var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                null, null, new ExecutionEventBus(20), registry)) {
+            result = service.execute(TestJdbc.session(), new ExecuteCommand(UUID.randomUUID(),
+                    "UPDATE T SET C=1", SqlPurpose.TEST, false, false, 30));
+        }
+        assertEquals(ExecutionStatus.FAILED, result.status()); assertFalse(result.success());
+        assertEquals(70005, result.error().orElseThrow().errorCode());
+        assertEquals(ExecutionStatus.EXECUTING, result.error().orElseThrow().phase());
+        assertEquals(1, jdbcTimeout.get());
+        assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 5_000);
+        assertEquals(0, registry.activeCount());
+    }
+
+    @Test void permanentlyBlockedMutationCleanupStillFinalizesTimeoutExactlyOnceWithinBound() throws Exception {
+        var never = new CountDownLatch(1);
+        var statement = (java.sql.Statement) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{java.sql.Statement.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "executeUpdate", "cancel", "close" -> {
+                        awaitIgnoringInterrupts(never);
+                        yield method.getName().equals("executeUpdate") ? 0 : null;
+                    }
+                    case "setQueryTimeout" -> null;
+                    default -> null;
+                });
+        var connection = (Connection) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{Connection.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "createStatement" -> statement;
+                    case "close" -> { awaitIgnoringInterrupts(never); yield null; }
+                    case "getAutoCommit" -> true;
+                    case "setAutoCommit", "commit", "rollback" -> null;
+                    case "isClosed" -> false;
+                    default -> null;
+                });
+        DmConnectionFactory.ConnectionOpener opener = new DmConnectionFactory.ConnectionOpener() {
+            @Override public DmConnectionFactory.ManagedConnection open(UUID id) {
+                return new DmConnectionFactory.ManagedConnection(connection, () -> {}, "fp");
+            }
+            @Override public DmConnectionFactory.ConnectionLimits limits(UUID id) {
+                return new DmConnectionFactory.ConnectionLimits(10, 1_000, 1);
+            }
+        };
+        var paths = RuntimePaths.forTest(tempDir.resolve("permanent-mutation-cleanup-timeout"));
+        try (var database = StateDatabase.open(paths.stateDatabase())) {
+            var session = new SessionInitializer(paths,
+                    new SessionRepository(database, paths.sessionsDirectory())).initialize(
+                    new SessionIdentity("thread-permanent-mutation", "codex_thread", "verified"));
+            var history = new ExecutionRepository(database); var events = new ExecutionEventBus(20);
+            var registry = new ExecutionRegistry(); UUID executionId = UUID.randomUUID();
+            var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                    null, history, events, registry);
+            var baselineThreads = java.util.Set.copyOf(Thread.getAllStackTraces().keySet());
+            java.util.Set<Thread> ownedThreads = java.util.Set.of();
+            long started = System.nanoTime();
+            try {
+                ExecutionResult result = service.execute(session, new ExecuteCommand(UUID.randomUUID(), executionId,
+                        "UPDATE T SET C=1", List.of(), SqlPurpose.TEST, false, false, 30, ExecutionSource.MCP));
+                assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 5_000,
+                        "final timeout finalization exceeded its bound");
+                assertFalse(result.success()); assertEquals(ExecutionStatus.FAILED, result.status());
+                assertEquals(70005, result.error().orElseThrow().errorCode());
+                assertTrue(result.error().orElseThrow().restartRequired());
+                var record = history.findExecution(executionId.toString()).orElseThrow();
+                assertEquals(ExecutionStatus.FAILED.name(), record.status()); assertNotNull(record.completedAt());
+                assertEquals(0, registry.activeCount());
+                ownedThreads = executionThreadsCreatedAfter(baselineThreads);
+                assertFalse(ownedThreads.isEmpty());
+                assertThrows(ExecutionCleanupTimeoutException.class, service::close);
+            } finally {
+                never.countDown();
+            }
+            assertTrue(awaitTermination(ownedThreads), "abandoned mutation cleanup threads did not terminate after release");
+            assertEquals(1, events.events(session.sessionId(), 0).stream()
+                    .filter(event -> event.executionId().equals(executionId))
+                    .filter(event -> List.of(ExecutionStatus.COMPLETED, ExecutionStatus.FAILED,
+                            ExecutionStatus.CANCELLED, ExecutionStatus.REJECTED).contains(event.status())).count());
+        }
+    }
+
+    private static void awaitIgnoringInterrupts(CountDownLatch latch) {
+        while (true) try { latch.await(); return; }
+        catch (InterruptedException ignored) { }
+    }
+
+    private static java.util.Set<Thread> executionThreadsCreatedAfter(java.util.Set<Thread> baseline) {
+        return Thread.getAllStackTraces().keySet().stream().filter(thread -> !baseline.contains(thread))
+                .filter(thread -> thread.getName().startsWith("dm7-execution")
+                        || thread.getName().startsWith("dm7-jdbc-")
+                        || thread.getName().startsWith("dm7-cancellation-closer"))
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private static boolean awaitTermination(java.util.Set<Thread> threads) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        do {
+            if (threads.stream().noneMatch(Thread::isAlive)) return true;
+            Thread.onSpinWait();
+        } while (System.nanoTime() < deadline);
+        return false;
     }
 
     @Test void callerKnownExecutionIdAllowsConcurrentCancellationWithoutEventDiscovery() throws Exception {

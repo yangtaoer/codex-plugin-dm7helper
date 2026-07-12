@@ -37,6 +37,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -50,6 +51,7 @@ public final class ExecutionService implements AutoCloseable {
     private final ExecutionRegistry registry;
     private final ThreadPoolExecutor executor;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean cleanupFailed = new AtomicBoolean();
 
     public ExecutionService(DmConnectionFactory factory, DmSqlParser parser, SqlSecurityPolicy security,
                             ReleaseLogService releaseLog, ExecutionRepository history,
@@ -94,12 +96,17 @@ public final class ExecutionService implements AutoCloseable {
         }
         UUID executionId = command.executionId() == null ? UUID.randomUUID() : command.executionId();
         UUID correlationId = UUID.randomUUID();
+        long dispatchStarted = System.nanoTime();
         startHistory(executionId, correlationId, session, "unknown", command.source(),
                 Optional.empty(), command.sql());
         if (!registry.register(executionId)) throw new IllegalArgumentException("Execution id is already active");
         publish(session, executionId, ExecutionStatus.QUEUED);
         try {
-            return bounded(executionId, () -> queryValidated(session, command, statements, executionId, correlationId));
+            int timeout = effectiveTimeout(command.profileId(), command.timeoutSeconds());
+            return bounded(executionId, timeout,
+                    () -> queryValidated(session, command, statements, timeout, executionId, correlationId),
+                    () -> queuedQueryTimeout(session, executionId, correlationId),
+                    () -> runningQueryTimeout(session, executionId, correlationId, dispatchStarted));
         } catch (ExecutionQueueFullException full) {
             finishRejected(session, executionId, correlationId);
             throw full;
@@ -107,7 +114,7 @@ public final class ExecutionService implements AutoCloseable {
     }
 
     private QueryResult queryValidated(SessionState session, QueryCommand command,
-            List<io.dm7codex.plugin.sql.ParsedStatement> statements, UUID executionId,
+            List<io.dm7codex.plugin.sql.ParsedStatement> statements, int timeout, UUID executionId,
             UUID correlationId) {
         long started = System.nanoTime();
         DmConnectionFactory.ManagedConnection managed = null;
@@ -129,7 +136,6 @@ public final class ExecutionService implements AutoCloseable {
             var limits = connections.limits(command.profileId());
             int maxRows = Math.min(command.maxRows(), Math.min(limits.maxRows(), MAX_ROWS));
             long maxBytes = Math.min(command.maxBytes(), Math.min(limits.maxBytes(), MAX_BYTES));
-            int timeout = Math.min(command.timeoutSeconds(), limits.queryTimeoutSeconds());
             publish(session, executionId, ExecutionStatus.EXECUTING);
             currentPhase = ExecutionStatus.EXECUTING;
             if (history != null) history.progress(executionId, ExecutionStatus.EXECUTING);
@@ -238,13 +244,19 @@ public final class ExecutionService implements AutoCloseable {
         }
         UUID executionId = command.executionId() == null ? UUID.randomUUID() : command.executionId();
         UUID correlationId = UUID.randomUUID();
+        long dispatchStarted = System.nanoTime();
         startHistory(executionId, correlationId, session, "unknown", command.source(),
                 Optional.of(command.purpose()), command.script());
         if (!registry.register(executionId)) throw new IllegalArgumentException("Execution id is already active");
         publish(session, executionId, ExecutionStatus.QUEUED);
         try {
-            return bounded(executionId, () -> executeValidated(session, command, statements,
-                    statementParameters, replayableSql, executionId, correlationId));
+            int timeout = effectiveTimeout(command.profileId(), command.timeoutSeconds());
+            // The effective timeout supervises the complete multi-statement execution.
+            return bounded(executionId, timeout, () -> executeValidated(session, command, statements,
+                    statementParameters, replayableSql, timeout, executionId, correlationId),
+                    () -> queuedMutationTimeout(session, executionId, correlationId, statements),
+                    () -> runningMutationTimeout(session, executionId, correlationId, statements,
+                            dispatchStarted));
         } catch (ExecutionQueueFullException full) {
             finishRejected(session, executionId, correlationId);
             throw full;
@@ -253,7 +265,7 @@ public final class ExecutionService implements AutoCloseable {
 
     private ExecutionResult executeValidated(SessionState session, ExecuteCommand command,
             List<io.dm7codex.plugin.sql.ParsedStatement> statements,
-            List<List<SqlParameter>> statementParameters, List<String> replayableSql, UUID executionId,
+            List<List<SqlParameter>> statementParameters, List<String> replayableSql, int timeout, UUID executionId,
             UUID correlationId) {
         long started = System.nanoTime();
         var results = new ArrayList<StatementResult>();
@@ -297,7 +309,7 @@ public final class ExecutionService implements AutoCloseable {
                         checkCancelled(executionId);
                         registry.attach(executionId, managed.connection(), statement);
                         checkCancelled(executionId);
-                        statement.setQueryTimeout(command.timeoutSeconds());
+                        statement.setQueryTimeout(timeout);
                         if (statement instanceof PreparedStatement prepared) {
                             SqlParameterBindings.bind(prepared, statementParameters.get(parsedIndex));
                         }
@@ -368,7 +380,7 @@ public final class ExecutionService implements AutoCloseable {
                         checkCancelled(executionId);
                         registry.attach(executionId, managed.connection(), statement);
                         checkCancelled(executionId);
-                        statement.setQueryTimeout(command.timeoutSeconds());
+                        statement.setQueryTimeout(timeout);
                         if (statement instanceof PreparedStatement prepared) {
                             SqlParameterBindings.bind(prepared, statementParameters.get(parsedIndex));
                         }
@@ -453,10 +465,22 @@ public final class ExecutionService implements AutoCloseable {
     }
 
     private <T> T bounded(UUID executionId, Callable<T> work) {
+        return bounded(executionId, 0, work, null, null);
+    }
+
+    private <T> T bounded(UUID executionId, int wallClockTimeoutSeconds, Callable<T> work,
+            Callable<T> queuedTimeout, Callable<T> runningTimeout) {
         java.util.concurrent.Future<T> future;
         var workerCompletion = new java.util.concurrent.CountDownLatch(1);
+        var startGate = new Object();
+        var workerStarted = new AtomicBoolean();
+        var queuedExpired = new AtomicBoolean();
         try {
             future = executor.submit(() -> {
+                synchronized (startGate) {
+                    if (queuedExpired.get()) throw new java.util.concurrent.CancellationException();
+                    workerStarted.set(true);
+                }
                 try { return work.call(); }
                 finally { workerCompletion.countDown(); }
             });
@@ -464,7 +488,40 @@ public final class ExecutionService implements AutoCloseable {
             throw new ExecutionQueueFullException();
         }
         try {
-            return future.get();
+            return wallClockTimeoutSeconds > 0
+                    ? future.get(wallClockTimeoutSeconds, TimeUnit.SECONDS) : future.get();
+        } catch (TimeoutException timeout) {
+            registry.timeout(executionId);
+            boolean expiredWhileQueued;
+            synchronized (startGate) {
+                expiredWhileQueued = !workerStarted.get();
+                if (expiredWhileQueued) queuedExpired.set(true);
+            }
+            if (expiredWhileQueued) {
+                future.cancel(false);
+                try { return queuedTimeout.call(); }
+                catch (RuntimeException failure) { throw failure; }
+                catch (Exception failure) { throw new IllegalStateException("Queued timeout finalization failed"); }
+            }
+            try {
+                // Cancellation schedules a force-close after two seconds.  Keep
+                // waiting bounded so queryValidated can persist its terminal facts.
+                return future.get(3, TimeUnit.SECONDS);
+            } catch (TimeoutException cleanupTimeout) {
+                registry.forceClose(executionId);
+                future.cancel(true);
+                try { return runningTimeout.call(); }
+                catch (RuntimeException failure) { throw failure; }
+                catch (Exception failure) {
+                    throw new IllegalStateException("Running timeout finalization failed");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Execution timeout cleanup was interrupted");
+            } catch (ExecutionException failed) {
+                if (failed.getCause() instanceof RuntimeException runtime) throw runtime;
+                throw new IllegalStateException("Execution task failed");
+            }
         } catch (InterruptedException interrupted) {
             registry.cancel(executionId);
             future.cancel(true);
@@ -481,18 +538,68 @@ public final class ExecutionService implements AutoCloseable {
         }
     }
 
-    @Override public void close() {
-        if (!closed.compareAndSet(false, true)) return;
+    private int effectiveTimeout(UUID profileId, int requested) {
+        try { return Math.min(requested, connections.limits(profileId).queryTimeoutSeconds()); }
+        catch (SQLException unavailable) { return requested; }
+    }
+
+    private QueryResult queuedQueryTimeout(SessionState session, UUID executionId, UUID correlationId) {
+        try { return finishQuery(session, executionId, correlationId, null, System.nanoTime(),
+                "unknown", ExecutionStatus.FAILED, Optional.of(timeoutError(correlationId, ExecutionStatus.QUEUED, false))); }
+        finally { registry.complete(executionId); }
+    }
+
+    private ExecutionResult queuedMutationTimeout(SessionState session, UUID executionId,
+            UUID correlationId, List<io.dm7codex.plugin.sql.ParsedStatement> statements) {
+        try { return finishMutation(session, executionId, correlationId, statements, session.version(),
+                List.of(), System.nanoTime(), "unknown", ExecutionStatus.FAILED,
+                Optional.of(timeoutError(correlationId, ExecutionStatus.QUEUED, false))); }
+        finally { registry.complete(executionId); }
+    }
+
+    private QueryResult runningQueryTimeout(SessionState session, UUID executionId,
+            UUID correlationId, long started) {
+        try {
+            return finishQuery(session, executionId, correlationId, null, started, "unknown",
+                    ExecutionStatus.FAILED, Optional.of(timeoutError(correlationId,
+                            ExecutionStatus.EXECUTING, true)));
+        } finally { registry.complete(executionId); }
+    }
+
+    private ExecutionResult runningMutationTimeout(SessionState session, UUID executionId,
+            UUID correlationId, List<io.dm7codex.plugin.sql.ParsedStatement> statements, long started) {
+        try {
+            return finishMutation(session, executionId, correlationId, statements, session.version(),
+                    List.of(), started, "unknown", ExecutionStatus.FAILED,
+                    Optional.of(timeoutError(correlationId, ExecutionStatus.EXECUTING, true)));
+        } finally { registry.complete(executionId); }
+    }
+
+    @Override public synchronized void close() {
+        if (!closed.compareAndSet(false, true)) {
+            if (cleanupFailed.get()) throw new ExecutionCleanupTimeoutException();
+            return;
+        }
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
         executor.shutdown();
         registry.cancelAll();
-        try { executor.awaitTermination(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS); }
+        boolean executorTerminated = false;
+        try { executorTerminated = executor.awaitTermination(
+                Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS); }
         catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
         registry.forceCloseAll();
         executor.shutdownNow();
-        try { executor.awaitTermination(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS); }
+        try { executorTerminated = executor.awaitTermination(
+                Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS); }
         catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
-        registry.closeWithin(deadline);
+        ExecutionCleanupTimeoutException failure = executorTerminated
+                ? null : new ExecutionCleanupTimeoutException();
+        try { registry.closeWithin(deadline); }
+        catch (ExecutionCleanupTimeoutException registryFailure) { failure = registryFailure; }
+        if (failure != null) {
+            cleanupFailed.set(true);
+            throw failure;
+        }
     }
 
     private void ensureOpen() {
@@ -684,18 +791,25 @@ public final class ExecutionService implements AutoCloseable {
             UUID correlationId, List<io.dm7codex.plugin.sql.ParsedStatement> statements, int releaseVersion,
             List<StatementResult> results, long started, String fingerprint,
             ExecutionStatus desired, Optional<SafeError> desiredError) {
-        ExecutionStatus actual = registry.claimTerminal(executionId, desired);
+        var claim = registry.claimTerminalSnapshot(executionId, desired);
+        ExecutionStatus actual = claim.status();
         Optional<SafeError> actualError = desiredError;
-        if (actual == ExecutionStatus.CANCELLED) {
+        if (claim.timedOut()) {
+            actualError = Optional.of(timeoutError(correlationId,
+                    desiredError.map(SafeError::phase).orElse(ExecutionStatus.EXECUTING),
+                    desiredError.map(SafeError::restartRequired).orElse(false)));
+        } else if (actual == ExecutionStatus.CANCELLED) {
             actualError = Optional.of(new SafeError(correlationId, ExecutionStatus.EXECUTING,
                     "Execution was cancelled", "DM7APP", 70004,
                     desiredError.map(SafeError::restartRequired).orElse(false)));
         }
-        publish(session, executionId, actual);
-        try { if(history!=null)history.persistStatementFacts(executionId,session.sessionId(),releaseVersion,statements,results); }
-        catch (SQLException ignored) { }
-        try { persistTerminal(executionId, results, actual, actualError); }
-        catch (SQLException ignored) { }
+        if (claim.firstClaim()) {
+            publish(session, executionId, actual);
+            try { if(history!=null)history.persistStatementFacts(executionId,session.sessionId(),releaseVersion,statements,results); }
+            catch (SQLException ignored) { }
+            try { persistTerminal(executionId, results, actual, actualError); }
+            catch (SQLException ignored) { }
+        }
         return new ExecutionResult(executionId, actual == ExecutionStatus.COMPLETED, actual,
                 results, elapsed(started), fingerprint, actualError);
     }
@@ -715,21 +829,32 @@ public final class ExecutionService implements AutoCloseable {
     private QueryResult finishQuery(SessionState session, UUID executionId, UUID correlationId,
             QueryResult successful, long started, String fingerprint, ExecutionStatus desired,
             Optional<SafeError> desiredError) {
-        ExecutionStatus actual = registry.claimTerminal(executionId, desired);
+        var claim = registry.claimTerminalSnapshot(executionId, desired);
+        ExecutionStatus actual = claim.status();
         Optional<SafeError> actualError = desiredError;
-        if (actual == ExecutionStatus.CANCELLED) {
+        if (claim.timedOut()) {
+            actualError = Optional.of(timeoutError(correlationId,
+                    desiredError.map(SafeError::phase).orElse(ExecutionStatus.EXECUTING),
+                    desiredError.map(SafeError::restartRequired).orElse(false)));
+        } else if (actual == ExecutionStatus.CANCELLED) {
             actualError = Optional.of(new SafeError(correlationId, ExecutionStatus.EXECUTING,
                     "Execution was cancelled", "DM7APP", 70004,
                     desiredError.map(SafeError::restartRequired).orElse(false)));
         }
-        publish(session, executionId, actual);
-        if (history != null) try {
-            if (successful != null) history.queryFinished(executionId, successful.returnedRows());
-            history.terminal(executionId, actual, actualError);
-        } catch (SQLException ignored) { }
+        if (claim.firstClaim()) {
+            publish(session, executionId, actual);
+            if (history != null) try {
+                if (successful != null) history.queryFinished(executionId, successful.returnedRows());
+                history.terminal(executionId, actual, actualError);
+            } catch (SQLException ignored) { }
+        }
         if (actual == ExecutionStatus.COMPLETED && successful != null) return successful;
         return new QueryResult(executionId, List.of(), List.of(), false, 0, 0,
                 elapsed(started), fingerprint, actualError);
+    }
+
+    private static SafeError timeoutError(UUID correlationId, ExecutionStatus phase, boolean restartRequired) {
+        return new SafeError(correlationId, phase, "Execution timed out", "DM7APP", 70005, restartRequired);
     }
 
     private static void closeForTerminal(ReleaseWriteReservation reservation,

@@ -21,6 +21,10 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.Types;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CompletableFuture;
 
 class ExecutionServiceQueryTest {
     @TempDir Path tempDir;
@@ -55,6 +59,156 @@ class ExecutionServiceQueryTest {
         assertEquals("中文", bound.get());
     }
 
+    @Test void queryTimeoutForceClosesJdbcWorkAndPersistsOneTerminalFailureWithinBound() throws Exception {
+        var released = new CountDownLatch(1);
+        var closeCalls = new AtomicInteger();
+        var jdbcTimeout = new AtomicInteger();
+        var statement = (java.sql.Statement) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{java.sql.Statement.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "executeQuery" -> {
+                        released.await(10, TimeUnit.SECONDS);
+                        throw new java.sql.SQLException("bounded test query stopped", "57014", 0);
+                    }
+                    case "cancel" -> null; // model a driver that accepts but ignores cancellation
+                    case "close" -> {
+                        closeCalls.incrementAndGet();
+                        released.await(10, TimeUnit.SECONDS);
+                        yield null;
+                    }
+                    case "setQueryTimeout" -> { jdbcTimeout.set((Integer)args[0]); yield null; }
+                    case "setMaxRows", "setFetchSize" -> null;
+                    default -> null;
+                });
+        var connection = (Connection) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{Connection.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "createStatement" -> statement;
+                    case "close" -> { released.countDown(); yield null; }
+                    case "isClosed" -> false;
+                    default -> null;
+                });
+        DmConnectionFactory.ConnectionOpener opener = new DmConnectionFactory.ConnectionOpener() {
+            @Override public DmConnectionFactory.ManagedConnection open(UUID id) {
+                return new DmConnectionFactory.ManagedConnection(connection, () -> {}, "fp");
+            }
+            @Override public DmConnectionFactory.ConnectionLimits limits(UUID id) {
+                return new DmConnectionFactory.ConnectionLimits(10, 1_000, 1);
+            }
+        };
+        var fixture = historyFixture("wall-clock-timeout");
+        var events = new ExecutionEventBus(20);
+        UUID executionId = UUID.randomUUID();
+        long started = System.nanoTime();
+        try (fixture.database) {
+            QueryResult result;
+            try (var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                    null, fixture.history, events, new ExecutionRegistry())) {
+                result = service.query(fixture.session, new QueryCommand(UUID.randomUUID(), executionId,
+                        "SELECT V FROM T", List.of(), 1, 100, 30, ExecutionSource.MCP));
+            }
+            assertFalse(result.success());
+            assertEquals(ExecutionStatus.EXECUTING, result.error().orElseThrow().phase());
+            assertEquals("Execution timed out", result.error().orElseThrow().message());
+            assertEquals(70005, result.error().orElseThrow().errorCode());
+            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 5_000,
+                    "query did not honor its wall-clock timeout");
+            assertTrue(closeCalls.get() > 0, "timeout did not force-close ignored cancellation");
+            assertEquals(1, jdbcTimeout.get());
+            var record = fixture.history.findExecution(executionId.toString()).orElseThrow();
+            assertEquals(ExecutionStatus.FAILED.name(), record.status());
+            assertNotNull(record.completedAt());
+            long terminalEvents = events.events(fixture.session.sessionId(), 0).stream()
+                    .filter(event -> List.of(ExecutionStatus.COMPLETED, ExecutionStatus.FAILED,
+                            ExecutionStatus.CANCELLED, ExecutionStatus.REJECTED).contains(event.status())).count();
+            assertEquals(1, terminalEvents);
+        }
+    }
+
+    @Test void permanentlyBlockedJdbcCleanupStillFinalizesTimeoutExactlyOnceWithinBound() throws Exception {
+        var never = new CountDownLatch(1);
+        var statement = (java.sql.Statement) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{java.sql.Statement.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "executeQuery", "cancel", "close" -> {
+                        awaitIgnoringInterrupts(never);
+                        yield null;
+                    }
+                    case "setQueryTimeout", "setMaxRows", "setFetchSize" -> null;
+                    default -> null;
+                });
+        var connection = (Connection) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{Connection.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "createStatement" -> statement;
+                    case "close" -> { awaitIgnoringInterrupts(never); yield null; }
+                    case "isClosed" -> false;
+                    default -> null;
+                });
+        DmConnectionFactory.ConnectionOpener opener = new DmConnectionFactory.ConnectionOpener() {
+            @Override public DmConnectionFactory.ManagedConnection open(UUID id) {
+                return new DmConnectionFactory.ManagedConnection(connection, () -> {}, "fp");
+            }
+            @Override public DmConnectionFactory.ConnectionLimits limits(UUID id) {
+                return new DmConnectionFactory.ConnectionLimits(10, 1_000, 1);
+            }
+        };
+        var fixture = historyFixture("permanent-query-cleanup-timeout");
+        var events = new ExecutionEventBus(20); var registry = new ExecutionRegistry();
+        UUID executionId = UUID.randomUUID();
+        var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                null, fixture.history, events, registry);
+        var baselineThreads = java.util.Set.copyOf(Thread.getAllStackTraces().keySet());
+        java.util.Set<Thread> ownedThreads = java.util.Set.of();
+        long started = System.nanoTime();
+        try (fixture.database) {
+            try {
+                QueryResult result = service.query(fixture.session, new QueryCommand(UUID.randomUUID(), executionId,
+                        "SELECT V FROM T", List.of(), 1, 100, 30, ExecutionSource.MCP));
+                assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 5_000,
+                        "final timeout finalization exceeded its bound");
+                assertFalse(result.success());
+                assertEquals(ExecutionStatus.EXECUTING, result.error().orElseThrow().phase());
+                assertEquals(70005, result.error().orElseThrow().errorCode());
+                assertTrue(result.error().orElseThrow().restartRequired());
+                var record = fixture.history.findExecution(executionId.toString()).orElseThrow();
+                assertEquals(ExecutionStatus.FAILED.name(), record.status());
+                assertNotNull(record.completedAt());
+                assertEquals(0, registry.activeCount());
+                ownedThreads = executionThreadsCreatedAfter(baselineThreads);
+                assertFalse(ownedThreads.isEmpty());
+                assertThrows(ExecutionCleanupTimeoutException.class, service::close);
+                assertThrows(ExecutionCleanupTimeoutException.class, service::close,
+                        "a repeated close must retain the fail-closed cleanup warning");
+            } finally {
+                never.countDown();
+            }
+            assertTrue(awaitTermination(ownedThreads), "abandoned query cleanup threads did not terminate after release");
+            assertEquals(1, events.events(fixture.session.sessionId(), 0).stream()
+                    .filter(event -> event.executionId().equals(executionId))
+                    .filter(event -> List.of(ExecutionStatus.COMPLETED, ExecutionStatus.FAILED,
+                            ExecutionStatus.CANCELLED, ExecutionStatus.REJECTED).contains(event.status())).count());
+        }
+    }
+
+    private static void awaitIgnoringInterrupts(CountDownLatch latch) {
+        while (true) try { latch.await(); return; }
+        catch (InterruptedException ignored) { }
+    }
+
+    private static java.util.Set<Thread> executionThreadsCreatedAfter(java.util.Set<Thread> baseline) {
+        return Thread.getAllStackTraces().keySet().stream().filter(thread -> !baseline.contains(thread))
+                .filter(thread -> thread.getName().startsWith("dm7-execution")
+                        || thread.getName().startsWith("dm7-jdbc-")
+                        || thread.getName().startsWith("dm7-cancellation-closer"))
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private static boolean awaitTermination(java.util.Set<Thread> threads) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        do {
+            if (threads.stream().noneMatch(Thread::isAlive)) return true;
+            Thread.onSpinWait();
+        } while (System.nanoTime() < deadline);
+        return false;
+    }
+
     @Test void connectionFailureIsPersistedWithSharedCorrelationAndTruePhase() throws Exception {
         var fixture = historyFixture("connect-failure");
         try (fixture.database) {
@@ -71,6 +225,47 @@ class ExecutionServiceQueryTest {
             assertEquals("unknown", record.connectionFingerprint());
             assertEquals("08001", record.sqlState());
         }
+    }
+
+    @Test void queuedQueryTimeoutPersistsTerminalFactsWithoutOpeningConnectionOrLeakingRegistryEntry() throws Exception {
+        UUID blockingProfile = UUID.randomUUID(), queuedProfile = UUID.randomUUID(), queuedExecution = UUID.randomUUID();
+        var firstEntered = new CountDownLatch(1); var releaseFirst = new CountDownLatch(1);
+        var queuedOpens = new AtomicInteger();
+        DmConnectionFactory.ConnectionOpener opener = new DmConnectionFactory.ConnectionOpener() {
+            @Override public DmConnectionFactory.ManagedConnection open(UUID id) throws java.sql.SQLException {
+                if (id.equals(blockingProfile)) {
+                    firstEntered.countDown();
+                    try { releaseFirst.await(); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                } else queuedOpens.incrementAndGet();
+                return new DmConnectionFactory.ManagedConnection(
+                        TestJdbc.connection(TestJdbc.statement(List.of(List.of(1)), List.of("V"))), () -> {}, "fp");
+            }
+            @Override public DmConnectionFactory.ConnectionLimits limits(UUID id) {
+                return new DmConnectionFactory.ConnectionLimits(10, 1_000, id.equals(queuedProfile) ? 1 : 30);
+            }
+        };
+        var fixture = historyFixture("queued-timeout"); var events = new ExecutionEventBus(20);
+        var registry = new ExecutionRegistry();
+        try (fixture.database; var service = new ExecutionService(opener, new DmSqlParser(), new SqlSecurityPolicy(),
+                null, fixture.history, events, registry, 1, 4)) {
+            var first = CompletableFuture.supplyAsync(() -> service.query(fixture.session,
+                    new QueryCommand(blockingProfile, "SELECT V FROM T", 1, 100, 30)));
+            assertTrue(firstEntered.await(2, TimeUnit.SECONDS));
+            QueryResult queued = service.query(fixture.session, new QueryCommand(queuedProfile, queuedExecution,
+                    "SELECT V FROM T", List.of(), 1, 100, 30, ExecutionSource.MCP));
+            assertFalse(queued.success()); assertEquals(70005, queued.error().orElseThrow().errorCode());
+            assertEquals(ExecutionStatus.QUEUED, queued.error().orElseThrow().phase());
+            assertEquals(0, queuedOpens.get());
+            var record = fixture.history.findExecution(queuedExecution.toString()).orElseThrow();
+            assertEquals(ExecutionStatus.FAILED.name(), record.status()); assertNotNull(record.completedAt());
+            long terminal = events.events(fixture.session.sessionId(), 0).stream()
+                    .filter(event -> event.executionId().equals(queuedExecution))
+                    .filter(event -> List.of(ExecutionStatus.FAILED, ExecutionStatus.CANCELLED,
+                            ExecutionStatus.COMPLETED, ExecutionStatus.REJECTED).contains(event.status())).count();
+            assertEquals(1, terminal);
+            releaseFirst.countDown(); assertTrue(first.join().success());
+        } finally { releaseFirst.countDown(); }
+        assertEquals(0, registry.activeCount());
     }
 
     @Test void oneByteBlobWithMaximumBudgetDoesNotRequireBudgetSizedOutput() throws Exception {

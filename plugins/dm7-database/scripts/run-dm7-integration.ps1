@@ -39,30 +39,28 @@ try {
   $mavenOutput = (& $maven @mavenArguments 2>&1 | Out-String)
   $mavenExitCode = $LASTEXITCODE
 
-  $scanRoots = @(
-    (Join-Path $serverRoot 'target'), (Join-Path $serverRoot 'src'),
-    (Join-Path $pluginRoot 'lib'), (Join-Path $pluginRoot 'assets'), (Join-Path $pluginRoot 'hooks'),
-    (Join-Path $pluginRoot 'docs'), (Join-Path $pluginRoot 'licenses'), (Join-Path $pluginRoot 'scripts'),
-    (Join-Path $pluginRoot 'skills'), (Join-Path $pluginRoot 'web\src'), (Join-Path $pluginRoot 'web\dist'),
-    (Join-Path $pluginRoot 'web\test-results'), (Join-Path $repoRoot 'artifacts'), (Join-Path $repoRoot 'dist'),
-    (Join-Path $repoRoot '.superpowers\sdd')
-  ) | Where-Object { Test-Path -LiteralPath $_ }
-  foreach ($root in $scanRoots) {
-    python (Join-Path $PSScriptRoot 'verify-package-security.py') $root | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'An integration environment value was persisted to an artifact' }
-  }
-  Assert-NoExactValuesInText ((git -C $repoRoot diff --binary HEAD | Out-String)) $values
-  Assert-NoExactValuesInText ((git -C $repoRoot diff --cached --binary | Out-String)) $values
+  $securityFailure = $false
+  python (Join-Path $PSScriptRoot 'sanitize-test-reports.py') (Join-Path $serverRoot 'target') | Out-Null
+  if ($LASTEXITCODE -ne 0) { $securityFailure = $true }
+  python (Join-Path $PSScriptRoot 'verify-worktree-security.py') $repoRoot | Out-Null
+  if ($LASTEXITCODE -ne 0) { $securityFailure = $true }
+  try { Assert-NoExactValuesInText ((git -C $repoRoot diff --binary HEAD | Out-String)) $values }
+  catch { $securityFailure = $true }
+  try { Assert-NoExactValuesInText ((git -C $repoRoot diff --cached --binary | Out-String)) $values }
+  catch { $securityFailure = $true }
   $indexRoot = Join-Path $serverRoot "target\staged-index-$([Guid]::NewGuid().ToString('N'))"
   try {
     New-Item -ItemType Directory -Force -Path $indexRoot | Out-Null
     $prefix = $indexRoot + [IO.Path]::DirectorySeparatorChar
     git -C $repoRoot checkout-index --all "--prefix=$prefix" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Staged blob materialization failed' }
-    python (Join-Path $PSScriptRoot 'verify-package-security.py') $indexRoot | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'A staged blob contains an integration environment value' }
+    if ($LASTEXITCODE -ne 0) { $securityFailure = $true }
+    else {
+      python (Join-Path $PSScriptRoot 'verify-package-security.py') $indexRoot --per-archive | Out-Null
+      if ($LASTEXITCODE -ne 0) { $securityFailure = $true }
+    }
   } finally { if (Test-Path -LiteralPath $indexRoot) { Remove-Item -LiteralPath $indexRoot -Recurse -Force } }
 
+  if ($securityFailure) { throw 'DM7 integration security verification failed' }
   if ($mavenExitCode -ne 0) { throw 'DM7 integration profile failed; inspect sanitized local test diagnostics' }
   if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw 'Sanitized integration candidate was not produced' }
   if (Test-Path -LiteralPath $cleanupManifest) { throw 'Cleanup manifest remained after independent verification' }

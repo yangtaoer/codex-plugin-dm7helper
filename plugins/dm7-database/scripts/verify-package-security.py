@@ -78,28 +78,44 @@ def scan_archive(data: bytes, patterns: tuple[bytes, ...], budget: Budget, depth
         raise ScanFailure("Package archive safety limit exceeded") from error
 
 
-def scan_root(root: Path) -> None:
+def scan_plain(path: Path, patterns: tuple[bytes, ...]) -> None:
+    overlap = max((len(pattern) for pattern in patterns), default=1) - 1
+    tail = b""
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            assert_secret_free(tail + chunk, patterns)
+            tail = (tail + chunk)[-overlap:] if overlap else b""
+
+
+def scan_root(root: Path, per_archive: bool = False) -> None:
     if not root.is_dir():
         raise ScanFailure("Package scan root is invalid")
     patterns = secret_patterns()
     budget = Budget()
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         size = path.stat().st_size
-        budget.charge(size)
-        if size > MAX_ENTRY_BYTES:
-            raise ScanFailure("Package archive safety limit exceeded")
-        data = path.read_bytes()
-        assert_secret_free(data, patterns)
-        if is_archive(data):
-            scan_archive(data, patterns, budget, 1)
+        if per_archive:
+            scan_plain(path, patterns)
+            if zipfile.is_zipfile(path):
+                if size > MAX_ENTRY_BYTES:
+                    raise ScanFailure("Package archive safety limit exceeded")
+                scan_archive(path.read_bytes(), patterns, Budget(), 1)
+        else:
+            budget.charge(size)
+            if size > MAX_ENTRY_BYTES:
+                raise ScanFailure("Package archive safety limit exceeded")
+            data = path.read_bytes()
+            assert_secret_free(data, patterns)
+            if is_archive(data):
+                scan_archive(data, patterns, budget, 1)
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("Usage: verify-package-security.py <root>", file=sys.stderr)
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--per-archive"):
+        print("Usage: verify-package-security.py <root> [--per-archive]", file=sys.stderr)
         return 2
     try:
-        scan_root(Path(sys.argv[1]))
+        scan_root(Path(sys.argv[1]), len(sys.argv) == 3)
     except ScanFailure as error:
         print(str(error), file=sys.stderr)
         return 1

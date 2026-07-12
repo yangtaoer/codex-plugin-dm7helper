@@ -7,44 +7,48 @@
   "cases" : [ {
     "name" : "url-diagnostics-and-connection",
     "passed" : true,
-    "durationMs" : 7
+    "durationMs" : 9
   }, {
     "name" : "driver-isolation-and-versions",
     "passed" : true,
-    "durationMs" : 299
+    "durationMs" : 353
   }, {
     "name" : "chinese-round-trip-and-metadata",
     "passed" : true,
-    "durationMs" : 1349
+    "durationMs" : 1446
   }, {
     "name" : "parameterized-update-delete",
     "passed" : true,
-    "durationMs" : 1689
+    "durationMs" : 1659
   }, {
     "name" : "limits-and-timeouts",
     "passed" : true,
-    "durationMs" : 920
+    "durationMs" : 953
   }, {
     "name" : "atomic-ddl-preflight",
     "passed" : true,
-    "durationMs" : 329
+    "durationMs" : 362
   }, {
     "name" : "non-atomic-mixed-failure",
     "passed" : true,
-    "durationMs" : 877
+    "durationMs" : 639
+  }, {
+    "name" : "production-query-timeout",
+    "passed" : true,
+    "durationMs" : 3143
   }, {
     "name" : "cancellation-capability",
     "passed" : true,
-    "durationMs" : 12252,
+    "durationMs" : 6189,
     "supported" : false
   }, {
     "name" : "test-purpose-release-exclusion",
     "passed" : true,
-    "durationMs" : 1362
+    "durationMs" : 1452
   }, {
     "name" : "cleanup-and-zero-release",
     "passed" : true,
-    "durationMs" : 437
+    "durationMs" : 418
   } ],
   "cleanupConfirmed" : true
 }

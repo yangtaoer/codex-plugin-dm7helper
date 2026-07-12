@@ -88,6 +88,7 @@
         <configuration>
           <excludes><exclude>**/integration/**</exclude></excludes>
           <redirectTestOutputToFile>true</redirectTestOutputToFile>
+          <enablePropertiesElement>false</enablePropertiesElement>
           <systemPropertyVariables><java.util.logging.SimpleFormatter.format>%5$s%n</java.util.logging.SimpleFormatter.format></systemPropertyVariables>
         </configuration>
       </plugin>
@@ -198,6 +199,7 @@
               </includes>
               <runOrder>alphabetical</runOrder>
               <redirectTestOutputToFile>true</redirectTestOutputToFile>
+              <enablePropertiesElement>false</enablePropertiesElement>
               <summaryFile>${project.build.directory}/failsafe-reports/failsafe-summary.xml</summaryFile>
             </configuration>
             <executions><execution><goals><goal>integration-test</goal><goal>verify</goal></goals></execution></executions>
