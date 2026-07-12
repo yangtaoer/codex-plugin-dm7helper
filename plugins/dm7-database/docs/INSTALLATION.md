@@ -3,7 +3,7 @@
 ## Requirements
 
 - Codex Desktop on Windows
-- Java 17 or newer on `PATH` or in `JAVA_HOME`
+- Java 17 or newer on `PATH`, in `JAVA_HOME`, or selected with `DM7_CODEX_JAVA`
 - A vendor-supplied DM7 JDBC driver JAR (BYO-driver)
 
 Extract the release ZIP without changing its top-level `dm7-database` directory, then add that directory to a personal Codex marketplace. Do not copy source folders, `node_modules`, or Maven output into the installed plugin.
@@ -13,6 +13,8 @@ For this repository marketplace, run `codex plugin marketplace add <repo-root>`,
 Open the console with `dm7_open_console`, create a connection, and choose the driver using the local file picker. Use a URL such as `jdbc:dm7://db.example.invalid:5236?dbname=<database>&schema=<schema>`; `dbname=` chooses the database and `schema=` chooses the initial schema. Enter `<username>` and the password only in the console. Test, save, and optionally mark the connection as default.
 
 The driver path and encrypted credential state are local to the current user and are never included when the plugin is shared.
+
+The bundled Windows MCP launcher validates the Java major version before starting the server. If multiple Java installations exist, set `DM7_CODEX_JAVA` to the full `java.exe` path (or `DM7_CODEX_JAVA_HOME` to its JDK/JRE directory); an incompatible legacy `JAVA_HOME` is skipped when a Java 17+ executable is available later on `PATH`.
 
 ## Runtime storage
 

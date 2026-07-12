@@ -1,12 +1,14 @@
 {
   "mcpServers": {
     "dm7": {
-      "command": "java",
+      "command": "powershell.exe",
       "args": [
-        "-Dfile.encoding=UTF-8",
-        "-jar",
-        "${PLUGIN_ROOT}/lib/dm7-codex-plugin.jar",
-        "--stdio"
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${PLUGIN_ROOT}/scripts/launch-mcp.ps1"
       ]
     }
   }

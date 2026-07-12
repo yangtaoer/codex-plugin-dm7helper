@@ -15,7 +15,8 @@ class PluginLayoutTest(unittest.TestCase):
         self.assertEqual("dm7-database", manifest["name"])
         self.assertRegex(manifest["version"], r"^0\.1\.0(?:\+codex\.[0-9A-Za-z.-]+)?$")
         self.assertEqual("./.mcp.json", manifest["mcpServers"])
-        self.assertEqual("java", mcp["mcpServers"]["dm7"]["command"])
+        self.assertEqual("powershell.exe", mcp["mcpServers"]["dm7"]["command"])
+        self.assertIn("${PLUGIN_ROOT}/scripts/launch-mcp.ps1", mcp["mcpServers"]["dm7"]["args"])
         self.assertEqual("dm7-database", market["plugins"][0]["name"])
         self.assertEqual("./plugins/dm7-database", market["plugins"][0]["source"]["path"])
         self.assertEqual("AVAILABLE", market["plugins"][0]["policy"]["installation"])
@@ -23,7 +24,7 @@ class PluginLayoutTest(unittest.TestCase):
         self.assertEqual(manifest["interface"]["category"], market["plugins"][0]["category"])
         self.assertEqual("pnpm@11.7.0", package["packageManager"])
         self.assertTrue((PLUGIN / "web" / "pnpm-lock.yaml").is_file())
-        for relative in [".mcp.json", "skills/dm7-database/SKILL.md", "assets/icon.svg", "server/pom.xml", "web/package.json"]:
+        for relative in [".mcp.json", "scripts/launch-mcp.ps1", "skills/dm7-database/SKILL.md", "assets/icon.svg", "server/pom.xml", "web/package.json"]:
             self.assertTrue((PLUGIN / relative).is_file(), relative)
         for field in ["composerIcon", "logo", "logoDark"]:
             self.assertTrue((PLUGIN / manifest["interface"][field]).is_file(), field)

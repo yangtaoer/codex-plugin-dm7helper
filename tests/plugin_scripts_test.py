@@ -140,6 +140,41 @@ class PluginScriptsTest(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertIn('-File "${PLUGIN_ROOT}/hooks/session-context.ps1"', command)
 
+    def test_mcp_launcher_selects_java_17_and_preserves_protocol_stdout(self):
+        java = Path(r"C:\tool\jdk21\bin\java.exe")
+        if not java.is_file():
+            self.skipTest("JDK 21 test runtime is unavailable")
+        with tempfile.TemporaryDirectory(prefix="dm7 launcher ") as temporary:
+            root = Path(temporary) / "plugin root with spaces"
+            (root / "scripts").mkdir(parents=True)
+            (root / "lib").mkdir()
+            shutil.copy2(PLUGIN / "scripts" / "launch-mcp.ps1", root / "scripts")
+            shutil.copy2(PLUGIN / "lib" / "dm7-codex-plugin.jar", root / "lib")
+            mcp = json.loads((PLUGIN / ".mcp.json").read_text("utf-8"))["mcpServers"]["dm7"]
+            arguments = [item.replace("${PLUGIN_ROOT}", root.as_posix()) for item in mcp["args"]]
+            environment = self.clean_environment()
+            environment["DM7_CODEX_JAVA"] = str(java)
+            environment["JAVA_HOME"] = str(Path(temporary) / "invalid-old-java")
+            environment["PLUGIN_DATA"] = str(Path(temporary) / "plugin data")
+            environment["CODEX_THREAD_ID"] = "launcher-thread"
+            initialize = json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": {"name": "launcher-test", "version": "1"},
+                },
+            }) + "\n"
+
+            result = subprocess.run(
+                [mcp["command"], *arguments], cwd=root, env=environment,
+                input=initialize, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=60,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            frames = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual([1], [frame.get("id") for frame in frames])
+            self.assertNotIn("version", result.stderr.lower())
+
     def make_fake_command(self, directory: Path, name: str) -> None:
         (directory / f"{name}.cmd").write_text(
             "@echo off\r\n"
