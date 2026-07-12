@@ -1,5 +1,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
 
 $diagnosticFile = $env:DM7_MCP_DIAGNOSTIC_FILE
 if (-not $diagnosticFile) {

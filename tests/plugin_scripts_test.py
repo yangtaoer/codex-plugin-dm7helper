@@ -151,7 +151,7 @@ class PluginScriptsTest(unittest.TestCase):
             shutil.copy2(PLUGIN / "scripts" / "launch-mcp.ps1", root / "scripts")
             shutil.copy2(PLUGIN / "lib" / "dm7-codex-plugin.jar", root / "lib")
             mcp = json.loads((PLUGIN / ".mcp.json").read_text("utf-8"))["mcpServers"]["dm7"]
-            arguments = [item.replace("${PLUGIN_ROOT}", root.as_posix()) for item in mcp["args"]]
+            arguments = list(mcp["args"])
             environment = self.clean_environment()
             environment.pop("DM7_CODEX_JAVA", None)
             environment["DM7_CODEX_JAVA_SEARCH_ROOTS"] = str(java.parents[2])

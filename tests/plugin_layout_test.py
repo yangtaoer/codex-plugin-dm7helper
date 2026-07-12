@@ -19,7 +19,7 @@ class PluginLayoutTest(unittest.TestCase):
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
             mcp["mcpServers"]["dm7"]["command"],
         )
-        self.assertIn("${PLUGIN_ROOT}/scripts/launch-mcp.ps1", mcp["mcpServers"]["dm7"]["args"])
+        self.assertIn("./scripts/launch-mcp.ps1", mcp["mcpServers"]["dm7"]["args"])
         self.assertEqual("dm7-database", market["plugins"][0]["name"])
         self.assertEqual("./plugins/dm7-database", market["plugins"][0]["source"]["path"])
         self.assertEqual("AVAILABLE", market["plugins"][0]["policy"]["installation"])

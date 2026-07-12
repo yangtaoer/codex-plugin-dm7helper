@@ -8,7 +8,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-File",
-        "${PLUGIN_ROOT}/scripts/launch-mcp.ps1"
+        "./scripts/launch-mcp.ps1"
       ]
     }
   }
