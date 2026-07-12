@@ -162,7 +162,7 @@ class PluginScriptsTest(unittest.TestCase):
             environment["JAVA_HOME"] = str(Path(temporary) / "invalid-old-java")
             environment["PLUGIN_DATA"] = str(Path(temporary) / "plugin data")
             environment["CODEX_THREAD_ID"] = "launcher-thread"
-            environment["PLUGIN_ROOT"] = str(root)
+            environment.pop("PLUGIN_ROOT", None)
             diagnostic = Path(temporary) / "launcher-status.log"
             environment["DM7_MCP_DIAGNOSTIC_FILE"] = str(diagnostic)
             initialize = json.dumps({
