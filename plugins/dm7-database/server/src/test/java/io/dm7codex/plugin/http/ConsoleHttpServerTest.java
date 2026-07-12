@@ -41,6 +41,21 @@ class ConsoleHttpServerTest {
 
     @AfterEach void close() { server.close(); }
 
+    @Test void browserNavigationRedeemsOneTimeConsoleUrl() throws Exception {
+        var state = new SessionState("internal-browser", "external-browser", 1, null,
+                Path.of("active-browser.sql"), Instant.now());
+        URI redeem = URI.create((String) server.open(state).get("url"));
+        String path = redeem.getRawPath() + "?" + redeem.getRawQuery();
+
+        var first = request("GET", path, null, null, null);
+
+        assertEquals(303, first.statusCode());
+        assertEquals("/app/", first.headers().firstValue("Location").orElseThrow());
+        assertTrue(first.headers().firstValue("Set-Cookie").orElseThrow().contains("HttpOnly"));
+        assertEquals("no-referrer", first.headers().firstValue("Referrer-Policy").orElseThrow());
+        assertEquals(401, request("GET", path, null, null, null).statusCode());
+    }
+
     @Test void enforcesHostOriginCookieHeadersMethodsMediaAndBounds() throws Exception {
         assertEquals(401, request("GET", "/api/runtime", null, null, null).statusCode());
         assertEquals(403, raw("POST", "/api/query", "{}", cookie, "http://evil.test", null).statusCode());

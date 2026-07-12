@@ -119,7 +119,7 @@ public final class ConsoleHttpServer implements AutoCloseable {
     }
 
     private void redeem(HttpExchange x) throws IOException, JsonHttp.HttpProblem {
-        method(x,"POST"); Map<String,String> query=query(x.getRequestURI().getRawQuery());
+        allow(x,"GET","POST"); Map<String,String> query=query(x.getRequestURI().getRawQuery());
         if(query.size()!=1 || !query.containsKey("token")) throw new JsonHttp.HttpProblem(400,"INVALID_TOKEN","控制台令牌无效。");
         String sessionId=tokens.consume(query.get("token")).orElseThrow(() -> new JsonHttp.HttpProblem(401,"INVALID_TOKEN","控制台令牌无效。"));
         synchronized(sessionStates){ if(!sessionStates.containsKey(sessionId)) throw new JsonHttp.HttpProblem(401,"INVALID_TOKEN","控制台令牌无效。"); }
