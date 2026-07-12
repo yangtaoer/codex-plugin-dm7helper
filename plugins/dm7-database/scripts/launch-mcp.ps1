@@ -16,6 +16,33 @@ try {
   Get-Command java.exe -All -ErrorAction Stop | ForEach-Object { $candidates.Add($_.Source) }
 } catch { }
 
+$searchRoots = [System.Collections.Generic.List[string]]::new()
+if ($env:DM7_CODEX_JAVA_SEARCH_ROOTS) {
+  $env:DM7_CODEX_JAVA_SEARCH_ROOTS -split [IO.Path]::PathSeparator | ForEach-Object {
+    if ($_) { $searchRoots.Add($_) }
+  }
+}
+if ($env:ProgramFiles) {
+  $searchRoots.Add((Join-Path $env:ProgramFiles 'Java'))
+  $searchRoots.Add((Join-Path $env:ProgramFiles 'Eclipse Adoptium'))
+  $searchRoots.Add((Join-Path $env:ProgramFiles 'Microsoft'))
+}
+$searchRoots.Add('C:\tool')
+foreach ($root in $searchRoots) {
+  if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+  Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    $candidates.Add((Join-Path $_.FullName 'bin\java.exe'))
+  }
+}
+
+foreach ($registryRoot in @('HKLM:\SOFTWARE\JavaSoft\JDK', 'HKLM:\SOFTWARE\JavaSoft\Java Development Kit')) {
+  if (-not (Test-Path $registryRoot)) { continue }
+  Get-ChildItem $registryRoot -ErrorAction SilentlyContinue | ForEach-Object {
+    $javaHomeCandidate = (Get-ItemProperty $_.PSPath -Name JavaHome -ErrorAction SilentlyContinue).JavaHome
+    if ($javaHomeCandidate) { $candidates.Add((Join-Path $javaHomeCandidate 'bin\java.exe')) }
+  }
+}
+
 $selected = $null
 $seen = @{}
 foreach ($candidate in $candidates) {

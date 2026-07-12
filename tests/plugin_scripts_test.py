@@ -153,7 +153,8 @@ class PluginScriptsTest(unittest.TestCase):
             mcp = json.loads((PLUGIN / ".mcp.json").read_text("utf-8"))["mcpServers"]["dm7"]
             arguments = [item.replace("${PLUGIN_ROOT}", root.as_posix()) for item in mcp["args"]]
             environment = self.clean_environment()
-            environment["DM7_CODEX_JAVA"] = str(java)
+            environment.pop("DM7_CODEX_JAVA", None)
+            environment["DM7_CODEX_JAVA_SEARCH_ROOTS"] = str(java.parents[2])
             environment["JAVA_HOME"] = str(Path(temporary) / "invalid-old-java")
             environment["PLUGIN_DATA"] = str(Path(temporary) / "plugin data")
             environment["CODEX_THREAD_ID"] = "launcher-thread"

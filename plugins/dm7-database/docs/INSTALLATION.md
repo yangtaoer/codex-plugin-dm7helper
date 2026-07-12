@@ -14,7 +14,7 @@ Open the console with `dm7_open_console`, create a connection, and choose the dr
 
 The driver path and encrypted credential state are local to the current user and are never included when the plugin is shared.
 
-The bundled Windows MCP launcher validates the Java major version before starting the server. If multiple Java installations exist, set `DM7_CODEX_JAVA` to the full `java.exe` path (or `DM7_CODEX_JAVA_HOME` to its JDK/JRE directory); an incompatible legacy `JAVA_HOME` is skipped when a Java 17+ executable is available later on `PATH`.
+The bundled Windows MCP launcher validates the Java major version before starting the server. It checks explicit overrides, `JAVA_HOME`, `PATH`, common JDK installation roots, and the Windows Java registry. If multiple Java installations exist, set `DM7_CODEX_JAVA` to the full `java.exe` path (or `DM7_CODEX_JAVA_HOME` to its JDK/JRE directory); an incompatible legacy Java is skipped when a Java 17+ runtime is available.
 
 ## Runtime storage
 
