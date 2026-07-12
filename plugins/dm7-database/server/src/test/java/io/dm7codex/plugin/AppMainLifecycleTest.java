@@ -3,6 +3,7 @@ package io.dm7codex.plugin;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -49,6 +50,17 @@ class AppMainLifecycleTest {
             var content=(Map<?,?>)result.structuredContent();
             assertTrue(((String)content.get("url")).contains("/console/redeem?token="));
         }
+    }
+
+    @Test void startupDiagnosticsExposeOnlyBoundedExceptionKinds() {
+        var sensitive = new IOException("password=never-print-this",
+                new IllegalStateException("jdbc:dm7://private-host"));
+
+        var diagnostic = AppMain.safeFailureKinds(sensitive);
+
+        assertEquals("IOException -> IllegalStateException", diagnostic);
+        assertFalse(diagnostic.contains("password"));
+        assertFalse(diagnostic.contains("jdbc"));
     }
 
     private Map<String, String> environment(String name) {

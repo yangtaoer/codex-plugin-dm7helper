@@ -42,8 +42,24 @@ public final class AppMain {
             runStdio(System.getenv(), System.in, System.out);
         } catch (Throwable startupFailure) {
             System.err.println("DM7 MCP server could not start safely.");
+            System.err.println("Failure kinds: " + safeFailureKinds(startupFailure));
             System.exit(1);
         }
+    }
+
+    static String safeFailureKinds(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        var kinds = new StringBuilder();
+        Throwable current = failure;
+        for (int depth = 0; current != null && depth < 6; depth++) {
+            if (depth > 0) kinds.append(" -> ");
+            String kind = current.getClass().getSimpleName();
+            kinds.append(kind.isBlank() ? "Throwable" : kind);
+            Throwable next = current.getCause();
+            if (next == current) break;
+            current = next;
+        }
+        return kinds.toString();
     }
 
     static void runStdio(Map<String, String> environment, InputStream stdin, java.io.OutputStream stdout)
