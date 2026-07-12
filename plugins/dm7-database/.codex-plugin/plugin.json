@@ -1,6 +1,6 @@
 {
   "name": "dm7-database",
-  "version": "0.1.0",
+  "version": "0.1.0+codex.20260712012614",
   "description": "Operate Dameng 7 safely from Codex with a local SQL console and release logs.",
   "author": {
     "name": "DM7 Codex Plugin Contributors"

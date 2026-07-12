@@ -323,13 +323,17 @@ def main() -> None:
         assert not numeric_active[0].read_bytes().startswith(b"\xef\xbb\xbf")
         assert "version: v001" in numeric_active[0].read_text(encoding="utf-8")
 
-        failed_env = os.environ.copy()
-        failed_env.pop("PLUGIN_DATA", None)
-        failed = subprocess.run(
+        fallback_env = os.environ.copy()
+        fallback_env.pop("PLUGIN_DATA", None)
+        fallback_env["CODEX_HOME"] = str(data / "codex home")
+        fallback_env["CODEX_THREAD_ID"] = "fallback-thread"
+        fallback = subprocess.run(
             [JAVA, "-Dfile.encoding=UTF-8", "-jar", str(JAR), "--stdio"],
-            cwd=PLUGIN_ROOT, env=failed_env, input="", capture_output=True,
+            cwd=PLUGIN_ROOT, env=fallback_env, input="", capture_output=True,
             text=True, encoding="utf-8", errors="replace", timeout=30)
-        assert failed.returncode != 0 and failed.stdout == ""
+        assert fallback.returncode == 0 and fallback.stdout == "" and fallback.stderr == ""
+        fallback_sessions = list((data / "codex home" / "plugin-data" / "dm7-database" / "sessions").glob("*/active.sql"))
+        assert len(fallback_sessions) == 0
 
     print("MCP STDIO smoke passed")
 

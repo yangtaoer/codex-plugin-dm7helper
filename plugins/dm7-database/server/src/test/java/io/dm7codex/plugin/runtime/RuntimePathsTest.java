@@ -1,7 +1,6 @@
 package io.dm7codex.plugin.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -15,12 +14,28 @@ class RuntimePathsTest {
     Path tempDir;
 
     @Test
-    void missingPluginDataFailsClosedOutsideTests() {
+    void missingPluginDataUsesPrivateCodexHomeFallback() {
         var pluginRoot = tempDir.resolve("read-only-plugin");
+        var codexHome = tempDir.resolve("codex home");
 
-        assertThrows(
-                IllegalStateException.class,
-                () -> RuntimePaths.fromEnvironment(Map.of(), pluginRoot));
+        var paths = RuntimePaths.fromEnvironment(
+                Map.of("CODEX_HOME", codexHome.toString()), pluginRoot);
+
+        assertEquals(codexHome.resolve("plugin-data/dm7-database").toAbsolutePath().normalize(),
+                paths.pluginData());
+        assertTrue(paths.stateDatabase().startsWith(paths.pluginData()));
+    }
+
+    @Test
+    void missingPluginDataAndCodexHomeUsesUserHomeFallback() {
+        var pluginRoot = tempDir.resolve("read-only-plugin");
+        var userHome = tempDir.resolve("user home");
+
+        var paths = RuntimePaths.fromEnvironment(
+                Map.of("USERPROFILE", userHome.toString()), pluginRoot);
+
+        assertEquals(userHome.resolve(".codex/plugin-data/dm7-database").toAbsolutePath().normalize(),
+                paths.pluginData());
     }
 
     @Test

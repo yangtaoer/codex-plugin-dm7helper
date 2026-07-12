@@ -13,7 +13,7 @@ class PluginLayoutTest(unittest.TestCase):
         mcp = json.loads((PLUGIN / ".mcp.json").read_text("utf-8"))
         package = json.loads((PLUGIN / "web" / "package.json").read_text("utf-8"))
         self.assertEqual("dm7-database", manifest["name"])
-        self.assertEqual("0.1.0", manifest["version"])
+        self.assertRegex(manifest["version"], r"^0\.1\.0(?:\+codex\.[0-9A-Za-z.-]+)?$")
         self.assertEqual("./.mcp.json", manifest["mcpServers"])
         self.assertEqual("java", mcp["mcpServers"]["dm7"]["command"])
         self.assertEqual("dm7-database", market["plugins"][0]["name"])
