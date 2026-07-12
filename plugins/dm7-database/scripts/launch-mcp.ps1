@@ -1,9 +1,21 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$diagnosticFile = $env:DM7_MCP_DIAGNOSTIC_FILE
+if (-not $diagnosticFile) {
+  try { $diagnosticFile = Join-Path ([IO.Path]::GetTempPath()) 'dm7-mcp-launcher-status.log' }
+  catch { $diagnosticFile = $null }
+}
+function Write-LaunchStatus([string]$status) {
+  if (-not $diagnosticFile) { return }
+  try { [IO.File]::WriteAllText($diagnosticFile, $status + "`n", [Text.UTF8Encoding]::new($false)) }
+  catch { }
+}
+
 $pluginRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $jar = Join-Path $pluginRoot 'lib\dm7-codex-plugin.jar'
 if (-not (Test-Path -LiteralPath $jar -PathType Leaf)) {
+  Write-LaunchStatus 'JAR_MISSING'
   [Console]::Error.WriteLine('DM7 MCP runtime JAR is missing.')
   exit 2
 }
@@ -74,10 +86,13 @@ foreach ($candidate in $candidates) {
 }
 
 if (-not $selected) {
+  Write-LaunchStatus 'JAVA_17_NOT_FOUND'
   [Console]::Error.WriteLine('DM7 MCP requires Java 17 or newer. Set DM7_CODEX_JAVA or update PATH.')
   exit 3
 }
 
 $env:PLUGIN_ROOT = $pluginRoot
+Write-LaunchStatus 'JAVA_SELECTED_AND_STARTING'
 & $selected '-Dfile.encoding=UTF-8' '-jar' $jar '--stdio'
+Write-LaunchStatus ("JAVA_EXIT_" + $LASTEXITCODE)
 exit $LASTEXITCODE

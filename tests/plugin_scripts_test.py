@@ -158,6 +158,8 @@ class PluginScriptsTest(unittest.TestCase):
             environment["JAVA_HOME"] = str(Path(temporary) / "invalid-old-java")
             environment["PLUGIN_DATA"] = str(Path(temporary) / "plugin data")
             environment["CODEX_THREAD_ID"] = "launcher-thread"
+            diagnostic = Path(temporary) / "launcher-status.log"
+            environment["DM7_MCP_DIAGNOSTIC_FILE"] = str(diagnostic)
             initialize = json.dumps({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
                     "protocolVersion": "2025-06-18", "capabilities": {},
@@ -175,6 +177,7 @@ class PluginScriptsTest(unittest.TestCase):
             frames = [json.loads(line) for line in result.stdout.splitlines()]
             self.assertEqual([1], [frame.get("id") for frame in frames])
             self.assertNotIn("version", result.stderr.lower())
+            self.assertEqual("JAVA_EXIT_0", diagnostic.read_text("utf-8").strip())
 
     def make_fake_command(self, directory: Path, name: str) -> None:
         (directory / f"{name}.cmd").write_text(
