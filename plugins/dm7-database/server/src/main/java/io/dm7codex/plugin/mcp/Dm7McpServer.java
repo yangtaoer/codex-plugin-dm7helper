@@ -72,6 +72,7 @@ public final class Dm7McpServer {
                 var enriched = new LinkedHashMap<String, Object>(output);
                 enriched.put("sessionIdentitySource", identity.source());
                 enriched.put("sessionIsolation", identity.isolation());
+                enriched.put("mcpProcessId", ProcessHandle.current().pid());
                 output = enriched;
             }
             boolean failed = Boolean.FALSE.equals(output.get("success")) || Boolean.FALSE.equals(output.get("ok"));

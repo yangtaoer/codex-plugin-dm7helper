@@ -144,6 +144,18 @@ class Dm7McpServerTest {
     }
 
     @Test
+    void releaseLogIncludesSafeRuntimeEvidence() {
+        var result = server(new ArrayList<>()).call("dm7_get_release_log", Map.of());
+
+        assertEquals(false, result.isError());
+        @SuppressWarnings("unchecked") var structured = (Map<String, Object>) result.structuredContent();
+        assertEquals("codex_thread", structured.get("sessionIdentitySource"));
+        assertEquals("verified", structured.get("sessionIsolation"));
+        assertInstanceOf(Long.class, structured.get("mcpProcessId"));
+        assertTrue((Long) structured.get("mcpProcessId") > 0);
+    }
+
+    @Test
     void executionFailuresPreserveSafeErrorIdentityAndStatementDetails() {
         var state = new SessionState("session-1", "hash", 1, "unbound",
                 Path.of("active.sql").toAbsolutePath(), Instant.EPOCH);
