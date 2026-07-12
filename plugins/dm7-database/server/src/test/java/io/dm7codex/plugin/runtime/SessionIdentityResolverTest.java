@@ -26,4 +26,24 @@ class SessionIdentityResolverTest {
         assertEquals("process_uuid", first.source());
         assertEquals("process_fallback", first.isolation());
     }
+
+    @Test
+    void nestedMcpMetadataProvidesVerifiedThreadIdentity() {
+        var identity = SessionIdentityResolver.resolve(Map.of(), Map.of(
+                "openai", Map.of("thread_id", "019f5486-cd45-77b2-ba7d-9df2619fb30b")));
+
+        assertEquals("019f5486-cd45-77b2-ba7d-9df2619fb30b", identity.externalId());
+        assertEquals("mcp_request_meta", identity.source());
+        assertEquals("verified", identity.isolation());
+    }
+
+    @Test
+    void unrelatedMetadataCannotOverrideProcessFallback() {
+        var identity = SessionIdentityResolver.resolve(Map.of(), Map.of(
+                "progressToken", "019f5486-cd45-77b2-ba7d-9df2619fb30b",
+                "thread_id", "unsafe value with spaces"));
+
+        assertEquals("process_uuid", identity.source());
+        assertEquals("process_fallback", identity.isolation());
+    }
 }

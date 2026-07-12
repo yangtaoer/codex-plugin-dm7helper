@@ -105,12 +105,12 @@ public final class AppMain {
     }
 
     static Dm7McpServer adapter(Map<String,String> environment,Dm7ServicesBackend backend,ConsoleHttpServer console) {
-        return new Dm7McpServer(() -> SessionIdentityResolver.resolve(environment), backend::initialize,
+        return new Dm7McpServer(meta -> SessionIdentityResolver.resolve(environment, meta), backend::initialize,
                 backend, console::open);
     }
 
     private static Dm7McpServer adapter(Map<String,String> environment, LazyRuntime runtime) {
-        return new Dm7McpServer(() -> SessionIdentityResolver.resolve(environment), runtime::initialize,
+        return new Dm7McpServer(meta -> SessionIdentityResolver.resolve(environment, meta), runtime::initialize,
                 runtime::call, runtime::openConsole);
     }
 

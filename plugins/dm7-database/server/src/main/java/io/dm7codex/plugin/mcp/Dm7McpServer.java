@@ -15,13 +15,18 @@ import java.util.Objects;
 import java.util.UUID;
 
 public final class Dm7McpServer {
-    private final IdentitySupplier identities;
+    private final MetadataIdentitySupplier identities;
     private final SessionStarter sessions;
     private final ToolBackend backend;
     private final ConsoleLauncher console;
     private final Map<String, Tool> definitions;
 
     public Dm7McpServer(IdentitySupplier identities, SessionStarter sessions,
+                        ToolBackend backend, ConsoleLauncher console) {
+        this(ignored -> identities.resolve(), sessions, backend, console);
+    }
+
+    public Dm7McpServer(MetadataIdentitySupplier identities, SessionStarter sessions,
                         ToolBackend backend, ConsoleLauncher console) {
         this.identities = Objects.requireNonNull(identities);
         this.sessions = Objects.requireNonNull(sessions);
@@ -35,15 +40,20 @@ public final class Dm7McpServer {
     public List<SyncToolSpecification> toolSpecifications() {
         var specifications = new ArrayList<SyncToolSpecification>();
         definitions.values().forEach(tool -> specifications.add(SyncToolSpecification.builder()
-                .tool(tool).callHandler((exchange, request) -> call(tool.name(), request.arguments())).build()));
+                .tool(tool).callHandler((exchange, request) ->
+                        call(tool.name(), request.arguments(), request.meta())).build()));
         return List.copyOf(specifications);
     }
 
     public CallToolResult call(String name, Map<String, Object> arguments) {
+        return call(name, arguments, Map.of());
+    }
+
+    public CallToolResult call(String name, Map<String, Object> arguments, Map<String, Object> requestMeta) {
         String correlationId = UUID.randomUUID().toString();
         try {
             // Deliberately the first business action for every tool handler.
-            SessionIdentity identity = identities.resolve();
+            SessionIdentity identity = identities.resolve(requestMeta == null ? Map.of() : requestMeta);
             SessionState session = sessions.initialize(identity);
             Map<String, Object> safeArguments = arguments == null ? Map.of()
                     : Collections.unmodifiableMap(new LinkedHashMap<>(arguments));
@@ -58,6 +68,12 @@ public final class Dm7McpServer {
                 return error("CONFIRMATION_REQUIRED", "发版导出要求 confirm=true。", correlationId);
             }
             Map<String, Object> output = backend.call(name, safeArguments, session);
+            if (name.equals("dm7_get_release_log")) {
+                var enriched = new LinkedHashMap<String, Object>(output);
+                enriched.put("sessionIdentitySource", identity.source());
+                enriched.put("sessionIsolation", identity.isolation());
+                output = enriched;
+            }
             boolean failed = Boolean.FALSE.equals(output.get("success")) || Boolean.FALSE.equals(output.get("ok"));
             return success(output, summary(name, output), failed);
         } catch (ConsoleUnavailable unavailable) {
@@ -94,6 +110,9 @@ public final class Dm7McpServer {
     }
 
     @FunctionalInterface public interface IdentitySupplier { SessionIdentity resolve(); }
+    @FunctionalInterface public interface MetadataIdentitySupplier {
+        SessionIdentity resolve(Map<String, Object> requestMeta);
+    }
     @FunctionalInterface public interface SessionStarter { SessionState initialize(SessionIdentity identity) throws Exception; }
     @FunctionalInterface public interface ToolBackend {
         Map<String, Object> call(String name, Map<String, Object> arguments, SessionState session) throws Exception;
