@@ -91,6 +91,26 @@ test('selection, long SQL/result virtualization and named live phases remain usa
   await expect(page.getByText('COMPLETED', { exact: true })).toBeVisible()
 })
 
+test('SQL workbench survives sidebar navigation and wide virtualized result columns stay aligned', async ({ page }) => {
+  await page.goto('/app/sql')
+  const editor = page.getByTestId('sql-editor').locator('.cm-content')
+  await editor.fill(`SELECT 'LONG_RESULT WIDE_RESULT' AS "业务名称"`)
+  await page.getByRole('button', { name: '执行全部' }).click()
+  await expect(page.getByText('250 行')).toBeVisible()
+  const geometry = await page.locator('.result-table').evaluate((table) => {
+    const headers = [...table.querySelectorAll('thead th')].map((cell) => cell.getBoundingClientRect())
+    const cells = [...table.querySelectorAll('tbody tr:first-child td')].map((cell) => cell.getBoundingClientRect())
+    return headers.map((header, index) => ({ left: Math.abs(header.left - cells[index].left), width: Math.abs(header.width - cells[index].width) }))
+  })
+  expect(geometry.length).toBe(5)
+  expect(geometry.every((item) => item.left < 1 && item.width < 1)).toBe(true)
+  await page.getByRole('link', { name: '实时执行' }).click()
+  await expect(page.getByRole('heading', { name: '实时执行', exact: true })).toBeVisible()
+  await page.getByRole('link', { name: 'SQL 控制台' }).click()
+  await expect(editor).toContainText('LONG_RESULT WIDE_RESULT')
+  await expect(page.getByText('250 行')).toBeVisible()
+})
+
 test('cancel remains pending until a named terminal event wins the race', async ({ page, fixtureState }) => {
   fixtureState.queryMode = 'pending'
   await page.goto('/app/sql')

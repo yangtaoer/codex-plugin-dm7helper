@@ -10,12 +10,14 @@ const value: QueryResult = { executionId: 'x', success: true, columns: [
 
 describe('ResultGrid', () => {
   it('renders Chinese, null and truncation without HTML interpretation', () => {
-    render(<ResultGrid result={value} />)
+    const rendered=render(<ResultGrid result={value} />)
     expect(screen.getByText(/达梦/)).toBeTruthy()
     expect(screen.getByText('NULL')).toBeTruthy()
     expect(screen.getByText(/结果已截断/)).toBeTruthy()
     expect(screen.getByRole('button',{name:'复制第 1 行'})).toBeTruthy()
     expect(screen.getByRole('button',{name:'复制第 1 行名称单元格'})).toBeTruthy()
+    expect(rendered.container.querySelector('.result-table')?.getAttribute('data-virtualized')).toBe('false')
+    expect(rendered.container.querySelectorAll('thead th')).toHaveLength(rendered.container.querySelectorAll('tbody tr:first-child td').length)
   })
   it('exports formula-safe BOM CSV and metadata-bearing no-BOM JSON', () => {
     const csv=csvText(value)

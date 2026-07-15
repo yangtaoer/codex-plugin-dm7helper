@@ -184,7 +184,8 @@ public final class ConsoleHttpServer implements AutoCloseable {
         if((operation.equals("release.export")||operation.equals("release.recover"))&&!(input.get("confirm")instanceof Boolean))invalidType();
         if(operation.equals("release.recover"))requireText(input,"version");
         if(operation.startsWith("connections.")&&!operation.equals("connections.list")&&!operation.equals("connections.create")&&!operation.equals("connections.diagnostics"))requireText(input,"id");
-        for(String key:List.of("name","driverJar","driverClass","jdbcUrl","username","password","schema"))if(input.containsKey(key)&&!(input.get(key)instanceof String))invalidType();
+        for(String key:List.of("name","driverJar","driverClass","jdbcUrl","username","password"))if(input.containsKey(key)&&!(input.get(key)instanceof String))invalidType();
+        if(input.containsKey("schema")&&input.get("schema")!=null&&!(input.get("schema")instanceof String))invalidType();
         if(input.containsKey("clearPassword")&&!(input.get("clearPassword")instanceof Boolean))invalidType();
         if(input.containsKey("replacementDefaultId")&&!(input.get("replacementDefaultId")instanceof String))invalidType();
         if(input.containsKey("leaveWithoutDefault")&&!(input.get("leaveWithoutDefault")instanceof Boolean))invalidType();

@@ -7,3 +7,12 @@ dist/
 *.env.local
 .worktrees/
 .superpowers/
+**/dm7-codex-plugin-data/
+**/vault.json
+**/master.key
+**/state.db
+**/state.db-*
+**/connections.json
+**/release-exports/
+**/test-results/
+**/__pycache__/

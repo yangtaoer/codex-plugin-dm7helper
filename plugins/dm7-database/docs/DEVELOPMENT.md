@@ -1,5 +1,7 @@
 # Development
 
+After source and tests are final, run `scripts/build.ps1` to produce the clean runtime JAR, update the plugin cachebuster with the `plugin-creator` helper, and run `scripts/refresh-mcp-integrity.ps1` before packaging. The refresh script synchronizes the encoded MCP bootstrap with the manifest version and the final launcher/runtime hashes; do not hand-edit the encoded command.
+
 `DmDriverLoader` deliberately sets the dedicated MCP JVM's `jar:` URL default cache to `false` once at class initialization. Do not change this to a per-load toggle: toggling a JVM-global default around concurrent loads creates a race, while old DM7 drivers can otherwise pin staged JAR files on Windows. The child-JVM driver-loader probe covers concurrent loads, ordinary JAR resource reads, staged-file cleanup, and isolation from non-JAR URL protocols.
 
 Use JDK 21, Maven 3.9+, Node.js, pnpm, Python 3, Playwright, and a separate exact Java 17 runtime configured through `DM7_CODEX_JAVA17_HOME`. Production bytecode targets Java 17 and packaging runs the extracted MCP under that exact runtime. The project never downloads or packages a proprietary driver: DM7 integration testing is opt-in BYO-driver through environment variables, and ordinary tests use isolated fixtures.

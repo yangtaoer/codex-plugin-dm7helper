@@ -1,6 +1,6 @@
 {
   "name": "dm7-database",
-  "version": "0.1.0+codex.20260712093914",
+  "version": "0.1.0+codex.20260715030615",
   "description": "Operate Dameng 7 safely from Codex with a local SQL console and release logs.",
   "author": {
     "name": "DM7 Codex Plugin Contributors"
@@ -27,9 +27,9 @@
       "Interactive"
     ],
     "defaultPrompt": [
-      "打开达梦数据库管理控制台",
-      "查询当前达梦数据库结构",
-      "导出本会话的发版 SQL"
+      "\u6253\u5f00\u8fbe\u68a6\u6570\u636e\u5e93\u7ba1\u7406\u63a7\u5236\u53f0",
+      "\u67e5\u8be2\u5f53\u524d\u8fbe\u68a6\u6570\u636e\u5e93\u7ed3\u6784",
+      "\u5bfc\u51fa\u672c\u4f1a\u8bdd\u7684\u53d1\u7248 SQL"
     ],
     "brandColor": "#147D64",
     "composerIcon": "./assets/icon.svg",

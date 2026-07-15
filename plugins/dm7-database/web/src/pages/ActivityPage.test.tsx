@@ -13,6 +13,7 @@ it('uses shared events, applies exact filters, cancels active work and opens saf
   const events:EventRecord[]=[{id:'9',executionId:item.executionId,status:'executing',timestamp:item.startedAt,detail:'statement 1'}]
   render(<ActivityPage api={api} events={events} streamStatus="connected" />)
   expect((await screen.findAllByText('UPDATE CUSTOMER SET NAME=?')).length).toBeGreaterThan(0)
+  expect(screen.getByLabelText('来源').closest('.filter-select-shell')?.querySelector('svg')).toBeTruthy()
   fireEvent.change(screen.getByLabelText('来源'),{target:{value:'CONSOLE'}});fireEvent.change(screen.getByLabelText('状态'),{target:{value:'EXECUTING'}})
   fireEvent.click(screen.getByRole('button',{name:'应用筛选'}));await waitFor(()=>expect(history).toHaveBeenLastCalledWith(expect.objectContaining({source:'CONSOLE',status:'EXECUTING',offset:0,limit:50}),expect.any(AbortSignal)))
   fireEvent.click(screen.getAllByRole('button',{name:'取消任务'})[0]);await waitFor(()=>expect(cancelExecution).toHaveBeenCalledWith(item.executionId,expect.any(AbortSignal)))

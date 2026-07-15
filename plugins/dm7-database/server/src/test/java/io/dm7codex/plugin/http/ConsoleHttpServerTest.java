@@ -129,6 +129,13 @@ class ConsoleHttpServerTest {
         assertEquals("id-b",backend.lastInput.get("replacementDefaultId"));
     }
 
+    @Test void connectionUpdateAcceptsExplicitNullSchema() throws Exception {
+        var response=request("PUT","/api/connections/id-a","{\"schema\":null}",cookie,base.toString());
+        assertEquals(200,response.statusCode(),response.body());
+        assertTrue(backend.lastInput.containsKey("schema"));
+        assertNull(backend.lastInput.get("schema"));
+    }
+
     @Test void recoverRouteRequiresPostExactFieldsAndTypedConfirmation() throws Exception {
         assertEquals(405,call("GET","/api/release/recover",null).statusCode());
         assertEquals(422,call("POST","/api/release/recover",Map.of("version","v001","confirm","yes")).statusCode());

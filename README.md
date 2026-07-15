@@ -21,6 +21,28 @@ The plugin is published through the repo-local marketplace at `.agents/plugins/m
 
 The distributable plugin never bundles a Dameng JDBC driver or database credentials.
 
+## Install from GitHub
+
+Add this repository as the Codex marketplace source, then install the plugin:
+
+```powershell
+codex plugin marketplace add yangtaoer/codex-plugin-dm7helper
+codex plugin add dm7-database@dm7-database-local
+```
+
+Start a new Codex task after installation so the current plugin skill and MCP process are loaded.
+
+## Update an installed copy
+
+Published releases keep the marketplace coordinate `dm7-database@dm7-database-local` stable. Refresh the GitHub marketplace snapshot and reinstall the current plugin build:
+
+```powershell
+codex plugin marketplace upgrade dm7-database-local
+codex plugin add dm7-database@dm7-database-local
+```
+
+Then start a new Codex task. Connection profiles, passwords, local driver paths, runtime state, and release exports stay in the current user's protected local storage and are not supplied by GitHub.
+
 ## Build and verify
 
 Run `plugins/dm7-database/scripts/test.ps1`, then `package.ps1`. The release gate covers Java, frontend, browser, plugin-layout, UTF-8 asset, and MCP STDIO smoke tests. Packaging uses `SOURCE_DATE_EPOCH`, compares two clean runtime JAR builds, and produces a runtime-only ZIP in `dist`.

@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.Properties;
 import java.util.UUID;
 import java.lang.ref.WeakReference;
+import java.net.URLClassLoader;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
@@ -47,6 +48,17 @@ class DmDriverLoaderTest {
             Thread.sleep(25);
         }
         assertNull(classLoader.get(), "closed driver classloader must be releasable");
+    }
+
+    @Test void isolatedLoaderExposesOnlyStagedDriverAndEmbeddedCleaner() throws Exception {
+        FakeDriverJar.Fixture fixture = FakeDriverJar.create(tempDir.resolve("isolated-loader"));
+        Class.forName("org.sqlite.JDBC");
+        try (URLClassLoader loader = DmDriverLoader.newDriverClassLoader(fixture.jar().toUri().toURL())) {
+            assertSame(loader, Class.forName(fixture.driverClass(), false, loader).getClassLoader());
+            assertSame(loader, Class.forName(
+                    "io.dm7codex.plugin.connection.ChildDriverRegistryCleaner", false, loader).getClassLoader());
+            assertThrows(ClassNotFoundException.class, () -> Class.forName("org.sqlite.JDBC", false, loader));
+        }
     }
 
     @Test void rejectsMissingDirectoryWrongHashAndNonDriverWithoutLeakingPath() throws Exception {

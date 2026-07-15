@@ -105,9 +105,7 @@ public final class DmDriverLoader {
             verifyTrustChain();
             verifyStagedIdentity(stagedIdentity);
 
-            URL codeSource = DmDriverLoader.class.getProtectionDomain().getCodeSource().getLocation();
-            classLoader = new URLClassLoader(new URL[]{codeSource, staged.toUri().toURL()},
-                    ClassLoader.getPlatformClassLoader());
+            classLoader = newDriverClassLoader(staged.toUri().toURL());
             verifyTrustChain();
             verifyStagedIdentity(stagedIdentity);
             Class<?> cleanerClass = Class.forName(CLEANER_CLASS, true, classLoader);
@@ -132,6 +130,23 @@ public final class DmDriverLoader {
             cleanupResources(primary, classLoader, staged, fileOps);
             throw primary;
         }
+    }
+
+    static URLClassLoader newDriverClassLoader(URL stagedDriver) {
+        Objects.requireNonNull(stagedDriver, "stagedDriver");
+        return new URLClassLoader(new URL[]{stagedDriver}, ClassLoader.getPlatformClassLoader()) {
+            @Override protected Class<?> findClass(String name) throws ClassNotFoundException {
+                if (!CLEANER_CLASS.equals(name)) return super.findClass(name);
+                try (InputStream input = DmDriverLoader.class.getResourceAsStream(
+                        "ChildDriverRegistryCleaner.class")) {
+                    if (input == null) throw new ClassNotFoundException(name);
+                    byte[] bytecode = input.readAllBytes();
+                    return defineClass(name, bytecode, 0, bytecode.length);
+                } catch (IOException failure) {
+                    throw new ClassNotFoundException(name, failure);
+                }
+            }
+        };
     }
 
     private void verifyTrustChain() {

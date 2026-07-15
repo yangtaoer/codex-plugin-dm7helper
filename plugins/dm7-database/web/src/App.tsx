@@ -46,6 +46,7 @@ export function App({ api }: { api: ApiClient }) {
   const requestRef = useRef<AbortController | null>(null)
   const previousStreamStatus = useRef('connecting')
   const active = routeFor(path)
+  const [sqlMounted, setSqlMounted] = useState(active === 'sql')
 
   const refreshSnapshot = useCallback(async (mode: 'loading' | 'reconnecting' = 'loading') => {
     requestRef.current?.abort()
@@ -91,6 +92,10 @@ export function App({ api }: { api: ApiClient }) {
     }
   }, [refreshSnapshot, stream.status])
 
+  useEffect(() => {
+    if (active === 'sql') setSqlMounted(true)
+  }, [active])
+
   const runtimeValue = 'value' in runtime ? runtime.value : undefined
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">跳到主要内容</a>
@@ -108,7 +113,8 @@ export function App({ api }: { api: ApiClient }) {
       </header>
       <main id="main-content" tabIndex={-1}>
         <RuntimeFeedback state={runtime} streamStatus={stream.status} onRetry={() => void refreshSnapshot('loading')} />
-        <RouteContent active={active} runtime={runtimeValue} runtimeStatus={runtime.kind} theme={theme} onThemeToggle={toggle} navigate={navigate} api={api} events={stream.events} streamStatus={stream.status} />
+        {active !== 'sql' && <RouteContent active={active} runtime={runtimeValue} runtimeStatus={runtime.kind} theme={theme} onThemeToggle={toggle} navigate={navigate} api={api} events={stream.events} streamStatus={stream.status} />}
+        {(sqlMounted || active === 'sql') && <div className="route-keepalive" hidden={active !== 'sql'}><SqlConsolePage api={api} events={stream.events} streamStatus={stream.status} theme={theme} /></div>}
       </main>
     </div>
     <ToastRegion />

@@ -212,8 +212,16 @@ export async function installFixture(page: Page, initial?: Partial<FixtureState>
     if (path === '/api/query') {
       const body = request.postDataJSON() as { executionId: string; sql: string }; state.knownExecutions.add(body.executionId)
       if (state.queryMode === 'pending') { state.pendingQueries.set(body.executionId, route); return }
-      const rows = body.sql.includes('LONG_RESULT') ? Array.from({ length: 250 }, (_, i) => ({ 中文列: `达梦数据库长结果-${String(i).padStart(3, '0')}` })) : [{ 中文列: '达梦数据库 · 中文结果已验证' }]
-      return json(route, state, { executionId: body.executionId, success: true, columns: [{ outputLabel: '中文列', originalLabel: '中文列', originalName: '中文列', jdbcType: 12, typeName: 'VARCHAR' }], rows, truncated: rows.length > 100, returnedRows: rows.length, bytes: rows.length * 42, elapsedMillis: 36, databaseFingerprint: 'd'.repeat(64), error: null })
+      const wide = body.sql.includes('WIDE_RESULT')
+      const columns = wide ? [
+        { outputLabel: '记录编号', originalLabel: '记录编号', originalName: 'ID', jdbcType: 12, typeName: 'VARCHAR' },
+        { outputLabel: '业务名称', originalLabel: '业务名称', originalName: 'NAME', jdbcType: 12, typeName: 'VARCHAR' },
+        { outputLabel: '处理状态', originalLabel: '处理状态', originalName: 'STATUS', jdbcType: 12, typeName: 'VARCHAR' },
+        { outputLabel: '更新时间', originalLabel: '更新时间', originalName: 'UPDATED_AT', jdbcType: 93, typeName: 'TIMESTAMP' },
+      ] : [{ outputLabel: '中文列', originalLabel: '中文列', originalName: '中文列', jdbcType: 12, typeName: 'VARCHAR' }]
+      const makeRow = (i: number) => wide ? { 记录编号: `DM7-${String(i).padStart(4, '0')}`, 业务名称: `达梦数据库长结果-${String(i).padStart(3, '0')}`, 处理状态: i % 2 ? '已完成' : '处理中', 更新时间: `2026-07-15 10:${String(i % 60).padStart(2, '0')}:00` } : { 中文列: `达梦数据库长结果-${String(i).padStart(3, '0')}` }
+      const rows = body.sql.includes('LONG_RESULT') ? Array.from({ length: 250 }, (_, i) => makeRow(i)) : wide ? [makeRow(0)] : [{ 中文列: '达梦数据库 · 中文结果已验证' }]
+      return json(route, state, { executionId: body.executionId, success: true, columns, rows, truncated: rows.length > 100, returnedRows: rows.length, bytes: rows.length * 42, elapsedMillis: 36, databaseFingerprint: 'd'.repeat(64), error: null })
     }
     if (path === '/api/execute') {
       const body = request.postDataJSON() as { executionId: string }; state.knownExecutions.add(body.executionId)
