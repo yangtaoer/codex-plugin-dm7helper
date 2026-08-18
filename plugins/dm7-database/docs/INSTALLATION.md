@@ -34,7 +34,7 @@ The bundled Windows MCP launcher validates the Java major version before startin
 
 ## Runtime storage
 
-When Codex provides `PLUGIN_DATA`, all writable state is confined to that directory. Current Windows Codex builds expose plugin MCP processes through a restricted sandbox without injecting that variable; in that case the plugin uses the current user's sandbox-writable temporary directory under `dm7-codex-plugin-data`. The same private directory is reused across plugin process restarts, and the plugin applies user-only access controls to sensitive state. Operating-system temporary-directory cleanup can remove this fallback data, so copy required release exports to durable storage after downloading them from the console.
+When Codex provides `PLUGIN_DATA`, all writable state is confined to that directory. If current Windows Codex builds do not inject it, the bundled launcher uses the durable canonical-marketplace directory `${CODEX_HOME}\plugins\data\dm7-database-dm7-database-local` (or `%USERPROFILE%\.codex` when `CODEX_HOME` is absent) before Java starts. Connections, encrypted credentials, runtime state, and exports therefore survive MCP restarts, plugin upgrades, temporary-directory cleanup, and new Codex tasks. Direct JAR launches that bypass the bundled launcher retain the temporary `dm7-codex-plugin-data` fallback unless the administrator supplies `PLUGIN_DATA` explicitly.
 
 ## Update lifecycle
 

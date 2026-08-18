@@ -181,7 +181,7 @@ class PluginScriptsTest(unittest.TestCase):
             environment["DM7_CODEX_JAVA_SEARCH_ROOTS"] = str(java.parents[2])
             environment["CODEX_HOME"] = str(codex_home)
             environment["JAVA_HOME"] = str(Path(temporary) / "invalid-old-java")
-            environment["PLUGIN_DATA"] = str(Path(temporary) / "plugin data")
+            environment.pop("PLUGIN_DATA", None)
             environment["CODEX_THREAD_ID"] = "launcher-thread"
             environment.pop("PLUGIN_ROOT", None)
             diagnostic = Path(temporary) / "launcher-status.log"
@@ -192,19 +192,43 @@ class PluginScriptsTest(unittest.TestCase):
                     "clientInfo": {"name": "launcher-test", "version": "1"},
                 },
             }) + "\n"
+            initialized = json.dumps({
+                "jsonrpc": "2.0", "method": "notifications/initialized", "params": {},
+            }) + "\n"
+            list_connections = json.dumps({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                    "name": "dm7_list_connections", "arguments": {},
+                },
+            }) + "\n"
 
-            result = subprocess.run(
+            process = subprocess.Popen(
                 [mcp["command"], *arguments], cwd=root, env=environment,
-                input=initialize, capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=60,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
             )
+            try:
+                process.stdin.write(initialize); process.stdin.flush()
+                first = process.stdout.readline()
+                process.stdin.write(initialized + list_connections); process.stdin.flush()
+                second = process.stdout.readline()
+                process.stdin.close()
+                returncode = process.wait(timeout=60)
+                stdout = first + second + process.stdout.read()
+                stderr = process.stderr.read()
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.stdout.close()
+                process.stderr.close()
 
-            self.assertEqual(0, result.returncode, result.stderr)
-            frames = [json.loads(line) for line in result.stdout.splitlines()]
-            self.assertEqual([1], [frame.get("id") for frame in frames])
-            self.assertNotIn("java version", result.stderr.lower())
+            self.assertEqual(0, returncode, stderr)
+            frames = [json.loads(line) for line in stdout.splitlines()]
+            self.assertEqual([1, 2], [frame.get("id") for frame in frames])
+            self.assertNotIn("java version", stderr.lower())
             self.assertEqual("JAVA_EXIT_0", diagnostic.read_text("utf-8").strip())
             self.assertFalse(marker.exists(), "bootstrap executed a higher-version decoy cache")
+            durable_data = codex_home / "plugins" / "data" / "dm7-database-dm7-database-local"
+            self.assertTrue(durable_data.is_dir())
 
     def make_fake_command(self, directory: Path, name: str) -> None:
         (directory / f"{name}.cmd").write_text(

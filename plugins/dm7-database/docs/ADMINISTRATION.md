@@ -1,6 +1,6 @@
 # Administration
 
-`PLUGIN_DATA` is mandatory and is the only runtime-state root. Codex normally injects it; administrators may override it before process launch with `PLUGIN_DATA=<absolute-user-private-path>`. Never point it inside the plugin installation or a shared repository.
+`PLUGIN_DATA` is the runtime-state root. Codex may inject it, and administrators may override it before process launch with `PLUGIN_DATA=<absolute-user-private-path>`. When it is absent, the bundled Windows launcher uses `${CODEX_HOME}\plugins\data\dm7-database-dm7-database-local` (falling back to `%USERPROFILE%\.codex` for `CODEX_HOME`). Never point it inside the plugin installation or a shared repository.
 
 Exact children are `${PLUGIN_DATA}\config`, `${PLUGIN_DATA}\secrets`, `${PLUGIN_DATA}\cache\jdbc-drivers`, `${PLUGIN_DATA}\state\plugin.db`, `${PLUGIN_DATA}\session-context`, `${PLUGIN_DATA}\sessions`, `${PLUGIN_DATA}\exports`, and `${PLUGIN_DATA}\logs`. Protect the whole root as sensitive: `secrets` contains encrypted material, `state` contains operational metadata, and exports/logs can contain business SQL.
 

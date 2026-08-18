@@ -22,6 +22,20 @@ if (-not (Test-Path -LiteralPath $jar -PathType Leaf)) {
   exit 2
 }
 
+if ([string]::IsNullOrWhiteSpace($env:PLUGIN_DATA)) {
+  $codexHome = $env:CODEX_HOME
+  if ([string]::IsNullOrWhiteSpace($codexHome)) {
+    $userProfile = [Environment]::GetFolderPath('UserProfile')
+    if ([string]::IsNullOrWhiteSpace($userProfile)) {
+      Write-LaunchStatus 'CODEX_HOME_NOT_FOUND'
+      [Console]::Error.WriteLine('DM7 MCP could not resolve the current user Codex home.')
+      exit 4
+    }
+    $codexHome = Join-Path $userProfile '.codex'
+  }
+  $env:PLUGIN_DATA = Join-Path $codexHome 'plugins\data\dm7-database-dm7-database-local'
+}
+
 $candidates = [System.Collections.Generic.List[string]]::new()
 if ($env:DM7_CODEX_JAVA) { $candidates.Add($env:DM7_CODEX_JAVA) }
 if ($env:DM7_CODEX_JAVA_HOME) { $candidates.Add((Join-Path $env:DM7_CODEX_JAVA_HOME 'bin\java.exe')) }
