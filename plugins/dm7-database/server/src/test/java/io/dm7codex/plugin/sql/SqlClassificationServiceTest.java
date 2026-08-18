@@ -19,15 +19,21 @@ class SqlClassificationServiceTest {
         var mutation = classifier.classify("update t set n=1; create table x(id int)");
         assertEquals(List.of(SqlKind.DML, SqlKind.DDL), mutation.kinds());
         assertFalse(mutation.queryOnly());
-        assertTrue(mutation.requiresPurpose());
+        assertFalse(mutation.requiresPurpose());
         assertFalse(mutation.atomicAllowed());
         assertTrue(classifier.classify("delete from t").atomicAllowed());
     }
 
-    @Test void rejectsBlankMixedUnsupportedTransactionsSecretsAndOversizedInput() {
+    @Test void acceptsDirectCommandKindsAndRejectsBlankMixedQueriesSecretsAndOversizedInput() {
         var classifier = new SqlClassificationService(new DmSqlParser(), new SqlSecurityPolicy(), 48);
-        for (String sql : List.of(" ", "select 1; values 2", "select 1; update t set n=1", "commit", "grant select on t to u", "call p()")) {
+        for (String sql : List.of(" ", "select 1; values 2", "select 1; update t set n=1")) {
             assertThrows(SqlClassificationService.ClassificationRejected.class, () -> classifier.classify(sql));
+        }
+        for (String sql : List.of("commit", "grant select on t to u", "call p()", "alter session set current_schema = TEST")) {
+            var direct = classifier.classify(sql);
+            assertFalse(direct.queryOnly());
+            assertFalse(direct.requiresPurpose());
+            assertFalse(direct.atomicAllowed());
         }
         assertThrows(SecretBearingSqlException.class,
                 () -> classifier.classify("create user demo identified by supersecret"));

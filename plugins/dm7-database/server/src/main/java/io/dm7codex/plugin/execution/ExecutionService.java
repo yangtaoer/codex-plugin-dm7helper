@@ -213,9 +213,8 @@ public final class ExecutionService implements AutoCloseable {
         if (statements.isEmpty()) throw new IllegalArgumentException("script contains no statements");
         for (var statement : statements) {
             security.assertNoEmbeddedCredentials(statement);
-            if (statement.kind() == SqlKind.QUERY || statement.kind() == SqlKind.EXPLAIN
-                    || statement.kind() == SqlKind.TRANSACTION) {
-                throw new IllegalArgumentException("Mutation cannot contain query, explain, or transaction control");
+            if (statement.kind() == SqlKind.QUERY || statement.kind() == SqlKind.EXPLAIN) {
+                throw new IllegalArgumentException("Direct execution cannot contain query or explain statements");
             }
         }
         if (command.atomic() && statements.stream().anyMatch(s -> s.kind() != SqlKind.DML)) {

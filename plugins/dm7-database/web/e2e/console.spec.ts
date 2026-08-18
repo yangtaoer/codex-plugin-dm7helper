@@ -35,17 +35,12 @@ async function readDownload(download: import('@playwright/test').Download) {
   return Buffer.concat(chunks)
 }
 
-test('mutation asks for purpose and supports keyboard execution', async ({ page }) => {
+test('mutation executes directly in test mode with keyboard execution', async ({ page }) => {
   await page.goto('/app/sql')
   const editor = page.getByTestId('sql-editor').locator('.cm-content')
   await editor.fill(`UPDATE CUSTOMER_PROFILE SET DISPLAY_NAME='中文演示' WHERE ID=42`)
   await editor.press('Control+Enter')
-  const dialog = page.getByRole('dialog', { name: '确认修改操作' })
-  await expect(dialog).toBeVisible()
-  await expect(dialog.getByLabel('用途')).toHaveAttribute('required', '')
-  await dialog.getByLabel('用途').selectOption('PRODUCTION_CHANGE')
-  await dialog.getByRole('checkbox', { name: '我已核对 SQL 与目标连接' }).check()
-  await dialog.getByRole('button', { name: '确认并执行' }).click()
+  await expect(page.getByRole('dialog', { name: '确认修改操作' })).toHaveCount(0)
   await expect(page.getByText('COMMITTED')).toBeVisible()
 })
 

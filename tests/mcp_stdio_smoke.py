@@ -18,9 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = Path(os.environ.get("DM7_SMOKE_PLUGIN_ROOT", ROOT / "plugins" / "dm7-database")).resolve()
 JAR = PLUGIN_ROOT / "lib" / "dm7-codex-plugin.jar"
 TOOLS = [
-    "dm7_open_console", "dm7_list_connections", "dm7_test_connection", "dm7_query",
-    "dm7_execute", "dm7_describe_schema", "dm7_get_execution", "dm7_cancel_execution",
-    "dm7_get_release_log", "dm7_release_export",
+    "dm7_open_console", "dm7_list_connections", "dm7_save_connection",
+    "dm7_set_default_connection", "dm7_delete_connection", "dm7_test_connection",
+    "dm7_query", "dm7_execute", "dm7_describe_schema", "dm7_get_execution",
+    "dm7_cancel_execution", "dm7_get_release_log", "dm7_release_export",
 ]
 
 

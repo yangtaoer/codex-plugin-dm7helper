@@ -237,6 +237,9 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
     private Map<String, Object> callMcp(String name, Map<String, Object> arguments, SessionState session) throws Exception {
         return switch (name) {
             case "dm7_list_connections" -> listConnections();
+            case "dm7_save_connection" -> saveMcpConnection(arguments);
+            case "dm7_set_default_connection" -> connection(profiles.setDefault(connectionId(arguments)));
+            case "dm7_delete_connection" -> deleteMcpConnection(arguments);
             case "dm7_test_connection" -> testConnection(arguments);
             case "dm7_query" -> query(arguments, session);
             case "dm7_execute" -> execute(arguments, session);
@@ -252,6 +255,30 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
     private Map<String, Object> listConnections() {
         var values = profiles.list().stream().map(this::connection).map(Collections::unmodifiableMap).toList();
         return Map.of("connections", values);
+    }
+
+    private Map<String, Object> saveMcpConnection(Map<String, Object> arguments) throws Exception {
+        var input = new LinkedHashMap<String, Object>(arguments);
+        String selector = optional(input, "connectionId");
+        input.remove("connectionId");
+        ConnectionProfile existing = selector == null ? null : profiles.find(resolveConnection(selector))
+                .orElseThrow(() -> new IllegalArgumentException("Connection was not found"));
+        if (existing != null) input.put("id", existing.id().toString());
+        return saveProfile(input, existing);
+    }
+
+    private Map<String, Object> deleteMcpConnection(Map<String, Object> arguments) {
+        UUID id = connectionId(arguments);
+        var profile = profiles.find(id).orElseThrow(() -> new IllegalArgumentException("Connection was not found"));
+        var remaining = profiles.list().stream().filter(value -> !value.id().equals(id)).toList();
+        Optional<UUID> replacement = profile.isDefault() && !remaining.isEmpty()
+                ? Optional.of(remaining.get(0).id()) : Optional.empty();
+        profiles.delete(id, replacement, false);
+        String active = profiles.list().stream().filter(ConnectionProfile::isDefault)
+                .map(value -> value.id().toString()).findFirst().orElse(null);
+        var result = new LinkedHashMap<String, Object>();
+        result.put("deleted", true); result.put("defaultConnectionId", active);
+        return result;
     }
 
     private Map<String, Object> testConnection(Map<String, Object> arguments) {
@@ -276,9 +303,11 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
     }
     private Map<String, Object> execute(Map<String, Object> arguments, SessionState session,ExecutionSource source) {
         var typedParameters = parameters(arguments);
-        SqlPurpose purpose = SqlPurpose.valueOf(required(arguments, "purpose").toUpperCase(Locale.ROOT));
+        String suppliedPurpose = optional(arguments, "purpose");
+        SqlPurpose purpose = suppliedPurpose == null ? SqlPurpose.TEST
+                : SqlPurpose.valueOf(suppliedPurpose.toUpperCase(Locale.ROOT));
         var result = executions.execute(session, new ExecuteCommand(connectionId(arguments), executionId(arguments),
-                required(arguments, "sql"), typedParameters, purpose, bool(arguments, "atomic", true),
+                required(arguments, "sql"), typedParameters, purpose, bool(arguments, "atomic", false),
                 bool(arguments, "continueOnError", false), integer(arguments, "timeoutSeconds", 60), source));
         return executionResult(result);
     }
@@ -392,13 +421,19 @@ public final class Dm7ServicesBackend implements Dm7McpServer.ToolBackend, Conso
 
     private UUID connectionId(Map<String, Object> arguments) {
         String supplied = optional(arguments, "connectionId");
-        if (supplied != null) {
-            UUID id = UUID.fromString(supplied);
-            if (profiles.find(id).isEmpty()) throw new IllegalArgumentException("Connection was not found");
-            return id;
-        }
+        if (supplied != null) return resolveConnection(supplied);
         return profiles.list().stream().filter(ConnectionProfile::isDefault).map(ConnectionProfile::id)
                 .findFirst().orElseThrow(() -> new IllegalArgumentException("No default connection is configured"));
+    }
+
+    private UUID resolveConnection(String selector) {
+        try {
+            UUID id = UUID.fromString(selector);
+            if (profiles.find(id).isPresent()) return id;
+        } catch (IllegalArgumentException ignored) { }
+        return profiles.list().stream().filter(profile -> profile.name().equalsIgnoreCase(selector))
+                .map(ConnectionProfile::id).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Connection was not found"));
     }
 
     private static UUID executionId(Map<String, Object> arguments) {

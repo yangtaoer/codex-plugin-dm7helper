@@ -1,6 +1,6 @@
 import { Play, Square, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ApiClient, EventRecord, ExecuteResult, ExecutionDetail, QueryResult, SafeConnection, SafeExecutionError, SqlClassification, SqlPurpose } from '../api/types'
+import type { ApiClient, EventRecord, ExecuteResult, ExecutionDetail, QueryResult, SafeConnection, SafeExecutionError } from '../api/types'
 import type { StreamStatus } from '../hooks/useEventStream'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { ExecutionTimeline } from '../components/ExecutionTimeline'
@@ -9,7 +9,6 @@ import { SqlEditor } from '../components/SqlEditor'
 import { PageHeader } from '../components/PageHeader'
 
 const activeStates=new Set(['queued','connecting','parsing','executing','committing','logging']),terminalStates=new Set(['completed','failed','cancelled','rejected'])
-const purposes: {value:SqlPurpose;label:string}[]=[{value:'PRODUCTION_CHANGE',label:'生产变更'},{value:'MIGRATION',label:'迁移'},{value:'TEST',label:'测试'},{value:'MOCK',label:'Mock'},{value:'SEED',label:'种子数据'},{value:'SAMPLE',label:'样例'}]
 const uuid=()=>{try{return globalThis.crypto?.randomUUID?.()}catch{return undefined}}
 type Limits={maxRows:number;maxBytes:number;timeoutSeconds:number}
 type ExecutionSnapshot={token:number;connectionId:string;connectionName:string;limits:Limits;executionId?:string}
@@ -23,8 +22,7 @@ const detailElapsed=(detail:ExecutionDetail)=>{const started=Date.parse(String(d
 export function SqlConsolePage({api,events,streamStatus,theme,initialSql=''}:{api:ApiClient;events:EventRecord[];streamStatus:StreamStatus;theme:string;initialSql?:string}) {
   const [sql,setSql]=useState(initialSql),[selection,setSelection]=useState(''),[connections,setConnections]=useState<SafeConnection[]>([]),[connectionId,setConnectionId]=useState('')
   const [limits,setLimits]=useState<Limits>({maxRows:1000,maxBytes:10485760,timeoutSeconds:60}),[busy,setBusy]=useState(false),[error,setError]=useState<{message:string;correlationId?:string}|null>(null)
-  const [classification,setClassification]=useState<SqlClassification|null>(null),[pendingSql,setPendingSql]=useState(''),[confirmOpen,setConfirmOpen]=useState(false),[clearOpen,setClearOpen]=useState(false)
-  const [purpose,setPurpose]=useState<SqlPurpose|''>(''),[ack,setAck]=useState(false),[atomic,setAtomic]=useState(false),[continueOnError,setContinueOnError]=useState(false)
+  const [clearOpen,setClearOpen]=useState(false)
   const [executionId,setExecutionId]=useState<string>(),[snapshot,setSnapshot]=useState<ExecutionSnapshot>(),[queryResult,setQueryResult]=useState<QueryResult>(),[executeResult,setExecuteResult]=useState<ExecuteResult>()
   const [tab,setTab]=useState<OutputTab>('result'),[cancelPending,setCancelPending]=useState(false),[httpTerminal,setHttpTerminal]=useState(false)
   const [tracking,setTracking]=useState<TrackingState>('idle'),[authoritativeElapsed,setAuthoritativeElapsed]=useState<number>()
@@ -37,7 +35,7 @@ export function SqlConsolePage({api,events,streamStatus,theme,initialSql=''}:{ap
   const eventTerminal=currentEvents.find(event=>terminalStates.has(event.status)),latest=eventTerminal??currentEvents.at(-1)
   useEffect(()=>{if(eventTerminal&&executionId){settleKnownTerminal(generation.current,executionId,eventTerminal.status.toUpperCase())}},[eventTerminal,executionId])
   const cancellable=Boolean(executionId&&!cancelPending&&!httpTerminal&&(tracking==='unknown'||Boolean(latest&&activeStates.has(latest.status))))
-  const controlsLocked=busy||confirmOpen
+  const controlsLocked=busy
   const invalidLimits=limits.maxRows<1||limits.maxRows>10000||limits.maxBytes<1024||limits.maxBytes>52428800||limits.timeoutSeconds<1||limits.timeoutSeconds>3600
 
   function stopReconciliation(){if(reconcileTimer.current!==null){clearTimeout(reconcileTimer.current);reconcileTimer.current=null}reconcileAbort.current?.abort();reconcileAbort.current=null}
@@ -64,33 +62,26 @@ export function SqlConsolePage({api,events,streamStatus,theme,initialSql=''}:{ap
   const finishHttp=(token:number,id:string,elapsed:number)=>{if(!isCurrent(token,id))return false;terminalExecution.current=id;stopReconciliation();setTracking('terminal');setAuthoritativeElapsed(Math.max(0,elapsed));setCancelPending(false);setHttpTerminal(true);setBusy(false);return true}
 
   const run=async(candidate:string)=>{
-    if(!candidate.trim()||busy||confirmOpen)return
+    if(!candidate.trim()||busy)return
     if(!connectionId){setError({message:'请选择一个数据库连接。'});return}
     stopReconciliation();classifyRef.current?.abort();const controller=new AbortController();classifyRef.current=controller
     const token=++generation.current,current=captureSnapshot(token);activeExecution.current=undefined;terminalExecution.current=undefined
     setSnapshot(current);setBusy(true);setError(null);setQueryResult(undefined);setExecuteResult(undefined);setExecutionId(undefined);setCancelPending(false);setHttpTerminal(false);setTracking('idle');setAuthoritativeElapsed(undefined)
     try{
       const classified=await api.classifySql(candidate.trim(),controller.signal);if(!isCurrent(token)||controller.signal.aborted)return
-      setClassification(classified)
       if(classified.queryOnly){const id=uuid();if(!id)throw new Error('浏览器无法生成安全执行标识，已阻止执行。');startExecution(id,current)
         const result=await api.query({connectionId:current.connectionId,executionId:id,sql:candidate.trim(),...current.limits})
         if(!isCurrent(token,id))return;if(result.executionId!==id){beginUnknownTracking(token,id,'执行响应标识不匹配，结果已丢弃。');return}if(!finishHttp(token,id,result.elapsedMillis))return;setQueryResult(result);setTab('result')
-      }else{setPendingSql(candidate.trim());setAtomic(classified.atomicAllowed);setContinueOnError(false);setPurpose('');setAck(false);setConfirmOpen(true);setBusy(false)}
+      }else{const id=uuid();if(!id)throw new Error('浏览器无法生成安全执行标识，已阻止执行。');startExecution(id,current)
+        const result=await api.execute({connectionId:current.connectionId,executionId:id,sql:candidate.trim(),purpose:'TEST',atomic:false,continueOnError:false,timeoutSeconds:current.limits.timeoutSeconds})
+        if(!isCurrent(token,id))return;if(result.executionId!==id){beginUnknownTracking(token,id,'执行响应标识不匹配，结果已丢弃。');return}if(!finishHttp(token,id,result.elapsedMillis))return;setExecuteResult(result);setTab('messages')}
     }catch(e:unknown){if(isCurrent(token)&&!(e instanceof DOMException&&e.name==='AbortError')){const id=activeExecution.current;if(id)beginUnknownTracking(token,id,(e as Error).message||'执行传输失败。',(e as {correlationId?:string}).correlationId);else{setError({message:(e as Error).message||'SQL 分类失败。',correlationId:(e as {correlationId?:string}).correlationId});setTracking('idle');setCancelPending(false);setHttpTerminal(false);setBusy(false)}}}
-  }
-  const confirmMutation=async()=>{
-    const current=snapshot;if(!purpose||!ack||!classification||!current||current.token!==generation.current)return
-    const id=uuid();if(!id){setError({message:'浏览器无法生成安全执行标识，已阻止执行。'});return}
-    setConfirmOpen(false);setBusy(true);startExecution(id,current)
-    try{const result=await api.execute({connectionId:current.connectionId,executionId:id,sql:pendingSql,purpose,atomic:classification.atomicAllowed&&atomic,continueOnError:!atomic&&continueOnError,timeoutSeconds:current.limits.timeoutSeconds})
-      if(!isCurrent(current.token,id))return;if(result.executionId!==id){beginUnknownTracking(current.token,id,'执行响应标识不匹配，结果已丢弃。');return}if(!finishHttp(current.token,id,result.elapsedMillis))return;setExecuteResult(result);setTab('messages')
-    }catch(e:unknown){if(isCurrent(current.token,id))beginUnknownTracking(current.token,id,(e as Error).message||'执行传输失败。',(e as {correlationId?:string}).correlationId)}finally{if(isCurrent(current.token,id))setPendingSql('')}
   }
   const cancel=async()=>{const id=executionId,token=generation.current;if(!id||!cancellable)return;setCancelPending(true);try{const result=await api.cancelExecution(id);if(!isCurrent(token,id))return;if(!result.cancelRequested){setError({message:'任务可能已结束，正在重新查询状态。'});setCancelPending(false);stopReconciliation();void pollExecution(token,id,0)}}catch(e:unknown){if(isCurrent(token,id)){setError({message:(e as Error).message||'无法请求取消。',correlationId:(e as {correlationId?:string}).correlationId});setCancelPending(false)}}}
   const selectTab=(next:OutputTab)=>{setTab(next);tabRefs.current[next]?.focus()}
   const tabKey=(event:React.KeyboardEvent<HTMLButtonElement>,current:OutputTab)=>{const index=tabs.findIndex(item=>item.id===current);let next:number|undefined;if(event.key==='ArrowRight')next=(index+1)%tabs.length;else if(event.key==='ArrowLeft')next=(index-1+tabs.length)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;if(next!==undefined){event.preventDefault();selectTab(tabs[next].id)}}
 
-  return <><PageHeader eyebrow="MANUAL SQL" title="SQL 执行控制台" description="先由 DM 语法解析器分类，再通过已知执行标识跟踪全过程。" />
+  return <><PageHeader eyebrow="MANUAL SQL" title="SQL 执行控制台" description="查询与变更会直接使用所选连接执行；变更默认按测试用途处理。" />
     <section className="sql-workbench"><div className="sql-toolbar"><label>连接<select aria-label="连接" disabled={controlsLocked} value={connectionId} onChange={e=>setConnectionId(e.target.value)}><option value="">选择连接</option>{connections.map(item=><option key={item.id} value={item.id}>{item.name}{item.isDefault?'（默认）':''}</option>)}</select></label><label>最大行数<input aria-label="最大行数" disabled={controlsLocked} type="number" value={limits.maxRows} onChange={e=>setLimits({...limits,maxRows:Number(e.target.value)})}/></label><label>超时（秒）<input aria-label="超时（秒）" disabled={controlsLocked} type="number" value={limits.timeoutSeconds} onChange={e=>setLimits({...limits,timeoutSeconds:Number(e.target.value)})}/></label><label>最大字节<input aria-label="最大字节" disabled={controlsLocked} type="number" value={limits.maxBytes} onChange={e=>setLimits({...limits,maxBytes:Number(e.target.value)})}/></label></div>
       {snapshot&&<p className="execution-snapshot">执行快照 · {snapshot.connectionName} · {snapshot.limits.maxRows.toLocaleString('en-US')} 行 · {snapshot.limits.maxBytes.toLocaleString('en-US')} bytes · {snapshot.limits.timeoutSeconds} 秒{snapshot.executionId?` · ${snapshot.executionId}`:''}</p>}
       {tracking==='unknown'&&<div className="tracking-unknown" role="status"><span>执行状态待确认；已锁定执行快照，正在通过已知 UUID 对账。</span><button className="button-secondary" onClick={retryTracking}>重新查询状态</button></div>}
@@ -104,7 +95,6 @@ export function SqlConsolePage({api,events,streamStatus,theme,initialSql=''}:{ap
       <div id="sql-panel-messages" role="tabpanel" aria-labelledby="sql-tab-messages" hidden={tab!=='messages'}>{executeResult?<MutationMessages result={executeResult}/>:<p className="quiet-copy">修改语句的逐条提交与记录状态将在此显示。</p>}</div>
       <div id="sql-panel-timeline" role="tabpanel" aria-labelledby="sql-tab-timeline" hidden={tab!=='timeline'}><ExecutionTimeline executionId={executionId} events={events} streamStatus={streamStatus} authoritativeElapsedMillis={authoritativeElapsed}/></div>
     </section>
-    <ConfirmDialog open={confirmOpen} title="确认修改操作" confirmLabel="确认并执行" confirmDisabled={!purpose||!ack} onClose={()=>{setConfirmOpen(false);setPendingSql('')}} onConfirm={()=>void confirmMutation()}><div className="mutation-confirm"><label>用途<select aria-label="用途" required value={purpose} onChange={e=>setPurpose(e.target.value as SqlPurpose)}><option value="">请选择</option>{purposes.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}</select></label><p>PRODUCTION_CHANGE、MIGRATION 会写入发版日志；TEST、MOCK、SEED、SAMPLE 会明确排除。</p><label><input aria-label="原子执行" type="checkbox" checked={atomic} disabled={!classification?.atomicAllowed} onChange={e=>{setAtomic(e.target.checked);if(e.target.checked)setContinueOnError(false)}}/> 原子执行（仅纯 DML）</label><label><input type="checkbox" checked={continueOnError} disabled={atomic} onChange={e=>setContinueOnError(e.target.checked)}/> 失败后继续</label><label><input type="checkbox" checked={ack} onChange={e=>setAck(e.target.checked)}/> 我已核对 SQL 与目标连接</label></div></ConfirmDialog>
     <ConfirmDialog open={clearOpen} title="清空 SQL" confirmLabel="确认清空" onClose={()=>setClearOpen(false)} onConfirm={()=>{setSql('');setClearOpen(false)}}><p>当前编辑内容将从内存中清除，且无法恢复。</p></ConfirmDialog>
   </>
 }

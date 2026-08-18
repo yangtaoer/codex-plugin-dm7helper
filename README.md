@@ -30,6 +30,8 @@ codex plugin marketplace add yangtaoer/codex-plugin-dm7helper
 codex plugin add dm7-database@dm7-database-local
 ```
 
+The plugin stores connection profiles and encrypted credentials only under the installing user's local Codex plugin data directory. A persisted default connection is reused automatically by new Codex conversations; test-environment mutations run directly and default to the non-release `TEST` purpose.
+
 Start a new Codex task after installation so the current plugin skill and MCP process are loaded.
 
 ## Update an installed copy

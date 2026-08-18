@@ -22,19 +22,14 @@ describe('SqlConsolePage', () => {
     expect(await screen.findByText('达梦数据库')).toBeTruthy()
   })
 
-  it('requires purpose and acknowledgement for mutations and disables atomic DDL', async () => {
-    const execute=vi.fn()
-    render(<SqlConsolePage api={client({ classifySql: vi.fn().mockResolvedValue({ statementCount: 1, kinds: ['DDL'], queryOnly: false, requiresPurpose: true, atomicAllowed: false }), execute })} events={[]} streamStatus="connected" theme="dark" initialSql="CREATE TABLE T(ID INT)" />)
+  it('runs mutations immediately in test mode without a confirmation dialog', async () => {
+    const execute=vi.fn().mockImplementation(input=>Promise.resolve({executionId:input.executionId,success:true,status:'COMPLETED',statements:[],elapsedMillis:4,databaseFingerprint:'abcdef',error:null}))
+    render(<SqlConsolePage api={client({ classifySql: vi.fn().mockResolvedValue({ statementCount: 1, kinds: ['DDL'], queryOnly: false, requiresPurpose: false, atomicAllowed: false }), execute })} events={[]} streamStatus="connected" theme="dark" initialSql="CREATE TABLE T(ID INT)" />)
     await screen.findByRole('option', { name: /主库/ })
     fireEvent.click(screen.getByRole('button', { name: '执行全部' }))
-    expect(await screen.findByRole('dialog', { name: '确认修改操作' })).toBeTruthy()
-    expect((screen.getByLabelText('原子执行') as HTMLInputElement).disabled).toBe(true)
-    expect(screen.getByText(/TEST、MOCK、SEED、SAMPLE/)).toBeTruthy()
-    expect((screen.getByRole('button', { name: '确认并执行' }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.change(screen.getByLabelText('用途'), { target: { value: 'MIGRATION' } })
-    fireEvent.click(screen.getByLabelText('我已核对 SQL 与目标连接'))
-    fireEvent.click(screen.getByRole('button', { name: '确认并执行' }))
     await waitFor(() => expect(execute).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('dialog', { name: '确认修改操作' })).toBeNull()
+    expect(execute.mock.calls[0][0]).toMatchObject({sql:'CREATE TABLE T(ID INT)',purpose:'TEST',atomic:false,continueOnError:false})
   })
 
   it('blocks blank SQL and confirms clearing nonempty text', async () => {
@@ -159,10 +154,9 @@ describe('SqlConsolePage', () => {
   it('rejects a mismatched mutation response id before rendering it as terminal', async () => {
     const getExecution=vi.fn().mockReturnValue(new Promise<ExecutionDetail>(()=>undefined))
     const execute=vi.fn().mockResolvedValue({executionId:'wrong-id',success:true,status:'COMPLETED',statements:[],elapsedMillis:4,databaseFingerprint:'abcdef',error:null})
-    const api=client({classifySql:vi.fn().mockResolvedValue({statementCount:1,kinds:['DML'],queryOnly:false,requiresPurpose:true,atomicAllowed:true}),execute,getExecution})
+    const api=client({classifySql:vi.fn().mockResolvedValue({statementCount:1,kinds:['DML'],queryOnly:false,requiresPurpose:false,atomicAllowed:true}),execute,getExecution})
     render(<SqlConsolePage api={api} events={[]} streamStatus="connected" theme="light" initialSql="UPDATE T SET C=1"/>)
-    await screen.findByRole('option',{name:/主库/});fireEvent.click(screen.getByRole('button',{name:'执行全部'}));await screen.findByRole('dialog',{name:'确认修改操作'})
-    fireEvent.change(screen.getByLabelText('用途'),{target:{value:'MIGRATION'}});fireEvent.click(screen.getByLabelText('我已核对 SQL 与目标连接'));fireEvent.click(screen.getByRole('button',{name:'确认并执行'}))
+    await screen.findByRole('option',{name:/主库/});fireEvent.click(screen.getByRole('button',{name:'执行全部'}))
     expect(await screen.findByRole('status')).toBeTruthy();expect(getExecution).toHaveBeenCalledTimes(1)
     expect((screen.getByRole('button',{name:'执行全部'}) as HTMLButtonElement).disabled).toBe(true);expect(screen.queryByText('执行完成')).toBeNull()
   })

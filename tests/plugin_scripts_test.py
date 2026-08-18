@@ -22,6 +22,8 @@ class PluginScriptsTest(unittest.TestCase):
     def clean_environment(self) -> dict[str, str]:
         environment = os.environ.copy()
         for name in (
+            "CODEX_SESSION_ID",
+            "CODEX_THREAD_ID",
             "DM7_IT_JDBC_URL",
             "DM7_IT_USERNAME",
             "DM7_IT_PASSWORD",

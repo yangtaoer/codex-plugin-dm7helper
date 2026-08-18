@@ -184,6 +184,32 @@ class Dm7ServicesBackendTest {
         }
     }
 
+    @Test void mcpConnectionMetadataPersistsAcrossSessionsAndAcceptsNamesAsSelectors() throws Exception {
+        Path driver=temporary.resolve("conversation-driver.jar");Files.writeString(driver,"fixture",StandardCharsets.UTF_8);
+        try(var backend=Dm7ServicesBackend.open(RuntimePaths.forTest(temporary))){
+            var firstSession=backend.initialize(new SessionIdentity("connection-writer","test","verified"));
+            var firstServer=new Dm7McpServer(()->new SessionIdentity("connection-writer","test","verified"),
+                    ignored->firstSession,backend,Dm7McpServer.ConsoleLauncher.unavailable());
+            var created=firstServer.call("dm7_save_connection",Map.of(
+                    "name","共享测试库","driverJar",driver.toString(),"jdbcUrl","jdbc:dm7://127.0.0.1:5236/TEST",
+                    "username","tester","isDefault",true));
+            assertEquals(false,created.isError(),created.toString());
+            @SuppressWarnings("unchecked") var saved=(Map<String,Object>)created.structuredContent();
+            assertEquals(true,saved.get("isDefault"));assertEquals(false,saved.get("hasPassword"));
+
+            var secondSession=backend.initialize(new SessionIdentity("connection-reader","test","verified"));
+            var secondServer=new Dm7McpServer(()->new SessionIdentity("connection-reader","test","verified"),
+                    ignored->secondSession,backend,Dm7McpServer.ConsoleLauncher.unavailable());
+            @SuppressWarnings("unchecked") var listed=(java.util.List<Map<String,Object>>)
+                    ((Map<String,Object>)secondServer.call("dm7_list_connections",Map.of()).structuredContent()).get("connections");
+            assertEquals(1,listed.size());assertEquals("共享测试库",listed.get(0).get("name"));
+            assertEquals(false,secondServer.call("dm7_set_default_connection",Map.of("connectionId","共享测试库")).isError());
+            var deleted=secondServer.call("dm7_delete_connection",Map.of("connectionId","共享测试库"));
+            assertEquals(false,deleted.isError(),deleted.toString());
+            assertEquals(java.util.List.of(),((Map<?,?>)secondServer.call("dm7_list_connections",Map.of()).structuredContent()).get("connections"));
+        }
+    }
+
     @Test void consoleConnectionPasswordContractPreservesReplacesAndClearsWithoutDisclosure() throws Exception {
         Path driver=temporary.resolve("credential-contract.jar");Files.writeString(driver,"fixture",StandardCharsets.UTF_8);
         try(var backend=Dm7ServicesBackend.open(RuntimePaths.forTest(temporary))){

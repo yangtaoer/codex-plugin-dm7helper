@@ -15,10 +15,29 @@ public final class Dm7ToolSchemas {
     public static Map<String, Tool> definitions() {
         var tools = new LinkedHashMap<String, Tool>();
         add(tools, "dm7_open_console", "启动或复用安全的本地 DM7 管理控制台，返回短期单次兑换 URL、当前会话及脱敏连接摘要。", schema(), false, false, false);
-        add(tools, "dm7_list_connections", "列出已保存的连接摘要，不返回密码、完整 JDBC URL 或驱动路径。", schema(), true, false, false);
+        add(tools, "dm7_list_connections", "列出跨会话持久化的连接摘要，不返回密码、完整 JDBC URL 或驱动路径。", schema(), true, false, false);
+        add(tools, "dm7_save_connection", "创建或更新跨会话持久化的 DM7 连接元数据；不接受密码，已有密码会在更新时保留。",
+                schema(props(
+                        "connectionId", string("连接 ID 或连接名称；省略时创建新连接。"),
+                        "name", string("连接名称。"),
+                        "driverJar", string("本机 DM7 JDBC 驱动 JAR 绝对路径。"),
+                        "driverClass", string("驱动类；省略时使用 dm7.jdbc.driver.Dm7Driver。"),
+                        "jdbcUrl", string("DM7 JDBC URL。"),
+                        "username", string("数据库用户名。"),
+                        "schema", string("默认 Schema；省略时保持当前值。"),
+                        "connectTimeoutSeconds", integer("连接超时秒数。", 1, 3_600, 10),
+                        "socketTimeoutSeconds", integer("网络超时秒数。", 1, 3_600, 30),
+                        "queryTimeoutSeconds", integer("SQL 超时秒数。", 1, 3_600, 60),
+                        "maxRows", integer("默认最大返回行数。", 1, 10_000, 1_000),
+                        "maxBytes", integer("默认最大结果字节数。", 1, 52_428_800, 10_485_760),
+                        "isDefault", bool("是否设为默认连接。", true))), false, true, true);
+        add(tools, "dm7_set_default_connection", "按连接 ID 或名称设置所有新会话自动使用的默认连接。",
+                schema(prop("connectionId", string("连接 ID 或连接名称。")), "connectionId"), false, true, false);
+        add(tools, "dm7_delete_connection", "按连接 ID 或名称删除持久化连接；删除默认连接时自动选择剩余连接。",
+                schema(prop("connectionId", string("连接 ID 或连接名称。")), "connectionId"), false, true, false);
         add(tools, "dm7_test_connection", "使用已保存凭据测试 DM7 连接；会只读访问外部数据库。",
                 schema(prop("connectionId", string("连接 ID；省略时使用默认连接。"))), true, false, true);
-        add(tools, "dm7_query", "执行单条只读查询或 EXPLAIN；修改语句会被拒绝。",
+        add(tools, "dm7_query", "使用默认或指定连接执行单条只读查询或 EXPLAIN。",
                 schema(props(
                         "connectionId", string("连接 ID；省略时使用默认连接。"),
                         "executionId", uuid("客户端生成的执行 ID，可用于并发取消和查询状态。"),
@@ -27,18 +46,19 @@ public final class Dm7ToolSchemas {
                         "maxRows", integer("最大返回行数。", 1, 10_000, 1_000),
                         "maxBytes", integer("最大结果字节数。", 1, 52_428_800, 10_485_760),
                         "timeoutSeconds", integer("查询超时秒数。", 1, 3_600, 60)), "sql"), true, false, true);
-        var purpose = string("变更用途，决定是否进入当前会话发版日志。");
+        var purpose = string("可选变更用途；省略时自动使用 test，不进入发版日志。");
         purpose.put("enum", List.of("production_change", "migration", "test", "mock", "seed", "sample"));
-        add(tools, "dm7_execute", "执行 DDL/DML 脚本并返回逐语句结果；这是数据库修改操作。",
+        purpose.put("default", "test");
+        add(tools, "dm7_execute", "直接执行非查询 SQL 脚本，支持 DDL、DML、DCL、会话命令、调用、匿名块和事务控制；省略用途时按测试执行。",
                 schema(props(
-                        "connectionId", string("连接 ID；省略时使用默认连接。"),
+                        "connectionId", string("连接 ID 或连接名称；省略时使用默认连接。"),
                         "executionId", uuid("客户端生成的执行 ID，可用于并发取消和查询状态。"),
                         "sql", string("DDL/DML SQL 脚本。"),
                         "parameters", parameters(),
                         "purpose", purpose,
-                        "atomic", bool("是否以插件事务原子执行；包含 DDL 时不可用。", true),
+                        "atomic", bool("是否以插件事务原子执行；仅纯 DML 可用。", false),
                         "continueOnError", bool("非原子模式下失败后是否继续。", false),
-                        "timeoutSeconds", integer("每条语句超时秒数。", 1, 3_600, 60)), "sql", "purpose"), false, true, true);
+                        "timeoutSeconds", integer("每条语句超时秒数。", 1, 3_600, 60)), "sql"), false, true, true);
         add(tools, "dm7_describe_schema", "分页读取 schema、表、视图和列元数据。",
                 schema(props(
                         "connectionId", string("连接 ID；省略时使用默认连接。"),

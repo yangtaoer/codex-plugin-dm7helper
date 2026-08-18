@@ -24,11 +24,11 @@ public final class SqlClassificationService {
         statements.forEach(security::assertNoEmbeddedCredentials);
         List<SqlKind> kinds=statements.stream().map(ParsedStatement::kind).toList();
         boolean queryOnly=kinds.stream().allMatch(kind->kind==SqlKind.QUERY||kind==SqlKind.EXPLAIN);
-        boolean mutationOnly=kinds.stream().allMatch(kind->kind==SqlKind.DML||kind==SqlKind.DDL);
+        boolean mutationOnly=kinds.stream().noneMatch(kind->kind==SqlKind.QUERY||kind==SqlKind.EXPLAIN);
         if(!queryOnly&&!mutationOnly)throw new ClassificationRejected("UNSUPPORTED_SQL");
         if(queryOnly&&kinds.size()!=1)throw new ClassificationRejected("MULTI_QUERY_UNSUPPORTED");
         boolean atomicAllowed=mutationOnly&&kinds.stream().allMatch(kind->kind==SqlKind.DML);
-        return new Classification(kinds.size(),kinds,queryOnly,!queryOnly,atomicAllowed);
+        return new Classification(kinds.size(),kinds,queryOnly,false,atomicAllowed);
     }
 
     public record Classification(int statementCount,List<SqlKind> kinds,boolean queryOnly,

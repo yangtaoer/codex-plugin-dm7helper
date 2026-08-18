@@ -1,11 +1,12 @@
 # DM7 Database for Codex
 
-`dm7-database` is a shareable, local-first Codex plugin for Dameng 7. It exposes ten MCP tools plus a polished management console for connection settings, live execution, manual SQL, results, session logs, and release export. JSON, browser assets, JDBC text, result downloads, and exported SQL use UTF-8 so Chinese content remains intact.
+`dm7-database` is a shareable, local-first Codex plugin for Dameng 7. It exposes thirteen MCP tools plus a polished management console for persistent connection settings, direct SQL, live execution, results, session logs, and optional release export. JSON, browser assets, JDBC text, result downloads, and exported SQL use UTF-8 so Chinese content remains intact.
 
 ## Capabilities
 
-- Configure named connections without placing passwords in chat or configuration files.
-- Run bounded queries and confirmed mutations, monitor progress, cancel work, and inspect schema metadata.
+- Persist named connection metadata from conversation and reuse the default connection in every Codex conversation. Passwords remain in the local vault and are entered once through the console.
+- Run queries and requested test-environment mutations directly without a purpose or acknowledgement dialog, monitor progress, cancel work, and inspect schema metadata.
+- Execute DDL, DML, DCL, session commands, calls, anonymous blocks, and transaction-control scripts. Omitted mutation purpose defaults to `TEST`.
 - Record only eligible DDL/DML in a session-scoped release log. Purposes `TEST`, `MOCK`, `SEED`, and `SAMPLE`—including Chinese 测试SQL—are excluded; only `PRODUCTION_CHANGE` and `MIGRATION` are release-eligible.
 - Export and truncate the current session version under an explicit confirmation flow. No idempotency rewriting is attempted.
 

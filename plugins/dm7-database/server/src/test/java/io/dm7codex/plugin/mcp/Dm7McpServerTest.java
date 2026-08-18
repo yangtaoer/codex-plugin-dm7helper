@@ -19,7 +19,8 @@ import org.junit.jupiter.params.provider.Arguments;
 
 class Dm7McpServerTest {
     private static final List<String> TOOL_NAMES = List.of(
-            "dm7_open_console", "dm7_list_connections", "dm7_test_connection",
+            "dm7_open_console", "dm7_list_connections", "dm7_save_connection",
+            "dm7_set_default_connection", "dm7_delete_connection", "dm7_test_connection",
             "dm7_query", "dm7_execute", "dm7_describe_schema", "dm7_get_execution",
             "dm7_cancel_execution", "dm7_get_release_log", "dm7_release_export");
 
@@ -29,7 +30,7 @@ class Dm7McpServerTest {
         var tools = server.toolDefinitions();
 
         assertEquals(TOOL_NAMES, List.copyOf(tools.keySet()));
-        assertEquals(10, tools.size());
+        assertEquals(13, tools.size());
         tools.values().forEach(tool -> {
             assertEquals("https://json-schema.org/draft/2020-12/schema", tool.inputSchema().get("$schema"));
             assertEquals(false, tool.inputSchema().get("additionalProperties"));
@@ -46,13 +47,16 @@ class Dm7McpServerTest {
         assertFalse(tools.get("dm7_open_console").description().contains("未提供"));
         assertTrue(tools.get("dm7_open_console").description().contains("本地"));
         assertTrue(tools.get("dm7_execute").annotations().destructiveHint());
+        assertTrue(tools.get("dm7_save_connection").annotations().destructiveHint());
+        assertTrue(tools.get("dm7_set_default_connection").annotations().destructiveHint());
+        assertTrue(tools.get("dm7_delete_connection").annotations().destructiveHint());
         assertTrue(tools.get("dm7_cancel_execution").annotations().destructiveHint());
         assertTrue(tools.get("dm7_release_export").annotations().destructiveHint());
         assertTrue(tools.get("dm7_test_connection").annotations().openWorldHint());
 
         @SuppressWarnings("unchecked")
         var executeRequired = (List<String>) tools.get("dm7_execute").inputSchema().get("required");
-        assertTrue(executeRequired.containsAll(List.of("sql", "purpose")));
+        assertEquals(List.of("sql"), executeRequired);
         @SuppressWarnings("unchecked")
         var executeProperties = (Map<String, Object>) tools.get("dm7_execute").inputSchema().get("properties");
         @SuppressWarnings("unchecked") var parameters = (Map<String, Object>) executeProperties.get("parameters");
@@ -63,6 +67,7 @@ class Dm7McpServerTest {
         @SuppressWarnings("unchecked")
         var purpose = (Map<String, Object>) executeProperties.get("purpose");
         assertEquals(List.of("production_change", "migration", "test", "mock", "seed", "sample"), purpose.get("enum"));
+        assertEquals("test", purpose.get("default"));
         @SuppressWarnings("unchecked")
         var exportRequired = (List<String>) tools.get("dm7_release_export").inputSchema().get("required");
         assertEquals(List.of("confirm"), exportRequired);
@@ -98,6 +103,9 @@ class Dm7McpServerTest {
         return java.util.stream.Stream.of(
                 Arguments.of("dm7_open_console", Map.of("sessionId", "forged")),
                 Arguments.of("dm7_list_connections", Map.of("unexpected", true)),
+                Arguments.of("dm7_save_connection", Map.of("password", "must-not-enter-chat")),
+                Arguments.of("dm7_set_default_connection", Map.of()),
+                Arguments.of("dm7_delete_connection", Map.of("connectionId", 7)),
                 Arguments.of("dm7_test_connection", Map.of("connectionId", 7)),
                 Arguments.of("dm7_query", Map.of("parameters", Map.of())),
                 Arguments.of("dm7_execute", Map.of("sql", "update t set c=1", "purpose", "invalid")),
@@ -106,6 +114,15 @@ class Dm7McpServerTest {
                 Arguments.of("dm7_cancel_execution", Map.of("executionId", true)),
                 Arguments.of("dm7_get_release_log", Map.of("sessionId", "forged")),
                 Arguments.of("dm7_release_export", Map.of("confirm", "true")));
+    }
+
+    @Test
+    void executeCanOmitPurposeForPreauthorizedTestMode() {
+        var events = new ArrayList<String>();
+        var result = server(events).call("dm7_execute", Map.of("sql", "update t set c=1"));
+
+        assertEquals(false, result.isError());
+        assertEquals(List.of("initialize:trusted-thread", "business:dm7_execute"), events);
     }
 
     @Test

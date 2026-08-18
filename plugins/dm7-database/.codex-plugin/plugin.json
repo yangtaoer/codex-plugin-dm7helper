@@ -1,7 +1,7 @@
 {
   "name": "dm7-database",
-  "version": "0.1.0+codex.20260715030615",
-  "description": "Operate Dameng 7 safely from Codex with a local SQL console and release logs.",
+  "version": "0.1.0+codex.20260818084703",
+  "description": "Use persistent Dameng 7 connections directly from Codex with a local SQL console and optional release logs.",
   "author": {
     "name": "DM7 Codex Plugin Contributors"
   },
@@ -17,8 +17,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Dameng 7 Database",
-    "shortDescription": "Query DM7 and export session-scoped release SQL",
-    "longDescription": "Connect Codex to Dameng 7, run SQL with live progress, manage connections, and export filtered DDL/DML release logs.",
+    "shortDescription": "Direct DM7 SQL with persistent local connections",
+    "longDescription": "Reuse persistent Dameng 7 connections across Codex conversations, run test-environment SQL directly, manage connection metadata, monitor live progress, and optionally export release SQL.",
     "developerName": "DM7 Codex Plugin Contributors",
     "category": "Developer Tools",
     "capabilities": [
