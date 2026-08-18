@@ -36,6 +36,9 @@ class PluginLayoutTest(unittest.TestCase):
         self.assertEqual("ON_INSTALL", market["plugins"][0]["policy"]["authentication"])
         self.assertEqual(manifest["interface"]["category"], market["plugins"][0]["category"])
         self.assertEqual("pnpm@11.7.0", package["packageManager"])
+        attributes = (ROOT / ".gitattributes").read_text("utf-8").splitlines()
+        self.assertIn("*.ps1 text eol=lf", attributes)
+        self.assertNotIn(b"\r\n", (PLUGIN / "scripts" / "launch-mcp.ps1").read_bytes())
         self.assertTrue((PLUGIN / "web" / "pnpm-lock.yaml").is_file())
         for relative in [".mcp.json", "scripts/launch-mcp.ps1", "skills/dm7-database/SKILL.md", "assets/icon.svg", "server/pom.xml", "web/package.json"]:
             self.assertTrue((PLUGIN / relative).is_file(), relative)
