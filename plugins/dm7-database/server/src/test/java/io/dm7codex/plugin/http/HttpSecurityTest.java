@@ -36,6 +36,10 @@ class HttpSecurityTest {
         assertFalse(cookie.contains("thread-a"));
     }
 
+    @Test void defaultSessionLifetimeUsesPersistentBrowserMaximum() {
+        assertEquals(Integer.MAX_VALUE, HttpSecurity.BrowserSessions.DEFAULT_TTL.toSeconds());
+    }
+
     @Test void securityHeadersAreStrictAndNoStore() {
         Map<String,String> headers = HttpSecurity.responseHeaders(true);
         assertEquals("no-referrer", headers.get("Referrer-Policy"));

@@ -36,12 +36,13 @@ class ConsoleHttpServerTest {
         cookie = response.headers().firstValue("Set-Cookie").orElseThrow().split(";",2)[0];
         assertTrue(response.headers().firstValue("Set-Cookie").orElseThrow().contains("HttpOnly"));
         assertTrue(response.headers().firstValue("Set-Cookie").orElseThrow().contains("SameSite=Strict"));
-        assertEquals(401, request("POST", redeem.getRawPath()+"?"+redeem.getRawQuery(), "", null, base.toString()).statusCode());
+        assertTrue(response.headers().firstValue("Set-Cookie").orElseThrow().contains("Max-Age=2147483647"));
+        assertEquals(303, request("POST", redeem.getRawPath()+"?"+redeem.getRawQuery(), "", null, base.toString()).statusCode());
     }
 
     @AfterEach void close() { server.close(); }
 
-    @Test void browserNavigationRedeemsOneTimeConsoleUrl() throws Exception {
+    @Test void browserNavigationCanReuseLongLivedConsoleUrl() throws Exception {
         var state = new SessionState("internal-browser", "external-browser", 1, null,
                 Path.of("active-browser.sql"), Instant.now());
         URI redeem = URI.create((String) server.open(state).get("url"));
@@ -53,7 +54,7 @@ class ConsoleHttpServerTest {
         assertEquals("/app/", first.headers().firstValue("Location").orElseThrow());
         assertTrue(first.headers().firstValue("Set-Cookie").orElseThrow().contains("HttpOnly"));
         assertEquals("no-referrer", first.headers().firstValue("Referrer-Policy").orElseThrow());
-        assertEquals(401, request("GET", path, null, null, null).statusCode());
+        assertEquals(303, request("GET", path, null, null, null).statusCode());
     }
 
     @Test void enforcesHostOriginCookieHeadersMethodsMediaAndBounds() throws Exception {

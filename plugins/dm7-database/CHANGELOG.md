@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Rename the user-facing plugin title to `DM7 Database`.
+- Make local console redemption URLs reusable and extend both link and browser-session lifetimes to the browser-compatible maximum so ordinary workstation use no longer expires after 60 seconds or 8 hours.
 - Fix Windows Codex launches without an injected `PLUGIN_DATA` value by deriving the stable per-plugin data directory from `CODEX_HOME`, so saved connections remain visible after upgrades and in new tasks.
 - Add conversational connection metadata tools and allow connection names anywhere an ID was previously required.
 - Reuse the persisted default connection automatically across Codex conversations.

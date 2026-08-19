@@ -54,10 +54,11 @@ public final class HttpSecurity {
     }
 
     public static final class BrowserSessions {
+        static final Duration DEFAULT_TTL = Duration.ofSeconds(Integer.MAX_VALUE);
         private final Clock clock; private final Duration ttl; private final int capacity; private final String processId;
         private final SecureRandom random = new SecureRandom();
         private final LinkedHashMap<String, Session> sessions = new LinkedHashMap<>(16, .75f, true);
-        public BrowserSessions() { this(Clock.systemUTC(), Duration.ofHours(8), 128,
+        public BrowserSessions() { this(Clock.systemUTC(), DEFAULT_TTL, 10_000,
                 Long.toUnsignedString(ProcessHandle.current().pid(), 36)); }
         BrowserSessions(Clock clock, Duration ttl, int capacity, String processId) {
             this.clock=clock; this.ttl=ttl; this.capacity=capacity; this.processId=processId;
@@ -74,6 +75,7 @@ public final class HttpSecurity {
             return value != null && value.origin().equals(origin) && value.processId().equals(processId)
                     ? Optional.of(value.sessionId()) : Optional.empty();
         }
+        long maxAgeSeconds() { return ttl.toSeconds(); }
         private void cleanup() { sessions.entrySet().removeIf(e -> !e.getValue().expiresAt().isAfter(clock.instant())); }
         private record Session(String sessionId, String origin, String processId, Instant expiresAt) {}
     }

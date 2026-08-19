@@ -124,7 +124,8 @@ public final class ConsoleHttpServer implements AutoCloseable {
         String sessionId=tokens.consume(query.get("token")).orElseThrow(() -> new JsonHttp.HttpProblem(401,"INVALID_TOKEN","控制台令牌无效。"));
         synchronized(sessionStates){ if(!sessionStates.containsKey(sessionId)) throw new JsonHttp.HttpProblem(401,"INVALID_TOKEN","控制台令牌无效。"); }
         String cookie=browserSessions.create(sessionId,security.origin());
-        x.getResponseHeaders().set("Set-Cookie",COOKIE+"="+cookie+"; Path=/; HttpOnly; SameSite=Strict");
+        x.getResponseHeaders().set("Set-Cookie",COOKIE+"="+cookie+"; Path=/; HttpOnly; SameSite=Strict; Max-Age="
+                +browserSessions.maxAgeSeconds());
         x.getResponseHeaders().set("Location","/app/"); x.sendResponseHeaders(303,-1);
     }
 

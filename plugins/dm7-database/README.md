@@ -5,6 +5,7 @@
 ## Capabilities
 
 - Persist named connection metadata from conversation and reuse the default connection in every Codex conversation. Passwords remain in the local vault and are entered once through the console.
+- Reopen the same local console URL without a short redemption window; console links and browser sessions use the browser-compatible maximum lifetime while the owning MCP process is running.
 - Run queries and requested test-environment mutations directly without a purpose or acknowledgement dialog, monitor progress, cancel work, and inspect schema metadata.
 - Execute DDL, DML, DCL, session commands, calls, anonymous blocks, and transaction-control scripts. Omitted mutation purpose defaults to `TEST`.
 - Record only eligible DDL/DML in a session-scoped release log. Purposes `TEST`, `MOCK`, `SEED`, and `SAMPLE`—including Chinese 测试SQL—are excluded; only `PRODUCTION_CHANGE` and `MIGRATION` are release-eligible.

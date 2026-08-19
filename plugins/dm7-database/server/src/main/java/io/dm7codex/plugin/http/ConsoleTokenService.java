@@ -4,19 +4,19 @@ import java.security.SecureRandom;
 import java.time.*;
 import java.util.*;
 
-/** Issues bounded, short-lived, one-shot bearer tokens for console redemption. */
+/** Issues bounded, effectively non-expiring, reusable bearer tokens for console redemption. */
 public final class ConsoleTokenService {
-    private static final Duration DEFAULT_TTL = Duration.ofSeconds(60);
+    static final Duration DEFAULT_TTL = Duration.ofSeconds(Integer.MAX_VALUE);
     private final Clock clock;
     private final Duration ttl;
     private final int capacity;
     private final SecureRandom random = new SecureRandom();
     private final LinkedHashMap<String, Entry> pending = new LinkedHashMap<>();
 
-    public ConsoleTokenService() { this(Clock.systemUTC(), DEFAULT_TTL, 256); }
+    public ConsoleTokenService() { this(Clock.systemUTC(), DEFAULT_TTL, 10_000); }
     ConsoleTokenService(Clock clock, Duration ttl, int capacity) {
         this.clock = Objects.requireNonNull(clock);
-        if (ttl.isZero() || ttl.isNegative() || ttl.compareTo(Duration.ofMinutes(5)) > 0)
+        if (ttl.isZero() || ttl.isNegative() || ttl.compareTo(DEFAULT_TTL) > 0)
             throw new IllegalArgumentException("invalid token lifetime");
         if (capacity < 1 || capacity > 10_000) throw new IllegalArgumentException("invalid token capacity");
         this.ttl = ttl; this.capacity = capacity;
@@ -38,7 +38,7 @@ public final class ConsoleTokenService {
     public synchronized Optional<String> consume(String token) {
         cleanup();
         if (token == null || !token.matches("[A-Za-z0-9_-]{40,128}")) return Optional.empty();
-        Entry entry = pending.remove(token);
+        Entry entry = pending.get(token);
         return entry == null || !entry.expiresAt().isAfter(clock.instant())
                 ? Optional.empty() : Optional.of(entry.sessionId());
     }

@@ -14,7 +14,7 @@ public final class Dm7ToolSchemas {
 
     public static Map<String, Tool> definitions() {
         var tools = new LinkedHashMap<String, Tool>();
-        add(tools, "dm7_open_console", "启动或复用安全的本地 DM7 管理控制台，返回短期单次兑换 URL、当前会话及脱敏连接摘要。", schema(), false, false, false);
+        add(tools, "dm7_open_console", "启动或复用本地 DM7 管理控制台，返回可长期重复打开的 URL、当前会话及连接摘要。", schema(), false, false, false);
         add(tools, "dm7_list_connections", "列出跨会话持久化的连接摘要，不返回密码、完整 JDBC URL 或驱动路径。", schema(), true, false, false);
         add(tools, "dm7_save_connection", "创建或更新跨会话持久化的 DM7 连接元数据；不接受密码，已有密码会在更新时保留。",
                 schema(props(

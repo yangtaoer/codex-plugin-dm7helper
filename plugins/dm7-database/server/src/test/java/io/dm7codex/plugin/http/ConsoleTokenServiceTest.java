@@ -8,20 +8,20 @@ import java.util.concurrent.*;
 import org.junit.jupiter.api.Test;
 
 class ConsoleTokenServiceTest {
-    @Test void tokenIsOpaqueSingleUseAndExpires() {
+    @Test void tokenIsOpaqueReusableAndExpiresOnlyAtConfiguredLifetime() {
         var clock = new MutableClock();
         var tokens = new ConsoleTokenService(clock, Duration.ofSeconds(30), 8);
         String token = tokens.issue("thread-中文");
         assertTrue(token.matches("[A-Za-z0-9_-]{40,}"));
         assertEquals("thread-中文", tokens.consume(token).orElseThrow());
-        assertTrue(tokens.consume(token).isEmpty());
+        assertEquals("thread-中文", tokens.consume(token).orElseThrow());
         String expired = tokens.issue("expired");
         clock.advance(Duration.ofSeconds(31));
         assertTrue(tokens.consume(expired).isEmpty());
         assertTrue(tokens.consume("bad token").isEmpty());
     }
 
-    @Test void concurrentConsumptionHasExactlyOneWinner() throws Exception {
+    @Test void concurrentRedemptionAllowsEveryCaller() throws Exception {
         var tokens = new ConsoleTokenService();
         String token = tokens.issue("thread-a");
         var gate = new CountDownLatch(1);
@@ -31,10 +31,14 @@ class ConsoleTokenServiceTest {
                 gate.await(); return tokens.consume(token).isPresent();
             })).toList();
             gate.countDown();
-            assertEquals(1, calls.stream().filter(f -> {
+            assertEquals(20, calls.stream().filter(f -> {
                 try { return f.get(); } catch (Exception e) { throw new RuntimeException(e); }
             }).count());
         } finally { pool.shutdownNow(); }
+    }
+
+    @Test void defaultTokenLifetimeUsesPersistentBrowserMaximum() {
+        assertEquals(Integer.MAX_VALUE, ConsoleTokenService.DEFAULT_TTL.toSeconds());
     }
 
     @Test void boundedMapEvictsOldestIssuedToken() {
